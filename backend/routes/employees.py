@@ -12,11 +12,23 @@ router = APIRouter()
 
 ROLES = ["hr_admin", "management", "branch_manager", "employee", "field_agent"]
 
+DEPARTMENTS = [
+    "Accounts",
+    "Administration",
+    "Compliance",
+    "Human Resources",
+    "IT",
+    "Operations",
+    "Risk and Credit",
+]
+
 # Field Team
 FIELD_DESIGNATIONS = [
     "Divisional Manager",
     "Area Manager",
+    "Senior Branch Manager",
     "Branch Manager",
+    "Senior Field Officer",
     "Field Officer",
 ]
 
@@ -30,6 +42,7 @@ RISK_DESIGNATIONS = [
 HO_DESIGNATIONS = [
     "Chief Executive Officer",
     "Chief Operating Officer",
+    "Company Secretary",
     "HR Manager",
     "Accounts Manager",
     "Senior Manager",
@@ -125,6 +138,7 @@ async def next_employee_id(current_user: dict = Depends(get_current_user)):
 @router.get("/designations")
 async def get_designations(current_user: dict = Depends(get_current_user)):
     return {
+        "departments": DEPARTMENTS,
         "groups": DESIGNATION_GROUPS,
         "all": DESIGNATIONS,
     }

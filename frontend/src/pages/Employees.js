@@ -8,10 +8,12 @@ const ROLE_COLORS = { hr_admin: "bg-purple-100 text-purple-700", management: "bg
 const STATUS_COLORS = { active: "bg-green-100 text-green-700", probation: "bg-yellow-100 text-yellow-700", resigned: "bg-red-100 text-red-700", terminated: "bg-gray-100 text-gray-700" };
 
 const DESIGNATION_GROUPS = {
-  "Head Office": ["Chief Executive Officer", "Chief Operating Officer", "HR Manager", "Accounts Manager", "Senior Manager", "Manager", "Senior Executive", "Executive", "Assistant"],
-  "Field Team": ["Divisional Manager", "Area Manager", "Branch Manager", "Field Officer"],
+  "Head Office": ["Chief Executive Officer", "Chief Operating Officer", "Company Secretary", "HR Manager", "Accounts Manager", "Senior Manager", "Manager", "Senior Executive", "Executive", "Assistant"],
+  "Field Team": ["Divisional Manager", "Area Manager", "Senior Branch Manager", "Branch Manager", "Senior Field Officer", "Field Officer"],
   "Risk Team": ["Audit Manager", "Credit Officer"],
 };
+
+const DEPARTMENTS = ["Accounts", "Administration", "Compliance", "Human Resources", "IT", "Operations", "Risk and Credit"];
 
 function Modal({ title, onClose, children }) {
   return (
@@ -143,6 +145,11 @@ export default function Employees() {
           <option value="probation">Probation</option>
           <option value="resigned">Resigned</option>
         </select>
+        <select onChange={e => setSearch(e.target.value === "all" ? "" : e.target.value)} data-testid="dept-filter"
+          className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none bg-white">
+          <option value="all">All Departments</option>
+          {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
       </div>
 
       {/* Table */}
@@ -206,8 +213,11 @@ export default function Employees() {
               ))}
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Department*</label>
-                <input value={form.department} onChange={e => setForm({ ...form, department: e.target.value })} required data-testid="emp-department"
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                <select value={form.department} onChange={e => setForm({ ...form, department: e.target.value })} required data-testid="emp-department"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none bg-white">
+                  <option value="">Select Department</option>
+                  {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Designation*</label>
