@@ -1,0 +1,120 @@
+{
+  "theme": "LIGHT",
+  "archetype": "Archetype 4 (Swiss & High-Contrast)",
+  "rationale": "For an Enterprise HR & Field Agent App (NBFC-MFI), we need authority, absolute clarity, and functional aesthetics. The field agents need high contrast for outdoor visibility (Light theme), while the corporate navy and vibrant orange provide a perfect high-contrast Swiss-style execution. No generic SaaS look; pure structural efficiency.",
+  "colors": {
+    "primary": {
+      "hex": "#E85B1E",
+      "hover": "#D04A15",
+      "active": "#B83E0F",
+      "description": "Radhya Orange - used strictly for primary CTAs, active states, map markers, and critical actions. Never use as a background."
+    },
+    "brand_navy": {
+      "hex": "#1E2A47",
+      "light": "#2A3A5E",
+      "dark": "#131C30",
+      "description": "Deep Navy - used for primary headings, sidebars, and strong structural borders."
+    },
+    "surface": {
+      "background": "#F8FAFC",
+      "card": "#FFFFFF",
+      "sidebar": "#1E2A47",
+      "border": "#E2E8F0"
+    },
+    "text": {
+      "primary": "#0F172A",
+      "secondary": "#475569",
+      "muted": "#94A3B8",
+      "on_navy": "#F8FAFC",
+      "on_primary": "#FFFFFF"
+    },
+    "status": {
+      "success": "#10B981",
+      "warning": "#F59E0B",
+      "error": "#EF4444"
+    }
+  },
+  "typography": {
+    "headings": {
+      "family": "'Outfit', sans-serif",
+      "weight": "font-bold to font-black",
+      "classes": "font-sans tracking-tight text-primary",
+      "scale": {
+        "h1": "text-4xl sm:text-5xl lg:text-6xl",
+        "h2": "text-2xl sm:text-3xl lg:text-4xl",
+        "h3": "text-xl sm:text-2xl",
+        "h4": "text-lg sm:text-xl"
+      }
+    },
+    "body": {
+      "family": "'Work Sans', sans-serif",
+      "classes": "font-sans leading-relaxed text-secondary"
+    },
+    "labels": {
+      "classes": "text-xs font-bold uppercase tracking-[0.2em] text-secondary"
+    }
+  },
+  "layout_and_spacing": {
+    "dashboard_grid": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6",
+    "card_padding": "p-6 sm:p-8",
+    "radius": "rounded-lg (max 8px to maintain structural/tech feel)",
+    "shadows": "shadow-sm for default state, shadow-md for hover state. Use pure CSS borders for definition instead of heavy blurs.",
+    "sidebar": "bg-brand_navy text-white fixed left-0 top-0 h-screen w-64 flex-col border-r border-brand_navy-dark",
+    "alignment": "Strict left-alignment for all data grids and tables. Optical centering for icons.",
+    "mobile_first": "Ensure all views collapse to a single column on mobile. Field agent dashboard must prioritize the 'Mark Attendance' CTA."
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-[#E85B1E] text-white hover:bg-[#D04A15] font-semibold px-6 py-2 rounded-md transition-colors shadow-sm",
+      "secondary": "border-2 border-[#1E2A47] text-[#1E2A47] hover:bg-slate-50 font-medium px-6 py-2 rounded-md transition-colors",
+      "ghost": "text-secondary hover:text-primary hover:bg-slate-100 px-4 py-2 rounded-md transition-colors"
+    },
+    "cards": {
+      "style": "bg-white border border-border rounded-lg shadow-sm overflow-hidden",
+      "header": "border-b border-border p-4 sm:p-6 bg-slate-50/50"
+    },
+    "inputs": {
+      "style": "border border-slate-300 rounded-md px-3 py-2 text-primary focus:ring-2 focus:ring-[#E85B1E] focus:border-transparent transition-all w-full",
+      "labels": "text-sm font-semibold text-primary mb-1 block"
+    }
+  },
+  "motion_and_interactions": {
+    "hover": "Subtle -translate-y-[2px] on interactive cards. Background tint change on list items.",
+    "transitions": "transition-all duration-200 ease-in-out",
+    "loading": "Use skeleton loaders with pulse animation (bg-slate-200) instead of generic spinners for tables/widgets."
+  },
+  "accessibility": {
+    "contrast": "Ensure white text on #E85B1E and #1E2A47 meets APCA standards. All interactive elements must have clear focus states (ring-2 ring-primary ring-offset-2).",
+    "testing": "MANDATORY: All interactive and key informational elements MUST include a data-testid attribute (e.g., data-testid='login-submit-button')."
+  },
+  "image_urls": [
+    {
+      "url": "https://images.unsplash.com/photo-1758518730083-4c12527b6742?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxNzV8MHwxfHNlYXJjaHwyfHxwcm9mZXNzaW9uYWwlMjBvZmZpY2UlMjB3b3JrZXJzJTIwdGVhbXxlbnwwfHx8fDE3NzczNzI3NzB8MA&ixlib=rb-4.1.0&q=85",
+      "category": "team_meeting",
+      "description": "Office workers collaborating - use for Employee Directory hero banner or HR Dashboard empty state background."
+    },
+    {
+      "url": "https://images.pexels.com/photos/4253272/pexels-photo-4253272.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+      "category": "login_background",
+      "description": "Abstract navy and orange geometric background - use for the split-screen Login page."
+    }
+  ],
+  "icons": {
+    "library": "lucide-react",
+    "stroke_width": 2,
+    "size": {
+      "sm": 16,
+      "md": 20,
+      "lg": 24
+    }
+  },
+  "instructions_to_main_agent": [
+    "Install 'lucide-react' for icons.",
+    "Add 'Outfit' and 'Work Sans' fonts from Google Fonts in index.html.",
+    "Use Shadcn UI for standard components (Tables, Dialogs, Dropdowns, DatePicker).",
+    "Strictly follow the color scheme. Do not introduce generic blues or greens unless for success/error states.",
+    "Ensure all data-heavy views (Payroll, Attendance) use the 'Control Room' grid layout.",
+    "For the mobile view (Field Agents), ensure tap targets are at least 48x48px and attendance marking (selfie) is front and center on their dashboard.",
+    "MANDATORY: Add data-testid attributes to all buttons, links, form inputs, and key UI elements for E2E testing."
+  ]
+}
