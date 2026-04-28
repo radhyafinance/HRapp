@@ -24,9 +24,9 @@ const NAV_ITEMS = [
 const ROLE_LABELS = {
   hr_admin: "HR Admin",
   management: "Management",
-  branch_manager: "Branch Manager",
-  employee: "Employee",
-  field_agent: "Field Agent",
+  branch_manager: "Manager",
+  employee: "HO Staff",
+  field_agent: "Field Staff",
 };
 
 export default function Layout() {

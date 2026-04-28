@@ -3,7 +3,7 @@ import API from "../utils/api";
 import { UserPlus, Search, Download, Upload, Eye, X, UserCheck, Loader } from "lucide-react";
 
 const ROLES = ["hr_admin", "management", "branch_manager", "employee", "field_agent"];
-const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", branch_manager: "Branch Manager", employee: "Employee", field_agent: "Field Agent" };
+const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", branch_manager: "Manager", employee: "HO Staff", field_agent: "Field Staff" };
 const ROLE_COLORS = { hr_admin: "bg-purple-100 text-purple-700", management: "bg-blue-100 text-blue-700", branch_manager: "bg-teal-100 text-teal-700", employee: "bg-slate-100 text-slate-700", field_agent: "bg-orange-100 text-orange-700" };
 const STATUS_COLORS = { active: "bg-green-100 text-green-700", probation: "bg-yellow-100 text-yellow-700", resigned: "bg-red-100 text-red-700", terminated: "bg-gray-100 text-gray-700" };
 
