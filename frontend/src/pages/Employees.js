@@ -7,6 +7,12 @@ const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", branch_man
 const ROLE_COLORS = { hr_admin: "bg-purple-100 text-purple-700", management: "bg-blue-100 text-blue-700", branch_manager: "bg-teal-100 text-teal-700", employee: "bg-slate-100 text-slate-700", field_agent: "bg-orange-100 text-orange-700" };
 const STATUS_COLORS = { active: "bg-green-100 text-green-700", probation: "bg-yellow-100 text-yellow-700", resigned: "bg-red-100 text-red-700", terminated: "bg-gray-100 text-gray-700" };
 
+const DESIGNATION_GROUPS = {
+  "Head Office": ["Chief Executive Officer", "Chief Operating Officer", "HR Manager", "Accounts Manager", "Senior Manager", "Manager", "Senior Executive", "Executive", "Assistant"],
+  "Field Team": ["Divisional Manager", "Area Manager", "Branch Manager", "Field Officer"],
+  "Risk Team": ["Audit Manager", "Credit Officer"],
+};
+
 function Modal({ title, onClose, children }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
@@ -205,8 +211,15 @@ export default function Employees() {
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Designation*</label>
-                <input value={form.designation} onChange={e => setForm({ ...form, designation: e.target.value })} required data-testid="emp-designation"
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                <select value={form.designation} onChange={e => setForm({ ...form, designation: e.target.value })} required data-testid="emp-designation"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none bg-white">
+                  <option value="">Select Designation</option>
+                  {Object.entries(DESIGNATION_GROUPS).map(([group, items]) => (
+                    <optgroup key={group} label={group}>
+                      {items.map(d => <option key={d} value={d}>{d}</option>)}
+                    </optgroup>
+                  ))}
+                </select>
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Role*</label>

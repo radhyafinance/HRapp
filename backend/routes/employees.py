@@ -11,9 +11,41 @@ import io
 router = APIRouter()
 
 ROLES = ["hr_admin", "management", "branch_manager", "employee", "field_agent"]
-DESIGNATIONS = ["HR Manager", "Accounts Manager", "Divisional Manager", "Area Manager",
-                "Branch Manager", "Field Officer", "Auditor", "Credit Officer",
-                "Senior Executive", "Executive", "Assistant", "Manager"]
+
+# Field Team
+FIELD_DESIGNATIONS = [
+    "Divisional Manager",
+    "Area Manager",
+    "Branch Manager",
+    "Field Officer",
+]
+
+# Risk Team (reports to management)
+RISK_DESIGNATIONS = [
+    "Audit Manager",
+    "Credit Officer",
+]
+
+# Head Office
+HO_DESIGNATIONS = [
+    "Chief Executive Officer",
+    "Chief Operating Officer",
+    "HR Manager",
+    "Accounts Manager",
+    "Senior Manager",
+    "Manager",
+    "Senior Executive",
+    "Executive",
+    "Assistant",
+]
+
+DESIGNATIONS = HO_DESIGNATIONS + FIELD_DESIGNATIONS + RISK_DESIGNATIONS
+
+DESIGNATION_GROUPS = {
+    "Head Office": HO_DESIGNATIONS,
+    "Field Team": FIELD_DESIGNATIONS,
+    "Risk Team": RISK_DESIGNATIONS,
+}
 
 
 def emp_to_dict(emp):
@@ -88,6 +120,14 @@ class EmployeeUpdate(BaseModel):
 @router.get("/next-id")
 async def next_employee_id(current_user: dict = Depends(get_current_user)):
     return {"next_id": await get_next_employee_id()}
+
+
+@router.get("/designations")
+async def get_designations(current_user: dict = Depends(get_current_user)):
+    return {
+        "groups": DESIGNATION_GROUPS,
+        "all": DESIGNATIONS,
+    }
 
 
 @router.get("")
