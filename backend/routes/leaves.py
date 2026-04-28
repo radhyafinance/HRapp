@@ -98,7 +98,9 @@ async def pending_leaves(current_user: dict = Depends(get_current_user)):
 async def my_leave_balance(current_user: dict = Depends(get_current_user)):
     emp_id = current_user.get("employee_id")
     if not emp_id:
-        raise HTTPException(status_code=400, detail="No employee linked")
+        return {"CL": {"total": 7, "used": 0, "remaining": 7},
+                "SL": {"total": 15, "used": 0, "remaining": 15},
+                "EL": {"total": 12, "used": 0, "remaining": 12}}
     balance = await db.leave_balances.find_one(
         {"employee_id": emp_id, "year": datetime.now(timezone.utc).year}
     )

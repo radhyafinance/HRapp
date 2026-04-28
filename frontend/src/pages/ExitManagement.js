@@ -75,12 +75,10 @@ export default function ExitManagement() {
           <h1 className="text-2xl font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Exit Management</h1>
           <p className="text-slate-500 text-sm">Resignation & Full & Final Settlement</p>
         </div>
-        {user?.employee_id && (
-          <button onClick={() => setShowResign(true)} data-testid="resign-btn"
-            className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-semibold hover:bg-red-700 transition-colors">
-            <Plus size={16} /> Submit Resignation
-          </button>
-        )}
+        <button onClick={() => setShowResign(true)} data-testid="resign-btn"
+          className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-semibold hover:bg-red-700 transition-colors">
+          <Plus size={16} /> Submit Resignation
+        </button>
       </div>
 
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
@@ -139,8 +137,9 @@ export default function ExitManagement() {
         <Modal title="Submit Resignation" onClose={() => setShowResign(false)}>
           <form onSubmit={handleResign} className="space-y-4">
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">Employee ID</label>
-              <input value={form.employee_id} readOnly className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm bg-slate-50" />
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Employee ID*</label>
+              <input value={form.employee_id} onChange={e => setForm({ ...form, employee_id: e.target.value })} placeholder="e.g. RMF0001" required
+                className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
             </div>
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">Resignation Date*</label>

@@ -27,7 +27,7 @@ export default function Leaves() {
   const [pending, setPending] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showApply, setShowApply] = useState(false);
-  const [form, setForm] = useState({ leave_type: "CL", start_date: "", end_date: "", reason: "" });
+  const [form, setForm] = useState({ leave_type: "CL", start_date: "", end_date: "", reason: "", employee_id: "" });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("my");
@@ -60,7 +60,7 @@ export default function Leaves() {
     setSaving(true);
     setError("");
     try {
-      await API.post("/leaves", { ...form, employee_id: user.employee_id });
+      await API.post("/leaves", { ...form, employee_id: form.employee_id || user.employee_id });
       setShowApply(false);
       setForm({ leave_type: "CL", start_date: "", end_date: "", reason: "" });
       fetchData();
@@ -90,12 +90,10 @@ export default function Leaves() {
           <h1 className="text-2xl font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Leave Management</h1>
           <p className="text-slate-500 text-sm">Manage your leaves</p>
         </div>
-        {user?.employee_id && (
-          <button onClick={() => setShowApply(true)} data-testid="apply-leave-btn"
-            className="flex items-center gap-2 px-4 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] transition-colors">
-            <Plus size={16} /> Apply Leave
-          </button>
-        )}
+        <button onClick={() => setShowApply(true)} data-testid="apply-leave-btn"
+          className="flex items-center gap-2 px-4 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] transition-colors">
+          <Plus size={16} /> Apply Leave
+        </button>
       </div>
 
       {/* Leave Balance */}
@@ -176,6 +174,13 @@ export default function Leaves() {
       {showApply && (
         <Modal title="Apply for Leave" onClose={() => setShowApply(false)}>
           <form onSubmit={handleApply} className="space-y-4">
+            {isManager && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Employee ID*</label>
+                <input value={form.employee_id} onChange={e => setForm({ ...form, employee_id: e.target.value })} placeholder="e.g. RMF0001" required
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+            )}
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">Leave Type*</label>
               <select value={form.leave_type} onChange={e => setForm({ ...form, leave_type: e.target.value })} data-testid="leave-type-select"
