@@ -1,0 +1,121 @@
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel, EmailStr
+from database import db
+from auth_utils import hash_password, verify_password, create_token, get_current_user
+from datetime import datetime, timezone
+from bson import ObjectId
+
+router = APIRouter()
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class CreateUserRequest(BaseModel):
+    email: str
+    password: str
+    name: str
+    role: str
+    employee_id: str = None
+
+
+@router.post("/login")
+async def login(data: LoginRequest):
+    user = await db.users.find_one({"email": data.email.lower().strip()})
+    if not user or not verify_password(data.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="Account is inactive")
+    token = create_token(
+        str(user["_id"]),
+        user["email"],
+        user["role"],
+        user.get("employee_id"),
+        user.get("name", ""),
+    )
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": str(user["_id"]),
+            "email": user["email"],
+            "name": user.get("name", ""),
+            "role": user["role"],
+            "employee_id": user.get("employee_id"),
+        },
+    }
+
+
+@router.get("/me")
+async def get_me(current_user: dict = Depends(get_current_user)):
+    user = await db.users.find_one({"_id": ObjectId(current_user["sub"])})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "id": str(user["_id"]),
+        "email": user["email"],
+        "name": user.get("name", ""),
+        "role": user["role"],
+        "employee_id": user.get("employee_id"),
+    }
+
+
+@router.post("/change-password")
+async def change_password(data: ChangePasswordRequest, current_user: dict = Depends(get_current_user)):
+    user = await db.users.find_one({"_id": ObjectId(current_user["sub"])})
+    if not user or not verify_password(data.current_password, user["password_hash"]):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"password_hash": hash_password(data.new_password)}},
+    )
+    return {"message": "Password changed successfully"}
+
+
+@router.post("/create-user")
+async def create_user(data: CreateUserRequest, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") != "hr_admin":
+        raise HTTPException(status_code=403, detail="Only HR Admin can create users")
+    existing = await db.users.find_one({"email": data.email.lower()})
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already exists")
+    user_doc = {
+        "email": data.email.lower(),
+        "password_hash": hash_password(data.password),
+        "name": data.name,
+        "role": data.role,
+        "employee_id": data.employee_id,
+        "is_active": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    result = await db.users.insert_one(user_doc)
+    return {"id": str(result.inserted_id), "message": "User created successfully"}
+
+
+@router.get("/users")
+async def list_users(current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") != "hr_admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+    users = await db.users.find({}, {"password_hash": 0}).to_list(1000)
+    for u in users:
+        u["_id"] = str(u["_id"])
+    return users
+
+
+@router.put("/users/{user_id}/toggle")
+async def toggle_user(user_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") != "hr_admin":
+        raise HTTPException(status_code=403, detail="Access denied")
+    user = await db.users.find_one({"_id": ObjectId(user_id)})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    new_status = not user.get("is_active", True)
+    await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": {"is_active": new_status}})
+    return {"is_active": new_status}

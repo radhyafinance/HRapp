@@ -1,0 +1,204 @@
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
+from typing import Optional
+from database import db
+from auth_utils import get_current_user
+from datetime import datetime, timezone, date
+import math
+
+router = APIRouter()
+
+OFFICE_LOCATIONS_CACHE = []
+
+
+def haversine_distance(lat1, lon1, lat2, lon2):
+    R = 6371000
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+async def check_geofence(lat: float, lon: float):
+    locations = await db.office_locations.find({}).to_list(100)
+    for loc in locations:
+        dist = haversine_distance(lat, lon, loc["latitude"], loc["longitude"])
+        radius = loc.get("radius_meters", 10)
+        if dist <= radius:
+            return True, loc["name"], dist
+    return False, None, None
+
+
+def att_to_dict(a):
+    a["id"] = str(a.pop("_id"))
+    return a
+
+
+class PunchRequest(BaseModel):
+    employee_id: str
+    latitude: float
+    longitude: float
+    photo_base64: Optional[str] = None
+    accuracy: Optional[float] = None
+
+
+class LocationUpdateRequest(BaseModel):
+    employee_id: str
+    latitude: float
+    longitude: float
+    accuracy: Optional[float] = None
+
+
+@router.post("/punch-in")
+async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_user)):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    existing = await db.attendance_records.find_one(
+        {"employee_id": data.employee_id, "date": today}
+    )
+    if existing and existing.get("punch_in_time"):
+        raise HTTPException(status_code=400, detail="Already punched in today")
+    in_fence, location_name, distance = await check_geofence(data.latitude, data.longitude)
+    now = datetime.now(timezone.utc)
+    record = {
+        "employee_id": data.employee_id,
+        "date": today,
+        "punch_in_time": now.isoformat(),
+        "punch_in_location": {"lat": data.latitude, "lon": data.longitude, "name": location_name},
+        "punch_in_photo": data.photo_base64[:500] if data.photo_base64 else None,
+        "geofence_verified": in_fence,
+        "distance_from_office": round(distance, 2) if distance else None,
+        "location_name": location_name,
+        "status": "present",
+        "punch_out_time": None,
+    }
+    if existing:
+        await db.attendance_records.update_one({"_id": existing["_id"]}, {"$set": record})
+    else:
+        await db.attendance_records.insert_one(record)
+    return {
+        "success": True,
+        "geofence_verified": in_fence,
+        "location_name": location_name,
+        "distance_meters": round(distance, 2) if distance else None,
+        "punch_in_time": now.isoformat(),
+        "message": f"Punched in {'within geofence' if in_fence else 'OUTSIDE geofence'}" + (f" at {location_name}" if location_name else ""),
+    }
+
+
+@router.post("/punch-out")
+async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current_user)):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    record = await db.attendance_records.find_one(
+        {"employee_id": data.employee_id, "date": today}
+    )
+    if not record:
+        raise HTTPException(status_code=400, detail="No punch-in found for today")
+    if record.get("punch_out_time"):
+        raise HTTPException(status_code=400, detail="Already punched out today")
+    in_fence, location_name, distance = await check_geofence(data.latitude, data.longitude)
+    now = datetime.now(timezone.utc)
+    punch_in_time = datetime.fromisoformat(record["punch_in_time"])
+    hours_worked = (now - punch_in_time).total_seconds() / 3600
+    await db.attendance_records.update_one(
+        {"_id": record["_id"]},
+        {"$set": {
+            "punch_out_time": now.isoformat(),
+            "punch_out_location": {"lat": data.latitude, "lon": data.longitude, "name": location_name},
+            "punch_out_photo": data.photo_base64[:500] if data.photo_base64 else None,
+            "hours_worked": round(hours_worked, 2),
+        }},
+    )
+    return {
+        "success": True,
+        "hours_worked": round(hours_worked, 2),
+        "punch_out_time": now.isoformat(),
+        "message": f"Punched out. Total hours: {round(hours_worked, 2)}",
+    }
+
+
+@router.post("/location-update")
+async def update_location(data: LocationUpdateRequest, current_user: dict = Depends(get_current_user)):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    record = await db.attendance_records.find_one(
+        {"employee_id": data.employee_id, "date": today, "punch_in_time": {"$exists": True}}
+    )
+    if not record or record.get("punch_out_time"):
+        raise HTTPException(status_code=400, detail="No active session found")
+    log = {
+        "employee_id": data.employee_id,
+        "date": today,
+        "latitude": data.latitude,
+        "longitude": data.longitude,
+        "accuracy": data.accuracy,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.location_logs.insert_one(log)
+    return {"success": True}
+
+
+@router.get("/today")
+async def today_attendance(current_user: dict = Depends(get_current_user)):
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    records = await db.attendance_records.find({"date": today}).to_list(1000)
+    total_employees = await db.employees.count_documents({"status": {"$in": ["active", "probation"]}})
+    present = len([r for r in records if r.get("punch_in_time")])
+    punched_out = len([r for r in records if r.get("punch_out_time")])
+    return {
+        "date": today,
+        "total_employees": total_employees,
+        "present": present,
+        "absent": total_employees - present,
+        "punched_out": punched_out,
+        "records": [att_to_dict(r) for r in records],
+    }
+
+
+@router.get("/my")
+async def my_attendance(
+    month: int = None, year: int = None, current_user: dict = Depends(get_current_user)
+):
+    emp_id = current_user.get("employee_id")
+    if not emp_id:
+        raise HTTPException(status_code=400, detail="No employee linked")
+    now = datetime.now(timezone.utc)
+    m = month or now.month
+    y = year or now.year
+    prefix = f"{y}-{m:02d}"
+    records = await db.attendance_records.find(
+        {"employee_id": emp_id, "date": {"$regex": f"^{prefix}"}}
+    ).sort("date", -1).to_list(100)
+    return [att_to_dict(r) for r in records]
+
+
+@router.get("/location-track/{employee_id}")
+async def location_track(employee_id: str, date_str: str = None, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ["hr_admin", "management", "branch_manager"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    today = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    logs = await db.location_logs.find(
+        {"employee_id": employee_id, "date": today}
+    ).sort("timestamp", 1).to_list(1000)
+    for log in logs:
+        log["id"] = str(log.pop("_id"))
+    return {"employee_id": employee_id, "date": today, "locations": logs}
+
+
+@router.get("")
+async def list_attendance(
+    employee_id: str = None,
+    date_from: str = None,
+    date_to: str = None,
+    current_user: dict = Depends(get_current_user),
+):
+    query = {}
+    if employee_id:
+        query["employee_id"] = employee_id
+    elif current_user.get("role") in ["employee", "field_agent"]:
+        query["employee_id"] = current_user.get("employee_id")
+    if date_from:
+        query["date"] = {"$gte": date_from}
+    if date_to:
+        query.setdefault("date", {})["$lte"] = date_to
+    records = await db.attendance_records.find(query).sort("date", -1).to_list(500)
+    return [att_to_dict(r) for r in records]

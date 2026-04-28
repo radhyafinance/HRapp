@@ -1,0 +1,217 @@
+import React, { useEffect, useState } from "react";
+import API from "../utils/api";
+import { useAuth } from "../contexts/AuthContext";
+import { Plus, Check, X, Clock, FileText } from "lucide-react";
+
+const LEAVE_TYPES = ["CL", "SL", "EL", "Maternity", "Paternity", "Marriage", "Comp-Off", "LWP"];
+const STATUS_COLORS = { pending: "bg-amber-100 text-amber-700", approved: "bg-green-100 text-green-700", rejected: "bg-red-100 text-red-700" };
+
+function Modal({ title, onClose, children }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between p-5 border-b sticky top-0 bg-white">
+          <h3 className="text-lg font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>{title}</h3>
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500"><X size={18} /></button>
+        </div>
+        <div className="p-5">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+export default function Leaves() {
+  const { user } = useAuth();
+  const [leaves, setLeaves] = useState([]);
+  const [balance, setBalance] = useState(null);
+  const [pending, setPending] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showApply, setShowApply] = useState(false);
+  const [form, setForm] = useState({ leave_type: "CL", start_date: "", end_date: "", reason: "" });
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [activeTab, setActiveTab] = useState("my");
+  const isManager = ["hr_admin", "management", "branch_manager"].includes(user?.role);
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      const [leavesRes, balRes] = await Promise.all([
+        API.get("/leaves"),
+        API.get("/leaves/balance/my"),
+      ]);
+      setLeaves(leavesRes.data);
+      setBalance(balRes.data);
+      if (isManager) {
+        const pendRes = await API.get("/leaves/pending");
+        setPending(pendRes.data);
+      }
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchData(); }, []);
+
+  const handleApply = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    setError("");
+    try {
+      await API.post("/leaves", { ...form, employee_id: user.employee_id });
+      setShowApply(false);
+      setForm({ leave_type: "CL", start_date: "", end_date: "", reason: "" });
+      fetchData();
+    } catch (e) {
+      setError(e.response?.data?.detail || "Failed to apply leave");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleApproval = async (leaveId, action) => {
+    try {
+      await API.put(`/leaves/${leaveId}/approve`, { action, remarks: "" });
+      fetchData();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Action failed");
+    }
+  };
+
+  const days = form.start_date && form.end_date ?
+    Math.max(1, Math.round((new Date(form.end_date) - new Date(form.start_date)) / 86400000) + 1) : 0;
+
+  return (
+    <div style={{ fontFamily: "'Work Sans', sans-serif" }}>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Leave Management</h1>
+          <p className="text-slate-500 text-sm">Manage your leaves</p>
+        </div>
+        {user?.employee_id && (
+          <button onClick={() => setShowApply(true)} data-testid="apply-leave-btn"
+            className="flex items-center gap-2 px-4 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] transition-colors">
+            <Plus size={16} /> Apply Leave
+          </button>
+        )}
+      </div>
+
+      {/* Leave Balance */}
+      {balance && (
+        <div className="grid grid-cols-3 gap-4 mb-6">
+          {["CL", "SL", "EL"].map(type => (
+            <div key={type} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm" data-testid={`balance-${type}`}>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs font-bold uppercase tracking-wider text-slate-500">{type}</span>
+                <span className="text-xs text-slate-400">{type === "CL" ? "Casual" : type === "SL" ? "Sick" : "Earned"}</span>
+              </div>
+              <p className="text-3xl font-bold text-[#1E2A47]">{balance[type]?.remaining ?? 0}</p>
+              <div className="mt-2 bg-slate-100 rounded-full h-1.5">
+                <div className="bg-[#E85B1E] h-1.5 rounded-full" style={{ width: `${Math.min(100, ((balance[type]?.used || 0) / (balance[type]?.total || 1)) * 100)}%` }}></div>
+              </div>
+              <p className="text-xs text-slate-400 mt-1">{balance[type]?.used || 0} used / {balance[type]?.total || 0} total</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Tabs */}
+      {isManager && (
+        <div className="flex gap-2 mb-4 border-b border-slate-200">
+          {[["my", "My Leaves"], ["pending", `Pending Approvals (${pending.length})`]].map(([val, label]) => (
+            <button key={val} onClick={() => setActiveTab(val)} data-testid={`tab-${val}`}
+              className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${activeTab === val ? "border-[#E85B1E] text-[#E85B1E]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Leaves Table */}
+      <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full" data-testid="leaves-table">
+            <thead><tr className="bg-slate-50 border-b">
+              {(activeTab === "pending" ? ["Employee ID", "Type", "From", "To", "Days", "Reason", "Actions"] : ["Type", "From", "To", "Days", "Status", "Applied On"]).map(h => (
+                <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {loading ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr> :
+                activeTab === "pending" ? pending.map(l => (
+                  <tr key={l.id} className="border-b border-slate-100 hover:bg-slate-50">
+                    <td className="px-4 py-3 text-sm font-mono text-[#E85B1E]">{l.employee_id}</td>
+                    <td className="px-4 py-3"><span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">{l.leave_type}</span></td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{l.start_date}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{l.end_date}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-slate-700">{l.days}d</td>
+                    <td className="px-4 py-3 text-sm text-slate-500 max-w-xs truncate">{l.reason}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex gap-2">
+                        <button onClick={() => handleApproval(l.id, "approve")} data-testid={`approve-leave-${l.id}`}
+                          className="p-1.5 rounded-lg bg-green-100 text-green-700 hover:bg-green-200"><Check size={14} /></button>
+                        <button onClick={() => handleApproval(l.id, "reject")} data-testid={`reject-leave-${l.id}`}
+                          className="p-1.5 rounded-lg bg-red-100 text-red-700 hover:bg-red-200"><X size={14} /></button>
+                      </div>
+                    </td>
+                  </tr>
+                )) : leaves.map(l => (
+                  <tr key={l.id} className="border-b border-slate-100 hover:bg-slate-50">
+                    <td className="px-4 py-3"><span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">{l.leave_type}</span></td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{l.start_date}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{l.end_date}</td>
+                    <td className="px-4 py-3 text-sm font-medium">{l.days}d</td>
+                    <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[l.status]}`}>{l.status}</span></td>
+                    <td className="px-4 py-3 text-xs text-slate-400">{l.applied_at ? new Date(l.applied_at).toLocaleDateString("en-IN") : "-"}</td>
+                  </tr>
+                ))
+              }
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {showApply && (
+        <Modal title="Apply for Leave" onClose={() => setShowApply(false)}>
+          <form onSubmit={handleApply} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Leave Type*</label>
+              <select value={form.leave_type} onChange={e => setForm({ ...form, leave_type: e.target.value })} data-testid="leave-type-select"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none bg-white">
+                {LEAVE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">From Date*</label>
+                <input type="date" value={form.start_date} onChange={e => setForm({ ...form, start_date: e.target.value })} required data-testid="leave-start-date"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">To Date*</label>
+                <input type="date" value={form.end_date} onChange={e => setForm({ ...form, end_date: e.target.value })} required min={form.start_date} data-testid="leave-end-date"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+            </div>
+            {days > 0 && <p className="text-sm text-[#E85B1E] font-medium">{days} day{days > 1 ? "s" : ""}</p>}
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Reason*</label>
+              <textarea value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} required rows={3} data-testid="leave-reason"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none resize-none" />
+            </div>
+            {error && <div className="bg-red-50 text-red-700 text-sm p-3 rounded-lg">{error}</div>}
+            <div className="flex gap-3">
+              <button type="button" onClick={() => setShowApply(false)} className="flex-1 px-4 py-2.5 border-2 border-slate-300 text-slate-600 rounded-lg text-sm font-medium">Cancel</button>
+              <button type="submit" disabled={saving} data-testid="submit-leave-btn"
+                className="flex-1 px-4 py-2.5 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold disabled:opacity-60 transition-colors">
+                {saving ? "Applying..." : "Apply Leave"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+    </div>
+  );
+}
