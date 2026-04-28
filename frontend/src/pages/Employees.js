@@ -1,6 +1,6 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import API from "../utils/api";
-import { UserPlus, Search, Filter, Download, Upload, Edit, Eye, X, Check } from "lucide-react";
+import { UserPlus, Search, Download, Upload, Eye, X, UserCheck, Loader } from "lucide-react";
 
 const ROLES = ["hr_admin", "management", "branch_manager", "employee", "field_agent"];
 const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", branch_manager: "Branch Manager", employee: "Employee", field_agent: "Field Agent" };
@@ -14,6 +14,56 @@ const DESIGNATION_GROUPS = {
 };
 
 const DEPARTMENTS = ["Accounts", "Administration", "Compliance", "Human Resources", "IT", "Operations", "Risk and Credit"];
+
+/* ── Reporting Manager live-lookup input ── */
+function ReportingManagerInput({ value, onChange }) {
+  const [status, setStatus] = useState(null); // null | "loading" | "found" | "not_found"
+  const [managerName, setManagerName] = useState("");
+  const timerRef = useRef(null);
+
+  const lookup = useCallback(async (id) => {
+    if (!id || id.trim().length < 4) { setStatus(null); setManagerName(""); return; }
+    setStatus("loading");
+    try {
+      const res = await API.get(`/employees/${id.trim().toUpperCase()}`);
+      setManagerName(`${res.data.first_name} ${res.data.last_name} — ${res.data.designation}`);
+      setStatus("found");
+    } catch {
+      setManagerName("");
+      setStatus("not_found");
+    }
+  }, []);
+
+  const handleChange = (e) => {
+    const val = e.target.value.toUpperCase();
+    onChange(val);
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => lookup(val), 600);
+  };
+
+  return (
+    <div>
+      <label className="block text-xs font-semibold text-slate-700 mb-1">Reporting Manager (Employee ID)</label>
+      <div className="relative">
+        <input
+          value={value}
+          onChange={handleChange}
+          placeholder="e.g. RMF0001"
+          data-testid="emp-reporting-to"
+          className={`w-full border rounded-lg px-3 py-2 pr-9 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none transition-colors
+            ${status === "found" ? "border-green-400 bg-green-50" : status === "not_found" ? "border-red-300 bg-red-50" : "border-slate-300"}`}
+        />
+        <span className="absolute right-2.5 top-1/2 -translate-y-1/2">
+          {status === "loading" && <Loader size={14} className="animate-spin text-slate-400" />}
+          {status === "found" && <UserCheck size={14} className="text-green-600" />}
+          {status === "not_found" && <X size={14} className="text-red-500" />}
+        </span>
+      </div>
+      {status === "found" && <p className="text-xs text-green-700 mt-1 font-medium">{managerName}</p>}
+      {status === "not_found" && <p className="text-xs text-red-500 mt-1">Employee not found</p>}
+    </div>
+  );
+}
 
 function Modal({ title, onClose, children }) {
   return (
@@ -30,6 +80,65 @@ function Modal({ title, onClose, children }) {
 }
 
 const INITIAL_FORM = { first_name: "", last_name: "", email: "", mobile: "", department: "", designation: "", role: "employee", reporting_to: "", joining_date: "", basic: "", hra: "", special_allowance: "", canteen_allowance: "", conveyance_allowance: "", bank_name: "", account_number: "", ifsc_code: "", password: "Welcome@123", create_user_account: true };
+
+/* ── Employee Detail View (used in View modal) ── */
+function EmployeeDetailView({ emp }) {
+  const [managerInfo, setManagerInfo] = useState(null);
+
+  useEffect(() => {
+    if (!emp?.reporting_to) return;
+    API.get(`/employees/${emp.reporting_to}`)
+      .then(r => setManagerInfo(`${r.data.first_name} ${r.data.last_name} (${r.data.designation})`))
+      .catch(() => setManagerInfo(null));
+  }, [emp?.reporting_to]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-lg">
+        <div className="w-16 h-16 rounded-full bg-[#1E2A47] flex items-center justify-center text-white text-2xl font-bold">
+          {emp.first_name?.charAt(0)}{emp.last_name?.charAt(0)}
+        </div>
+        <div>
+          <h3 className="text-lg font-bold text-[#1E2A47]">{emp.first_name} {emp.last_name}</h3>
+          <p className="text-[#E85B1E] font-semibold text-sm">{emp.employee_id}</p>
+          <p className="text-slate-500 text-sm">{emp.designation} • {emp.department}</p>
+        </div>
+      </div>
+
+      {/* Reporting Manager highlighted */}
+      {emp.reporting_to && (
+        <div className="flex items-center gap-3 p-3 bg-[#E85B1E]/5 border border-[#E85B1E]/20 rounded-lg">
+          <UserCheck size={16} className="text-[#E85B1E] flex-shrink-0" />
+          <div>
+            <p className="text-xs text-slate-500">Reporting Manager</p>
+            <p className="text-sm font-semibold text-[#1E2A47]">
+              {emp.reporting_to}
+              {managerInfo && <span className="font-normal text-slate-500"> — {managerInfo}</span>}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {[
+        ["Email", emp.email],
+        ["Mobile", emp.mobile],
+        ["Role", ROLE_LABELS[emp.role] || emp.role],
+        ["Status", emp.status],
+        ["Joining Date", emp.joining_date],
+        ["Gross Salary", `₹${emp.salary?.gross?.toLocaleString("en-IN") || 0}/month`],
+        ["Basic", `₹${emp.salary?.basic?.toLocaleString("en-IN") || 0}`],
+        ["Bank", emp.bank_details?.bank_name],
+        ["Account", emp.bank_details?.account_number],
+        ["IFSC", emp.bank_details?.ifsc_code],
+      ].map(([label, val]) => val && (
+        <div key={label} className="flex justify-between text-sm border-b border-slate-100 pb-2">
+          <span className="text-slate-500">{label}</span>
+          <span className="text-[#0F172A] font-medium">{val}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
 
 export default function Employees() {
   const [employees, setEmployees] = useState([]);
@@ -101,8 +210,8 @@ export default function Employees() {
   };
 
   const downloadTemplate = () => {
-    const headers = "employee_id,first_name,last_name,email,mobile,department,designation,role,joining_date,status,basic,hra,special_allowance,canteen_allowance,conveyance_allowance,bank_name,account_number,ifsc_code\n";
-    const sample = "RMF0001,John,Doe,john.doe@radhyamfi.com,9876543210,Field Operations,Field Officer,field_agent,2024-01-15,active,15000,6000,3000,1500,1500,SBI,1234567890,SBIN0001234\n";
+    const headers = "employee_id,first_name,last_name,email,mobile,department,designation,role,reporting_to,joining_date,status,basic,hra,special_allowance,canteen_allowance,conveyance_allowance,bank_name,account_number,ifsc_code\n";
+    const sample = "RMF0001,John,Doe,john.doe@radhyamfi.com,9876543210,Operations,Field Officer,field_agent,RMF0005,2024-01-15,active,15000,6000,3000,1500,1500,SBI,1234567890,SBIN0001234\n";
     const blob = new Blob([headers + sample], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "employee_template.csv"; a.click();
@@ -158,7 +267,7 @@ export default function Employees() {
           <table className="w-full" data-testid="employees-table">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
-                {["Emp ID", "Name", "Designation", "Department", "Role", "Joining Date", "Status", "Actions"].map(h => (
+                {["Emp ID", "Name", "Designation", "Department", "Reports To", "Status", "Actions"].map(h => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
                 ))}
               </tr>
@@ -186,8 +295,11 @@ export default function Employees() {
                   </td>
                   <td className="px-4 py-3 text-sm text-slate-600">{emp.designation}</td>
                   <td className="px-4 py-3 text-sm text-slate-600">{emp.department}</td>
-                  <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${ROLE_COLORS[emp.role] || "bg-slate-100 text-slate-700"}`}>{ROLE_LABELS[emp.role] || emp.role}</span></td>
-                  <td className="px-4 py-3 text-sm text-slate-500">{emp.joining_date}</td>
+                  <td className="px-4 py-3">
+                    {emp.reporting_to
+                      ? <span className="font-mono text-xs px-2 py-1 bg-[#E85B1E]/10 text-[#E85B1E] rounded-full">{emp.reporting_to}</span>
+                      : <span className="text-xs text-slate-400">—</span>}
+                  </td>
                   <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[emp.status] || "bg-slate-100"}`}>{emp.status}</span></td>
                   <td className="px-4 py-3">
                     <button onClick={() => setShowView(emp)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" data-testid={`view-emp-${emp.employee_id}`}><Eye size={16} /></button>
@@ -244,6 +356,14 @@ export default function Employees() {
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
               </div>
             </div>
+            {/* Reporting Manager — full width */}
+            <div className="border border-slate-200 rounded-lg p-4 bg-slate-50/60">
+              <p className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-3">Reporting Manager</p>
+              <ReportingManagerInput
+                value={form.reporting_to}
+                onChange={(val) => setForm({ ...form, reporting_to: val })}
+              />
+            </div>
             <div className="border-t pt-3">
               <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">Salary Components (Monthly)</p>
               <div className="grid grid-cols-2 gap-3">
@@ -297,24 +417,7 @@ export default function Employees() {
       {/* View Employee Modal */}
       {showView && (
         <Modal title="Employee Details" onClose={() => setShowView(null)}>
-          <div className="space-y-4">
-            <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-lg">
-              <div className="w-16 h-16 rounded-full bg-[#1E2A47] flex items-center justify-center text-white text-2xl font-bold">
-                {showView.first_name?.charAt(0)}{showView.last_name?.charAt(0)}
-              </div>
-              <div>
-                <h3 className="text-lg font-bold text-[#1E2A47]">{showView.first_name} {showView.last_name}</h3>
-                <p className="text-[#E85B1E] font-semibold text-sm">{showView.employee_id}</p>
-                <p className="text-slate-500 text-sm">{showView.designation} • {showView.department}</p>
-              </div>
-            </div>
-            {[["Email", showView.email], ["Mobile", showView.mobile], ["Role", ROLE_LABELS[showView.role] || showView.role], ["Status", showView.status], ["Joining Date", showView.joining_date], ["Gross Salary", `₹${showView.salary?.gross?.toLocaleString("en-IN") || 0}/month`], ["Bank", showView.bank_details?.bank_name], ["Account", showView.bank_details?.account_number], ["IFSC", showView.bank_details?.ifsc_code]].map(([label, val]) => val && (
-              <div key={label} className="flex justify-between text-sm border-b border-slate-100 pb-2">
-                <span className="text-slate-500">{label}</span>
-                <span className="text-[#0F172A] font-medium">{val}</span>
-              </div>
-            ))}
-          </div>
+          <EmployeeDetailView emp={showView} />
         </Modal>
       )}
     </div>

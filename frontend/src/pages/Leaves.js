@@ -1,10 +1,33 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
-import { Plus, Check, X, Clock, FileText } from "lucide-react";
+import { Plus, Check, X, UserCheck } from "lucide-react";
 
 const LEAVE_TYPES = ["CL", "SL", "EL", "Maternity", "Paternity", "Marriage", "Comp-Off", "LWP"];
 const STATUS_COLORS = { pending: "bg-amber-100 text-amber-700", approved: "bg-green-100 text-green-700", rejected: "bg-red-100 text-red-700" };
+
+/* Shows reporting manager for a given employee inline */
+function ReportingManagerTag({ employeeId }) {
+  const [mgr, setMgr] = useState(null);
+  useEffect(() => {
+    if (!employeeId) return;
+    API.get(`/employees/${employeeId}`)
+      .then(r => {
+        if (r.data.reporting_to) {
+          API.get(`/employees/${r.data.reporting_to}`)
+            .then(m => setMgr(`Reports to: ${m.data.first_name} ${m.data.last_name} (${r.data.reporting_to})`))
+            .catch(() => setMgr(`Reports to: ${r.data.reporting_to}`));
+        }
+      })
+      .catch(() => {});
+  }, [employeeId]);
+  if (!mgr) return null;
+  return (
+    <p className="text-xs text-slate-400 mt-0.5 flex items-center gap-1">
+      <UserCheck size={11} /> {mgr}
+    </p>
+  );
+}
 
 function Modal({ title, onClose, children }) {
   return (
@@ -140,7 +163,10 @@ export default function Leaves() {
               {loading ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr> :
                 activeTab === "pending" ? pending.map(l => (
                   <tr key={l.id} className="border-b border-slate-100 hover:bg-slate-50">
-                    <td className="px-4 py-3 text-sm font-mono text-[#E85B1E]">{l.employee_id}</td>
+                    <td className="px-4 py-3">
+                      <p className="text-sm font-mono font-semibold text-[#E85B1E]">{l.employee_id}</p>
+                      <ReportingManagerTag employeeId={l.employee_id} />
+                    </td>
                     <td className="px-4 py-3"><span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">{l.leave_type}</span></td>
                     <td className="px-4 py-3 text-sm text-slate-600">{l.start_date}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{l.end_date}</td>

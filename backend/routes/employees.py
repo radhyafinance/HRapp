@@ -303,6 +303,7 @@ async def bulk_upload(file: UploadFile = File(...), current_user: dict = Depends
                 "department": row.get("department", ""),
                 "designation": row.get("designation", ""),
                 "role": row.get("role", "employee"),
+                "reporting_to": row.get("reporting_to", "").strip() or None,
                 "joining_date": row.get("joining_date", ""),
                 "status": row.get("status", "active"),
                 "salary": {"basic": basic, "hra": hra, "special_allowance": special,

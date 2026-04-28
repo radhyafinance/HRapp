@@ -1,9 +1,27 @@
 import React, { useEffect, useState } from "react";
 import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
-import { Plus, X, Check, Eye } from "lucide-react";
+import { Plus, X, Check, Eye, UserCheck } from "lucide-react";
 
 const STATUS_COLORS = { pending: "bg-amber-100 text-amber-700", approved: "bg-green-100 text-green-700", rejected: "bg-red-100 text-red-700", cleared: "bg-blue-100 text-blue-700" };
+
+/* Inline reporting manager chip */
+function ReportingManagerChip({ employeeId }) {
+  const [mgr, setMgr] = useState(null);
+  useEffect(() => {
+    if (!employeeId) return;
+    API.get(`/employees/${employeeId}`)
+      .then(r => {
+        if (r.data.reporting_to) setMgr(r.data.reporting_to);
+      }).catch(() => {});
+  }, [employeeId]);
+  if (!mgr) return null;
+  return (
+    <span className="inline-flex items-center gap-1 text-xs text-slate-400 mt-0.5">
+      <UserCheck size={11} /> {mgr}
+    </span>
+  );
+}
 
 function Modal({ title, onClose, children }) {
   return (
@@ -97,6 +115,7 @@ export default function ExitManagement() {
                     <td className="px-4 py-3">
                       <p className="text-sm font-medium">{e.employee_name}</p>
                       <p className="text-xs text-[#E85B1E] font-mono">{e.employee_id}</p>
+                      <ReportingManagerChip employeeId={e.employee_id} />
                     </td>
                     <td className="px-4 py-3 text-sm text-slate-600">{e.resignation_date}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{e.last_working_date}</td>
