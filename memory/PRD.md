@@ -76,7 +76,8 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 
 ## P0 Backlog (Next Phase)
 - [x] NEFT sheet custom format (RMF0001 8-column bank format) ✅ Apr 2026
-- [ ] Payslip PDF download
+- [x] Payslip PDF download ✅ Apr 2026
+- [x] UAN Number and ESI Number fields on employees ✅ Apr 2026
 - [ ] Letter PDFs (Offer / Appointment / Warning etc.) with company letterhead
 - [ ] Employee confirmation letter after probation
 - [ ] Monthly salary register export

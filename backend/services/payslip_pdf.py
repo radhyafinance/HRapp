@@ -289,7 +289,6 @@ def build_payslip_pdf(record: dict, employee: dict) -> bytes:
         ("RIGHTPADDING",  (0, 0), (-1, -1), 10),
         ("TOPPADDING",    (0, 0), (-1, -1), 10),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-        ("ROUNDEDCORNERS", [4, 4, 4, 4]),
     ]))
     elements.append(net_tbl)
     elements.append(Spacer(1, 5*mm))
