@@ -291,7 +291,7 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
               </div>
             </div>
 
-            {ctcNum > 0 && (
+            {grossDisplay > 0 && (
               <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-2">
                 <strong>Will copy:</strong> Name, Mobile, Email, DOB, Gender, Father/Husband, Aadhaar, PAN, Address, Department, Designation, Joining Date, Joining Location, KYC document images.
               </div>
