@@ -48,6 +48,8 @@ class CandidateCreate(BaseModel):
     pincode: Optional[str] = None
     aadhaar_data: Optional[dict] = None
     pan_data: Optional[dict] = None
+    employee_id: Optional[str] = None
+    joining_location: Optional[str] = None
 
 
 class CandidateUpdate(BaseModel):
@@ -75,6 +77,8 @@ class CandidateUpdate(BaseModel):
     city: Optional[str] = None
     state: Optional[str] = None
     pincode: Optional[str] = None
+    employee_id: Optional[str] = None
+    joining_location: Optional[str] = None
 
 
 class AadhaarOCRRequest(BaseModel):
@@ -405,6 +409,32 @@ async def aadhaar_ocr_for_candidate(cand_id: str, data: AadhaarOCRRequest, curre
     return {"success": True, "data": extracted}
 
 
+@router.get("/meta/next-employee-id")
+async def next_employee_id(current_user: dict = Depends(get_current_user)):
+    """Suggest the next available Employee ID by scanning Employees + Candidates."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    import re as _re
+    used = set()
+    async for e in db.employees.find({"employee_id": {"$exists": True, "$ne": None}}, {"employee_id": 1, "_id": 0}):
+        if e.get("employee_id"):
+            used.add(str(e["employee_id"]).upper())
+    async for c in db.candidates.find({"employee_id": {"$exists": True, "$ne": None}}, {"employee_id": 1, "_id": 0}):
+        if c.get("employee_id"):
+            used.add(str(c["employee_id"]).upper())
+    max_num = 0
+    pattern = _re.compile(r"^RMF(\d+)$", _re.IGNORECASE)
+    for eid in used:
+        m = pattern.match(eid)
+        if m:
+            try:
+                max_num = max(max_num, int(m.group(1)))
+            except Exception:
+                pass
+    suggestion = f"RMF{(max_num + 1):04d}"
+    return {"suggestion": suggestion, "used_count": len(used)}
+
+
 @router.get("/{cand_id}/joining-kit")
 async def joining_kit_pdf(cand_id: str, current_user: dict = Depends(get_current_user)):
     """Generate a pre-filled Joining Kit PDF for a selected candidate."""
@@ -417,6 +447,8 @@ async def joining_kit_pdf(cand_id: str, current_user: dict = Depends(get_current
         raise HTTPException(status_code=400, detail="Joining kit can only be generated for selected candidates.")
     if not cand.get("expected_joining_date"):
         raise HTTPException(status_code=400, detail="Set a tentative joining date before generating the kit.")
+    if not cand.get("employee_id"):
+        raise HTTPException(status_code=400, detail="Set an Employee ID before generating the kit.")
 
     docs = await db.candidate_documents.find_one({"candidate_id": cand_id}) or {}
     company = await db.app_settings.find_one({"key": "company"}) or {}

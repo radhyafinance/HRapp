@@ -1,460 +1,659 @@
 """Generate a pre-filled joining kit PDF for a selected candidate.
-Mirrors the structure of the bank's `Joining Kit Online.docx` template.
+Mirrors the structure of `Joining Kit Online.docx` 1:1 including bilingual (English + Hindi) labels.
 """
 from io import BytesIO
 from datetime import datetime
 from typing import Optional
+import os
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, KeepTogether
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
 )
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+
+
+# ----- Devanagari font registration (one-shot at import) --------------------
+_FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
+_HINDI_FONT_PATH = os.path.join(_FONT_DIR, "NotoSansDevanagari-Regular.ttf")
+_HINDI_FONT = "Helvetica"  # fallback
+try:
+    if os.path.exists(_HINDI_FONT_PATH):
+        pdfmetrics.registerFont(TTFont("Hindi", _HINDI_FONT_PATH))
+        _HINDI_FONT = "Hindi"
+except Exception:
+    pass
+
+
+def _hi(text: str) -> str:
+    """Wrap Devanagari text in a font tag that uses the registered Hindi font."""
+    if _HINDI_FONT == "Helvetica":
+        return text
+    return f'<font name="{_HINDI_FONT}">{text}</font>'
 
 
 # ----- Styles ---------------------------------------------------------------
 
 _styles = getSampleStyleSheet()
 
-H1 = ParagraphStyle("H1", parent=_styles["Heading1"], fontSize=14, leading=18,
-                    textColor=colors.HexColor("#1E2A47"), spaceBefore=8, spaceAfter=4)
+H1 = ParagraphStyle("H1", parent=_styles["Heading1"], fontSize=13, leading=16,
+                    textColor=colors.black, alignment=TA_CENTER, spaceBefore=4, spaceAfter=4)
 H2 = ParagraphStyle("H2", parent=_styles["Heading2"], fontSize=11, leading=14,
-                    textColor=colors.HexColor("#1E2A47"), spaceBefore=8, spaceAfter=4)
-TITLE = ParagraphStyle("TITLE", parent=_styles["Heading1"], fontSize=18, leading=22,
-                       alignment=TA_CENTER, textColor=colors.HexColor("#1E2A47"),
-                       spaceBefore=4, spaceAfter=4)
-SUBTITLE = ParagraphStyle("SUBTITLE", parent=_styles["Normal"], fontSize=10, leading=12,
-                          alignment=TA_CENTER, textColor=colors.HexColor("#6B7280"),
-                          spaceAfter=8)
+                    textColor=colors.black, spaceBefore=6, spaceAfter=4)
+TITLE = ParagraphStyle("TITLE", parent=_styles["Heading1"], fontSize=14, leading=18,
+                       alignment=TA_CENTER, textColor=colors.black,
+                       spaceBefore=2, spaceAfter=2)
+SUBTITLE = ParagraphStyle("SUBTITLE", parent=_styles["Normal"], fontSize=9, leading=11,
+                          alignment=TA_CENTER, textColor=colors.black, spaceAfter=4)
 BODY = ParagraphStyle("BODY", parent=_styles["BodyText"], fontSize=9, leading=12,
                       alignment=TA_JUSTIFY)
+BODYL = ParagraphStyle("BODYL", parent=_styles["BodyText"], fontSize=9, leading=12,
+                       alignment=TA_LEFT)
 SMALL = ParagraphStyle("SMALL", parent=_styles["BodyText"], fontSize=8, leading=10,
-                       textColor=colors.HexColor("#374151"))
+                       textColor=colors.black)
 NOTE = ParagraphStyle("NOTE", parent=_styles["Italic"], fontSize=8, leading=10,
                       textColor=colors.HexColor("#6B7280"))
-LABEL = ParagraphStyle("LABEL", parent=_styles["BodyText"], fontSize=9, leading=12,
-                       textColor=colors.HexColor("#1E2A47"))
+CENTER_BOLD = ParagraphStyle("CB", parent=_styles["Normal"], fontSize=10, leading=12,
+                             alignment=TA_CENTER, fontName="Helvetica-Bold")
 
 
-_TABLE_HEADER_BG = colors.HexColor("#1E2A47")
-_TABLE_HEADER_FG = colors.HexColor("#FFFFFF")
-_TABLE_ALT_BG = colors.HexColor("#F8FAFC")
-_BORDER = colors.HexColor("#9CA3AF")
+_BORDER = colors.black
 
 
-def _hbox_table(rows, col_widths=None):
-    """Two-column key/value table."""
-    table = Table(rows, colWidths=col_widths or [55 * mm, 110 * mm])
-    table.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+def _kv_table(rows, label_w=60 * mm, value_w=110 * mm):
+    """Numbered key/value table matching docx style: thin black border, no zebra."""
+    t = Table(rows, colWidths=[label_w, value_w])
+    t.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
         ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#1E2A47")),
-        ("BACKGROUND", (0, 0), (0, -1), _TABLE_ALT_BG),
-        ("BOX", (0, 0), (-1, -1), 0.5, _BORDER),
-        ("INNERGRID", (0, 0), (-1, -1), 0.3, _BORDER),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("BOX", (0, 0), (-1, -1), 0.6, _BORDER),
+        ("INNERGRID", (0, 0), (-1, -1), 0.4, _BORDER),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
         ("TOPPADDING", (0, 0), (-1, -1), 4),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
     ]))
-    return table
+    return t
 
 
-def _grid_table(headers, rows, col_widths=None, repeat_header=True):
+def _grid_table(headers, rows, col_widths=None, repeat_header=True, header_bold=True, font_size=8.5):
     data = [headers] + rows
-    table = Table(data, colWidths=col_widths, repeatRows=1 if repeat_header else 0)
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), _TABLE_HEADER_BG),
-        ("TEXTCOLOR", (0, 0), (-1, 0), _TABLE_HEADER_FG),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+    t = Table(data, colWidths=col_widths, repeatRows=1 if repeat_header else 0)
+    style = [
+        ("FONTSIZE", (0, 0), (-1, -1), font_size),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("ALIGN", (0, 0), (-1, 0), "CENTER"),
         ("BOX", (0, 0), (-1, -1), 0.6, _BORDER),
         ("INNERGRID", (0, 0), (-1, -1), 0.4, _BORDER),
         ("LEFTPADDING", (0, 0), (-1, -1), 4),
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 5),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-    ]))
-    return table
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]
+    if header_bold:
+        style.append(("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"))
+    t.setStyle(TableStyle(style))
+    return t
 
 
-def _empty_rows(template_row, count):
-    """Create N copies of a row with empty values for the data columns."""
-    return [list(template_row) for _ in range(count)]
+def _blank_rows(num_cols, count):
+    return [[""] * num_cols for _ in range(count)]
 
 
 def _checkbox(checked: bool) -> str:
     return "[ X ]" if checked else "[   ]"
 
 
-def _fmt_date(value: Optional[str]) -> str:
+def _fmt_date(value):
     if not value:
         return ""
     try:
-        # Accept YYYY-MM-DD or DD/MM/YYYY
-        if "-" in value and len(value) >= 10:
-            d = datetime.strptime(value[:10], "%Y-%m-%d")
+        if "-" in str(value) and len(str(value)) >= 10:
+            d = datetime.strptime(str(value)[:10], "%Y-%m-%d")
             return d.strftime("%d/%m/%Y")
-        if "/" in value:
-            return value
+        if "/" in str(value):
+            return str(value)
     except Exception:
         pass
     return str(value)
 
 
-def _addr_line(c: dict) -> str:
+def _addr_line(c):
     parts = [c.get("address"), c.get("city"), c.get("state"), c.get("pincode")]
     return ", ".join([p for p in parts if p])
+
+
+def _full_name(c):
+    return f"{c.get('first_name', '')} {c.get('last_name', '')}".strip()
+
+
+def _para(text, style=BODY):
+    return Paragraph(text, style)
 
 
 # ----- Section builders -----------------------------------------------------
 
 
-def _header(story, candidate, company):
-    company_name = company.get("company_name") or "Radhya Micro Finance Private Limited"
-    company_addr = company.get("address") or "MIG-29, Ram Ganga Vihar, Vistar, Moradabad, UP - 244001"
-    story.append(Paragraph(company_name, TITLE))
-    story.append(Paragraph(company_addr, SUBTITLE))
-    story.append(Paragraph("JOINING KIT — Version 1.1 (For official use only)", H2))
-    story.append(Paragraph("(To be filled in CAPITAL LETTERS)", NOTE))
-
-    full_name = f"{candidate.get('first_name', '')} {candidate.get('last_name', '')}".strip().upper()
-    rows = [
-        ["1. Employee Name", full_name],
-        ["2. Employee Code", "(To be assigned by HR)"],
-        ["3. Mobile No.", candidate.get("mobile", "")],
-        ["4. Date of Joining", _fmt_date(candidate.get("expected_joining_date"))],
-        ["5. Designation", candidate.get("position", "")],
-        ["6. Department", candidate.get("department", "")],
-        ["7. Joining Location", candidate.get("joining_location") or company.get("joining_location") or "Head Office, Moradabad"],
-    ]
-    story.append(_hbox_table(rows))
-    story.append(Spacer(1, 6))
-
-
-def _documents_checklist(story, candidate, has_aadhaar, has_pan):
-    story.append(Paragraph("DOCUMENTS CHECKLIST FOR NEW JOINERS", H2))
-    items = [
-        ("Joining Kit — 1(a) Offer Letter", False, ""),
-        ("1(B) Appointment Letter", False, ""),
-        ("1(C) Employee Information Sheet", True, "Pre-filled below"),
-        ("1(D) Staff Undertaking", True, "Included below"),
-        ("1(E) Employee Medical Form", False, ""),
-        ("1(F) Gratuity Form (Form F)", True, "Included below"),
-        ("1(G) PF Form (Form 2 + Form 11)", True, "Included below"),
-        ("1(H) ESIC Form", True, "Included below"),
-        ("Cancelled cheque / Passbook copy", False, "To submit (Compulsory)"),
-        ("Passport size photographs (2 copies)", False, "To submit"),
-        ("ID Proof — Aadhaar Card Copy", has_aadhaar, "Already provided" if has_aadhaar else "To submit (Compulsory)"),
-        ("Address Proof — Aadhaar / Voter ID / DL", has_aadhaar, "Aadhaar on file" if has_aadhaar else "To submit (Compulsory)"),
-        ("10th Std. Certificate (Self attested)", False, "To submit"),
-        ("12th Std. Certificate (Self attested)", False, "To submit"),
-        ("Graduation Certificate (Self attested)", False, "To submit"),
-        ("Post-Graduation (if applicable)", False, "To submit"),
-        ("PAN Card Copy", has_pan, "Already provided" if has_pan else "To submit"),
-        ("Bike RC + PUC + Insurance (if applicable)", False, "To submit"),
-        ("Online Police Verification Report", False, "Pending HR verification"),
-    ]
-    rows = [[str(i + 1), p, _checkbox(checked), remark] for i, (p, checked, remark) in enumerate(items)]
-    story.append(_grid_table(
-        ["Sr.", "Particular", "Checked", "Remark"],
-        rows,
-        col_widths=[10 * mm, 90 * mm, 18 * mm, 47 * mm],
-    ))
+def _section_1(story, c, company):
+    """Page 1 of docx: header + 7 numbered fields + documents checklist."""
+    story.append(_para("Joining Kit - Version - 1.1", TITLE))
+    story.append(_para("For official use only", SUBTITLE))
+    story.append(_para("(TO BE FILLED IN CAPITAL LETTERS)", NOTE))
     story.append(Spacer(1, 4))
-    story.append(Paragraph("Check &amp; Verified — Team HR", LABEL))
-    story.append(Spacer(1, 6))
 
-
-def _employee_info_sheet(story, c):
-    story.append(PageBreak())
-    story.append(Paragraph("EMPLOYEE INFORMATION SHEET", H1))
-    story.append(Paragraph("(Attach passport size photograph)", NOTE))
-
-    full_name = f"{c.get('first_name', '')} {c.get('last_name', '')}".strip()
+    # 7-field block — docx uses single-column numbered rows
+    name = _full_name(c).upper()
     rows = [
-        ["1. Employee Name", full_name],
-        ["2. Father's / Spouse Name", c.get("father_or_husband_name", "")],
-        ["3. Mother's Name", ""],
-        ["4. Aadhaar Card No.", c.get("aadhaar_number", "")],
-        ["5. Voter ID No.", ""],
-        ["6. PAN Card No.", c.get("pan_number", "")],
-        ["7. Driving License No.", ""],
-        ["8. Date of Birth", c.get("dob", "")],
-        ["9. Mobile No.", c.get("mobile", "")],
-        ["10. Emergency Mobile No.", ""],
-        ["11. Relationship with Emergency Contact", ""],
-        ["12. Parents Mobile No. (Father / Mother)", ""],
-        ["13. E-mail ID", c.get("email", "")],
-        ["14. Marital Status", ""],
-        ["15. Nationality", "Indian"],
-        ["16. Religion", ""],
-        ["17. Category (Gen / OBC / SC / ST)", ""],
-        ["18. Blood Group", ""],
-        ["19. Permanent Address (As per Aadhaar)", _addr_line(c)],
-        ["20. Correspondence Address", _addr_line(c)],
+        [_para("<b>1. Employee Name</b>", BODYL), _para(name, BODYL)],
+        [_para("<b>2. Employee Code</b>", BODYL), _para(c.get("employee_id") or "", BODYL)],
+        [_para("<b>3. Mobile No</b>", BODYL), _para(c.get("mobile", ""), BODYL)],
+        [_para("<b>4. Date of Joining</b>", BODYL), _para(_fmt_date(c.get("expected_joining_date")), BODYL)],
+        [_para("<b>5. Designation</b>", BODYL), _para(c.get("position", ""), BODYL)],
+        [_para("<b>6. Department</b>", BODYL), _para(c.get("department", ""), BODYL)],
+        [_para("<b>7. Joining Location</b>", BODYL), _para(c.get("joining_location") or company.get("address") or "Head Office, Moradabad", BODYL)],
     ]
-    story.append(_hbox_table(rows))
+    story.append(_kv_table(rows))
+    story.append(Spacer(1, 8))
+
+    # Documents Checklist
+    story.append(_para("DOCUMENTS CHECKLIST FOR NEW JOINERS", H2))
+    has_aadhaar = bool(c.get("aadhaar_number") or c.get("_has_aadhaar_doc"))
+    has_pan = bool(c.get("pan_number") or c.get("_has_pan_doc"))
+    items = [
+        ("1", "Joining Kit — 1(a) Offer Letter", False, ""),
+        ("", "1(B) Appointment Letter", False, ""),
+        ("", "1(c) Employee Information Sheet", True, "Pre-filled below"),
+        ("", "1(D) Staff Undertaking", True, "Included below"),
+        ("", "1(E) Employee Medical Form", False, ""),
+        ("", "1(F) Gratuity Form", True, "Included below"),
+        ("", "1(G) PF Form", True, "Included below"),
+        ("", "1(H) ESIC Form", True, "Included below"),
+        ("2", "One cancelled cheque / Passbook copy (Any Bank) — Compulsory", False, ""),
+        ("3", "Passport size photographs (2 copies)", False, ""),
+        ("4", "ID Proof — Aadhaar Card Copy (Compulsory)", has_aadhaar, "Already provided" if has_aadhaar else ""),
+        ("5", "Address Proof — 5(A) Aadhaar Card Copy", has_aadhaar, "Aadhaar on file" if has_aadhaar else ""),
+        ("", "5(B) Voter ID Card", False, ""),
+        ("", "5(c) Driving License", False, ""),
+        ("6", "Educational Certificates — 6(A) 10th Std.", False, ""),
+        ("", "6(B) 12th Std.", False, ""),
+        ("", "6(c) Graduation", False, ""),
+        ("", "6(D) Post-Graduation", False, ""),
+        ("", "6(E) Ph.D (if applicable)", False, ""),
+        ("", "6(F) Any Other Qualification", False, ""),
+        ("7", "Bike RC Number", False, ""),
+        ("8", "Bike PUC / Insurance", False, ""),
+        ("9", "Online Police Verification Report", False, ""),
+        ("10", "PF Proof Document", False, ""),
+        ("11", "ESIC Proof Document", False, ""),
+        ("12", "PAN Card Copy", has_pan, "Already provided" if has_pan else ""),
+    ]
+    rows = [[sr, p, _checkbox(checked), remark] for sr, p, checked, remark in items]
+    story.append(_grid_table(
+        ["Sr No", "Particular", "Checked By HR Team", "Remark"],
+        rows,
+        col_widths=[12 * mm, 95 * mm, 28 * mm, 35 * mm],
+    ))
+    story.append(Spacer(1, 6))
+    story.append(_para("<b>Check &amp; Verified — Team HR</b>", BODYL))
+
+
+def _section_2_employee_info(story, c):
+    story.append(PageBreak())
+    story.append(_para("EMPLOYEE INFORMATION SHEET", H1))
+    story.append(_para("Attached / Paste Passport Size Photograph", NOTE))
+
+    name = _full_name(c)
+    rows = [
+        ["1", "Employee Name", name],
+        ["2", "Father's / Spouse Name", c.get("father_or_husband_name", "")],
+        ["3", "Mother's Name", ""],
+        ["4", "Aadhaar Card No.", c.get("aadhaar_number", "")],
+        ["5", "Voter ID No.", ""],
+        ["6", "PAN Card No.", c.get("pan_number", "")],
+        ["7", "Driving License No.", ""],
+        ["8", "Date of Birth", c.get("dob", "")],
+        ["9", "Mobile No.", c.get("mobile", "")],
+        ["10", "Emergency Mobile No.", ""],
+        ["11", "Relationship with Emergency Contact", ""],
+        ["12", "Parents Mobile No. (Father / Mother)", ""],
+        ["13", "E-mail ID", c.get("email", "")],
+        ["14", "Marital Status", ""],
+        ["15", "Nationality", "Indian"],
+        ["16", "Religion", ""],
+        ["17", "Category (Gen / OBC / SC / ST)", ""],
+        ["18", "Blood Group", ""],
+        ["19", "Permanent Address (As per Aadhaar)", _addr_line(c)],
+        ["20", "Correspondence Address", _addr_line(c)],
+    ]
+    story.append(_grid_table(
+        ["Sr.", "Particular", "Details"],
+        rows,
+        col_widths=[10 * mm, 60 * mm, 100 * mm],
+        font_size=9,
+    ))
     story.append(Spacer(1, 6))
 
     # 21. Education
-    story.append(Paragraph("21. Educational Qualification", H2))
+    story.append(_para(f"<b>21. Educational Qualification</b> &nbsp;&nbsp; {_hi('शैक्षणिक योग्यता')}", BODYL))
     edu_rows = [
-        ["SC / 10th Standard", "", "", ""],
-        ["HSC / 12th Standard", "", "", ""],
-        ["Graduation (BA / B.Com / B.Sc / BE / Other)", "", "", ""],
-        ["Post-Graduation / Diploma", "", "", ""],
-        ["Any other qualification", "", "", ""],
+        ["1", "SC / 10th Standard", "", "", ""],
+        ["2", "HSC / 12th Standard", "", "", ""],
+        ["3", "Graduation (BA / B.Com / B.Sc / BE / B.Pharma / Other)", "", "", ""],
+        ["4", "Post-Graduation / Diploma", "", "", ""],
+        ["5", "Any other Qualification", "", "", ""],
     ]
     story.append(_grid_table(
-        ["School / Degree", "Institute / Board Name", "Marks / Grade", "Passing Year"],
+        ["Sr. No.", "School / Degree", "Institute / Board Name", "Marks / Grade", "Passing Year"],
         edu_rows,
-        col_widths=[55 * mm, 60 * mm, 25 * mm, 25 * mm],
+        col_widths=[14 * mm, 60 * mm, 50 * mm, 25 * mm, 22 * mm],
     ))
     story.append(Spacer(1, 6))
 
     # 22. Employment History
-    story.append(Paragraph("22. Employment History (most recent first)", H2))
+    story.append(_para(
+        f"<b>22. Employment History (Starting with the most recent one)</b> &nbsp;&nbsp; "
+        f"{_hi('रोज़गार विवरण (वर्तमान संस्था से शुरू कर)')}", BODYL))
     story.append(_grid_table(
-        ["Company Name", "Position Held", "Period (From — To)", "Reason for Leaving"],
-        _empty_rows(["", "", "", ""], 3),
-        col_widths=[45 * mm, 45 * mm, 40 * mm, 35 * mm],
+        ["Sr. No.", "Company Name", "Position Held", "Employment Period (From-To)", "Reason for Leaving"],
+        [["1", "", "", "", ""], ["2", "", "", "", ""], ["3", "", "", "", ""]],
+        col_widths=[14 * mm, 45 * mm, 35 * mm, 40 * mm, 36 * mm],
     ))
     story.append(Spacer(1, 6))
 
     # 23. Relatives
-    story.append(Paragraph("23. Details of Relatives / Known Persons working at Radhya Micro Finance", H2))
+    story.append(_para(
+        f"<b>23. Details of Relatives / Known Persons (if any) Working in RADHYA MICROFINANCE</b> &nbsp;&nbsp; "
+        f"{_hi('कंपनी में कोई संबंधी अथवा पहचान वाले का विवरण')}", BODYL))
     story.append(_grid_table(
-        ["Name", "Relationship", "Designation", "Posted At"],
-        _empty_rows(["", "", "", ""], 2),
-        col_widths=[45 * mm, 35 * mm, 40 * mm, 45 * mm],
+        ["Sr. No.", "Name", "Relationship", "Designation", "Posted At"],
+        [["1", "", "", "", ""], ["2", "", "", "", ""]],
+        col_widths=[14 * mm, 45 * mm, 35 * mm, 40 * mm, 36 * mm],
     ))
     story.append(Spacer(1, 6))
 
     # 24. References
-    story.append(Paragraph("24. Two References (other than relatives)", H2))
+    story.append(_para(
+        f"<b>24. GIVE TWO REFERENCES (OTHER THAN RELATIVES)</b> &nbsp;&nbsp; "
+        f"{_hi('ऐसे दो लोगों का नाम जो आपका परिचय दे सकें, परंतु वो आपके परिवार के सदस्य नहीं होने चाहिए')}", BODYL))
     story.append(_grid_table(
-        ["Name", "Company Name", "Position", "Phone No."],
-        _empty_rows(["", "", "", ""], 2),
-        col_widths=[45 * mm, 50 * mm, 35 * mm, 35 * mm],
+        ["Sr. No.", "Name", "Company Name", "Position", "Phone No."],
+        [["1", "", "", "", ""], ["2", "", "", "", ""]],
+        col_widths=[14 * mm, 45 * mm, 45 * mm, 30 * mm, 36 * mm],
     ))
-    story.append(Spacer(1, 8))
 
 
-def _staff_undertaking(story, c):
+def _section_3_undertaking(story, c):
     story.append(PageBreak())
-    story.append(Paragraph("STAFF UNDERTAKING", H1))
-    full_name = f"{c.get('first_name', '')} {c.get('last_name', '')}".strip()
-    para = (
-        f"I, <b>{full_name or '_______________'}</b>, S/o or D/o or W/o "
-        f"<b>{c.get('father_or_husband_name', '_______________')}</b>, "
-        f"residing at <b>{_addr_line(c) or '_______________'}</b>, "
-        "do hereby affirm on oath that:"
-    )
-    story.append(Paragraph(para, BODY))
+    story.append(_para("Staff Undertaking", H1))
+
+    name = _full_name(c) or "_______________"
+    fhn = c.get("father_or_husband_name") or "_______________"
+    addr = _addr_line(c) or "_______________"
+    intro_en = (f"I, <b>{name}</b>, S/o or D/o or W/o Mr. <b>{fhn}</b>, aged about ____ years, "
+                f"residing at village &amp; post Mandal District <b>{addr}</b>")
+    intro_hi = _hi("मैं पुत्र / पुत्री / पत्नी श्री ____ उम्र ____ वर्ष गाँव और पोस्ट मण्डल जिला ____ का निवासी हूँ।")
+    story.append(_para(intro_en, BODY))
+    story.append(_para(intro_hi, BODY))
+    story.append(_para(f"Do hereby affirm on oath that ({_hi('एतद् द्वारा शपथपूर्वक इसकी पुष्टि करता हूँ')})", BODYL))
+
     bullets = [
-        "The information regarding my academic qualifications and work experience mentioned in my bio-data is true and accurate.",
-        "There have never been any legal proceedings initiated against me, nor have I been involved in any misconduct, fraud or embezzlement of cash in any previous employment.",
-        "I declare the above statements to be true. Any statement found to be false or deliberately misleading may make me liable for dismissal without prior notice.",
-        "I will familiarise myself with my Job Description and the Company's Credit Policy.",
-        "I will carry out my responsibilities with care, diligence and thoroughness, and obey the Staff & Office Rules.",
-        "I will supervise subordinate staff (if any) systematically and ensure all instructions are carried out as per the Operations Manual.",
-        "I will be honest and sincere in all my work and do nothing that would detract from the goodwill of the Company.",
+        ("The information regarding my academic qualifications and work experiences (if any) mentioned in my bio-data is true and accurate as per the record of my education and employment.",
+         "मेरे बायोडाटा में दी गई सभी जानकारी सत्य है।"),
+        ("There have never been any legal proceedings initiated against me, nor have I been involved in any misconduct / fraud / embezzlement of cash in any of my previous employments.",
+         "मेरे खिलाफ कभी भी कोई कानूनी कार्यवाही नहीं हुई है और न ही मैं धोखाधड़ी / गबन आदि में शामिल रहा हूँ।"),
+        ("I declare the above statements to be true in all respects. I acknowledge that any statement found to be false or deliberately misleading may make me liable to dismissal without any prior notice.",
+         "मैं उपरोक्त सभी कथनों को सत्य घोषित करता हूँ। मैं स्वीकार करता हूँ कि कोई भी बयान, जो गलत या जान बूझकर गुमराह करने वाला पाया गया, मुझे बिना किसी पूर्व सूचना के बर्खास्त किया जा सकता है।"),
     ]
-    for b in bullets:
-        story.append(Paragraph(f"• {b}", BODY))
+    for en, hi in bullets:
+        story.append(_para(f"• {en}", BODY))
+        story.append(_para(_hi(hi), BODY))
+
+    story.append(Spacer(1, 4))
+    story.append(_para(f"I further declare that — {_hi('मैं यह और भी घोषित करता हूँ —')}", BODYL))
+
+    further = [
+        ("Will familiarize myself with my Job Description and the Company's Credit Policy.",
+         "मैं अपने काम के विवरण और कंपनी की क्रेडिट नीति के साथ स्वयं को परिचित हूँ।"),
+        ("Will carry out my responsibilities with care, diligence and thoroughness, according to my Job Description and the Operations Manual, and will obey the Staff and Office Rules.",
+         "अपने कार्य विवरण और संचालन नियमावली के अनुसार अपनी ज़िम्मेदारियों को सावधानी, परिश्रम और संपूर्णता से निभाऊँगा और अपने स्टाफ और कार्यालय नियमों का पालन करूँगा।"),
+        ("Will supervise subordinate staff (if any) systematically and thoroughly to ensure that instructions are actually carried out, and in ways consistent with the procedures and internal controls outlined in the Operations Manual.",
+         "मैं संचालन मैनुअल में उल्लिखित प्रक्रियाओं और आंतरिक नियंत्रणों के अनुरूप दिए गए निर्देशों को सुनिश्चित करने के लिए व्यवस्थित और अच्छी तरह से अधीनस्थ कर्मचारियों की निगरानी करूँगा।"),
+        ("Will be honest and sincere in all my work, to set a good example so as to build the public image of the Company, and to do nothing that would detract from its goodwill.",
+         "मैं अपने सभी कार्यों में ईमानदार रहूँगा, एक अच्छा उदाहरण स्थापित करूँगा ताकि कंपनी की सार्वजनिक छवि बने और ऐसा कुछ भी नहीं करूँगा जिससे इसकी ख्याति में कमी आए।"),
+    ]
+    for en, hi in further:
+        story.append(_para(f"• {en}", BODY))
+        story.append(_para(_hi(hi), BODY))
+
     story.append(Spacer(1, 10))
-    story.append(_hbox_table([
-        ["Joining Location", c.get("joining_location") or "Head Office, Moradabad"],
-        ["Date of Joining", _fmt_date(c.get("expected_joining_date"))],
-        ["Employee Signature", ""],
+    story.append(_kv_table([
+        [_para("<b>Joining Location :</b>", BODYL), _para(c.get("joining_location") or "Head Office, Moradabad", BODYL)],
+        [_para("<b>Date of Joining :</b>", BODYL), _para(_fmt_date(c.get("expected_joining_date")), BODYL)],
+        [_para("<b>Employee Signature :</b>", BODYL), _para("", BODYL)],
     ]))
-    story.append(Spacer(1, 6))
 
 
-def _insurance_form(story, c):
+def _section_4_insurance(story, c):
     story.append(PageBreak())
-    story.append(Paragraph("EMPLOYEE INSURANCE FORM", H1))
-    story.append(Paragraph("(Group Medical Insurance, Group Personal Accident &amp; Group Term Life)", NOTE))
-    story.append(Paragraph(
-        "I hereby undertake that I wish to become a member of the Employee's Insurance Policy. "
-        "I am providing the requisite particulars below.", BODY))
+    story.append(_para("EMPLOYEE'S INSURANCE FORM", H1))
+    story.append(_para(_hi("(कर्मचारी के बीमा पत्र)"), SUBTITLE))
+    story.append(_para("(Group Medical Insurance, Group Personal Accident &amp; Group Term Life)", SUBTITLE))
     story.append(Spacer(1, 4))
 
-    full_name = f"{c.get('first_name', '')} {c.get('last_name', '')}".strip()
-    story.append(Paragraph("Member Enrolment Form", H2))
+    story.append(_para(
+        f"I hereby undertake that I wish to become a member of the Employee's Insurance Policy. "
+        f"{_hi('मैं कर्मचारी बीमा पॉलिसी का सदस्य बनना चाहता हूँ।')}", BODY))
+    story.append(_para(
+        f"I am providing you with the requisite particulars as under. "
+        f"({_hi('मैं आवश्यक विवरणों को आपको निम्नानुसार प्रदान कर रहा हूँ')})", BODY))
+    story.append(Spacer(1, 6))
+
+    story.append(_para("MEMBER ENROLMENT FORM", H2))
+    story.append(_para("(Group Medical Insurance, GTL &amp; GPA)", NOTE))
+    name = _full_name(c)
     story.append(_grid_table(
         ["Employee Name", "Employee Code", "DOB", "Gender", "Age"],
-        [[full_name, "", c.get("dob", ""), c.get("gender", ""), ""]],
+        [[name, c.get("employee_id", ""), c.get("dob", ""), c.get("gender", ""), ""]],
         col_widths=[55 * mm, 30 * mm, 30 * mm, 25 * mm, 25 * mm],
+        font_size=9,
     ))
     story.append(Spacer(1, 6))
 
-    story.append(Paragraph("Dependent Details", H2))
+    story.append(_para("Dependent details", H2))
     story.append(_grid_table(
         ["Relation", "Name", "DOB", "Gender", "Age"],
         [["Father", "", "", "", ""], ["Mother", "", "", "", ""], ["Spouse", "", "", "", ""],
          ["1st Child", "", "", "", ""], ["2nd Child", "", "", "", ""]],
         col_widths=[30 * mm, 60 * mm, 25 * mm, 25 * mm, 25 * mm],
+        font_size=9,
     ))
     story.append(Spacer(1, 6))
 
-    story.append(Paragraph(
-        "In case of my death (or any other mishap), I request the Company to provide the insurance "
-        "coverage amount to the nominee given below.", BODY))
+    story.append(_para(
+        "In case of my death (or any other mishap), I request you to provide the insurance coverage amount to the nominee given in the table below.",
+        BODY))
+    story.append(_para(
+        _hi("मेरी मृत्यु (या किसी अन्य दुर्घटना) के मामले में, मैं आपसे नीचे दी गई तालिका में दिए गए नामांकित व्यक्ति को बीमा कवरेज राशि प्रदान करने का अनुरोध करता हूँ।"),
+        BODY))
     story.append(_grid_table(
-        ["Nominee Name", "Relationship", "Share (%)", "Permanent Address with Pincode"],
-        _empty_rows(["", "", "", ""], 2),
-        col_widths=[45 * mm, 30 * mm, 20 * mm, 70 * mm],
+        ["Nominee Name", "Relationship", "PF share payable to each nominee", "Permanent Address with Pincode"],
+        _blank_rows(4, 2),
+        col_widths=[40 * mm, 30 * mm, 35 * mm, 60 * mm],
     ))
     story.append(Spacer(1, 4))
-    story.append(Paragraph(
-        "I understand that this undertaking is irrevocable for the payment of premium amount by the Company "
-        "during my service period and shall inform the Company in writing of any change to the nominee.", BODY))
+    story.append(_para(
+        "I understand that this undertaking is irrevocable and applicable for the payment of premium amount by the Company "
+        "during my service period. I further undertake to inform the Company as and when there is a change in the name of the "
+        "nominee, and till my submission of the change in writing, no change may please be entertained by the Company.",
+        BODY))
     story.append(Spacer(1, 8))
-    story.append(_hbox_table([["Date", ""], ["Employee Signature", ""]]))
+    story.append(_kv_table([
+        [_para("<b>Date</b>", BODYL), _para("", BODYL)],
+        [_para("<b>Employee Signature</b>", BODYL), _para("", BODYL)],
+    ]))
 
 
-def _gratuity_form(story, c):
+def _section_5_gratuity(story, c):
     story.append(PageBreak())
-    story.append(Paragraph("FORM 'F' — Payment of Gratuity Act (Sub-rule 1 of Rule 6) — Nomination", H1))
-    full_name = f"{c.get('first_name', '')} {c.get('last_name', '')}".strip()
-    story.append(Paragraph(
-        "To,<br/>Radhya Micro Finance Pvt Ltd<br/>"
-        "MIG-29, Ram Ganga Vihar Vistar, Moradabad — 244001", BODY))
+    story.append(_para("FORM – 'F'", H1))
+    story.append(_para("PAYMENT OF GRATUITY ACT &nbsp;&nbsp;[ SEE SUB-RULE (1) of Rule 6 ]", SUBTITLE))
+    story.append(_para("NOMINATION", H2))
+    story.append(_para("To,", BODYL))
+    story.append(_para("Radhya Micro Finance Pvt Ltd<br/>MIG-29, Ramganga Vihar Vistar, Moradabad - 244001", BODY))
+    story.append(_para("[I give here name or description of the establishment with full address.]", NOTE))
     story.append(Spacer(1, 4))
-    story.append(Paragraph(
-        f"Shri/Shrimati: <b>{full_name or '_______________'}</b>, "
-        "whose particulars are given in the statement below.", BODY))
-    story.append(Paragraph(
-        "I hereby nominate the person(s) mentioned below to receive the gratuity payable after my death "
-        "(also gratuity standing to my credit in the event of my death before payment), in the proportion indicated.", BODY))
+
+    name = _full_name(c) or "_______________"
+    story.append(_para(f"Shri / Shrimati: <b>{name}</b> &nbsp; whose particulars are given in the statement below:", BODY))
+    story.append(Spacer(1, 4))
+    story.append(_para(
+        "I hereby nominate the person(s) mentioned below to receive the gratuity payable after my death, as also the gratuity "
+        "standing to my credit in the event of my death before the amount has become payable, or having become payable has not "
+        "been paid, and direct that the said amount of gratuity shall be paid in the proportion indicated against the name(s) "
+        "of the nominee(s).", BODY))
+    story.append(Spacer(1, 4))
+    story.append(_para(
+        "02. I hereby certify that the person(s) mentioned is/are a member(s) of my family within the meaning of clause (h) of "
+        "Section (2) of the Payment of Gratuity Act, 1972.", BODY))
+    story.append(_para(
+        "I hereby declare that I have no family within the meaning of clause (h) of Section (2) of the said Act.", BODY))
+    story.append(_para("(a) My Father / Mother / Parents is/are not dependent on me.", BODYL))
+    story.append(_para("(b) My husband's / Father / Mother / Parents is/are not dependent on my husband.", BODYL))
+    story.append(_para(
+        "05. I have excluded my Husband from my family by a notice dated ____ to the controlling authority in terms of the "
+        "provision to clause (h) of Section (2) of the said Act.", BODY))
+    story.append(_para("06. Nomination made herein invalidates my previous nomination.", BODY))
     story.append(Spacer(1, 6))
 
     story.append(_grid_table(
-        ["Nominee Name", "Relationship", "Age", "Share (%)", "Permanent Address with Pincode"],
-        _empty_rows(["", "", "", "", ""], 2),
-        col_widths=[40 * mm, 30 * mm, 15 * mm, 20 * mm, 60 * mm],
+        ["Sr.", "Nominee's Name", "Relationship", "Age", "Gratuity share payable", "Permanent Address with Pincode"],
+        _blank_rows(6, 2),
+        col_widths=[10 * mm, 35 * mm, 28 * mm, 12 * mm, 30 * mm, 55 * mm],
     ))
     story.append(Spacer(1, 6))
 
-    story.append(Paragraph("Statement", H2))
+    story.append(_para("<b>STATEMENT</b>", BODYL))
     story.append(_grid_table(
-        ["Name", "Sex", "Religion", "Marital Status", "Department", "Post Held", "Date of Appointment"],
-        [[full_name, c.get("gender", ""), "", "", c.get("department", ""), c.get("position", ""),
+        ["Name (Full)", "Sex", "Religion", "Marital Status", "Department", "Post Held", "Date of Appointment"],
+        [[name, c.get("gender", ""), "", "", c.get("department", ""), c.get("position", ""),
           _fmt_date(c.get("expected_joining_date"))]],
-        col_widths=[35 * mm, 12 * mm, 18 * mm, 22 * mm, 28 * mm, 28 * mm, 22 * mm],
+        col_widths=[35 * mm, 12 * mm, 18 * mm, 22 * mm, 25 * mm, 28 * mm, 25 * mm],
+        font_size=8,
+    ))
+    story.append(Spacer(1, 4))
+    story.append(_grid_table(
+        ["Permanent Address", "Village/City", "Thana", "Sub-Division", "Post Office", "District", "State"],
+        [[c.get("address", ""), c.get("city", ""), "", "", "", "", c.get("state", "")]],
+        col_widths=[40 * mm, 25 * mm, 18 * mm, 22 * mm, 22 * mm, 22 * mm, 16 * mm],
+        font_size=8,
+    ))
+    story.append(Spacer(1, 6))
+    story.append(_grid_table(
+        ["Place", "Date", "Signature / Thumb Impression of the employee"],
+        _blank_rows(3, 1),
+        col_widths=[30 * mm, 30 * mm, 105 * mm],
     ))
     story.append(Spacer(1, 6))
 
-    story.append(_hbox_table([
-        ["Permanent Address", _addr_line(c)],
-        ["Place", ""],
-        ["Date", ""],
-        ["Signature / Thumb Impression", ""],
+    story.append(_para("<b>Declaration by witnesses</b>", BODYL))
+    story.append(_para("Nomination signed / Thumb impressed before me", BODYL))
+    story.append(_grid_table(
+        ["Full name and full address of witnesses", "Place", "Date", "Signature of witnesses"],
+        _blank_rows(4, 2),
+        col_widths=[70 * mm, 25 * mm, 25 * mm, 45 * mm],
+    ))
+    story.append(Spacer(1, 6))
+
+    story.append(_para("<b>Certificate by the Employer</b>", BODYL))
+    story.append(_para(
+        "Certified that the particulars of the above nomination have been verified and recorded in this establishment.", BODY))
+    story.append(_grid_table(
+        ["Employer's Reference No (if any)", "Date", "Signature of Employer / Authorised Officer", "Designation", "Establishment / Stamp"],
+        _blank_rows(5, 1),
+        col_widths=[35 * mm, 22 * mm, 45 * mm, 28 * mm, 35 * mm],
+        font_size=7.5,
+    ))
+    story.append(Spacer(1, 6))
+
+    story.append(_para("<b>Acknowledgment by the Employee</b>", BODYL))
+    story.append(_para(
+        "Received the duplicate of the nomination in Form 'F' filled by me and duly certified by the employer.", BODY))
+    story.append(_grid_table(
+        ["Date", "Signature of the employee"],
+        _blank_rows(2, 1),
+        col_widths=[40 * mm, 125 * mm],
+    ))
+    story.append(_para("Note: Strike out words / paragraph not applicable", NOTE))
+
+
+def _section_6_pf(story, c):
+    story.append(PageBreak())
+    story.append(_para("Form No. 2 (Revised) — Nomination &amp; Declaration Form", H1))
+    story.append(_para("(For Unexempted / Exempted Establishments)", SUBTITLE))
+    story.append(_para(
+        "Declaration &amp; Nomination Form under the Employees' Provident Fund &amp; Employees' Pension Schemes "
+        "(Paragraph 33 and 61(1) of EPF Scheme 1952 and Paragraph 18 of EPS 1995)", BODY))
+    story.append(Spacer(1, 4))
+
+    story.append(_para("PART-A (EPF)", H2))
+    story.append(_para(
+        "I hereby nominate the person(s) / cancel the nomination made by me previously and nominate the person(s) mentioned "
+        "below to receive the amount standing to my credit in the Employees' Provident Fund in the event of my death.", BODY))
+    story.append(_grid_table(
+        ["Sr.", "Name of Nominee", "Address", "Relationship", "Age / DOB", "Share (%)", "Guardian (if minor)"],
+        _blank_rows(7, 2),
+        col_widths=[10 * mm, 32 * mm, 40 * mm, 24 * mm, 22 * mm, 16 * mm, 28 * mm],
+        font_size=8,
+    ))
+    story.append(Spacer(1, 4))
+    story.append(_para(
+        "Certified that I have no family as in para 2(g) of the EPF Scheme 1952 and should I acquire a family hereafter the above "
+        "nomination shall be deemed cancelled.", BODY))
+    story.append(_para("Certified that my Father / Mother is / are dependent on me.", BODY))
+    story.append(_kv_table([
+        [_para("<b>Strike out whichever is not applicable</b>", BODYL), _para("Signature / Thumb impression of the subscriber", BODYL)],
+        [_para("", BODYL), _para("", BODYL)],
     ]))
     story.append(Spacer(1, 6))
-    story.append(Paragraph("Note: Strike out words / paragraphs not applicable.", NOTE))
 
-
-def _epf_form(story, c):
-    story.append(PageBreak())
-    story.append(Paragraph("FORM 2 (Revised) — EPF & EPS Nomination & Declaration", H1))
-    story.append(Paragraph("Para 33 & 61(1) EPF Scheme 1952 / Para 18 EPS 1995", NOTE))
-
-    story.append(Paragraph("Part-A (EPF)", H2))
-    story.append(Paragraph(
-        "I hereby nominate the person(s) below to receive the amount standing to my credit in the EPF "
-        "in the event of my death.", BODY))
-    story.append(_grid_table(
-        ["Name of Nominee", "Address", "Relationship", "Age / DOB", "Share (%)", "Guardian (if minor)"],
-        _empty_rows(["", "", "", "", "", ""], 2),
-        col_widths=[35 * mm, 45 * mm, 25 * mm, 22 * mm, 18 * mm, 25 * mm],
-    ))
-    story.append(Spacer(1, 4))
-
-    story.append(Paragraph("Part-B (EPS)", H2))
-    story.append(Paragraph(
-        "I furnish the particulars of members of my family who would be eligible to receive widow / children "
-        "pension in the event of my death.", BODY))
+    story.append(_para("PART-B (EPS) — Para 18", H2))
+    story.append(_para(
+        "I hereby furnish the particulars of the members of my family who would be eligible to receive widow / children "
+        "pension in the event of my premature death.", BODY))
     story.append(_grid_table(
         ["Family Member", "Name", "Address", "DOB", "Relation"],
-        [["Father", "", "", "", "Father"], ["Mother", "", "", "", "Mother"],
-         ["Spouse", "", "", "", "Spouse"], ["Child 1", "", "", "", "Child"]],
+        [["Father", "", "", "", ""], ["Mother", "", "", "", ""], ["Spouse", "", "", "", ""],
+         ["1st Child", "", "", "", ""], ["2nd Child", "", "", "", ""]],
         col_widths=[28 * mm, 35 * mm, 50 * mm, 22 * mm, 25 * mm],
+    ))
+    story.append(Spacer(1, 4))
+    story.append(_para(
+        "Certified that I have no family as defined in para 2(vii) of the EPS 1995 and should I acquire family hereafter I shall "
+        "furnish particulars in the above form.", BODY))
+    story.append(_para(
+        "I hereby nominate the following person for receiving the monthly widow pension (admissible under para 16(2)(a)(i) &amp; "
+        "(ii)) in the event of my death without leaving any eligible family member for receiving pension.", BODY))
+    story.append(_grid_table(
+        ["Sr.", "Name", "Address", "DOB / Age", "Relation"],
+        _blank_rows(5, 1),
+        col_widths=[10 * mm, 35 * mm, 60 * mm, 25 * mm, 30 * mm],
+    ))
+    story.append(Spacer(1, 4))
+    story.append(_grid_table(
+        ["Date", "Strike out whichever is not applicable", "Signature / Thumb impression of the subscriber"],
+        _blank_rows(3, 1),
+        col_widths=[28 * mm, 60 * mm, 72 * mm],
     ))
     story.append(Spacer(1, 6))
 
-    story.append(Paragraph("Form 11 — Declaration Form", H2))
-    full_name = f"{c.get('first_name', '')} {c.get('last_name', '')}".strip()
-    story.append(_hbox_table([
-        ["1. Name of the Member", full_name],
-        ["2. Father's / Spouse's Name", c.get("father_or_husband_name", "")],
-        ["3. Date of Birth", c.get("dob", "")],
-        ["4. Gender", c.get("gender", "")],
-        ["5. Marital Status", ""],
-        ["6. Email ID", c.get("email", "")],
-        ["7. Mobile No.", c.get("mobile", "")],
-        ["8. Earlier member of EPF Scheme 1952?", ""],
-        ["9. Earlier member of EPS Scheme 1995?", ""],
-        ["10(a). Universal Account Number (UAN)", ""],
-        ["10(b). Previous PF Account Number", ""],
-        ["10(c). Date of exit from previous employment", ""],
-        ["11. International Worker?", "No"],
-    ]))
-    story.append(Spacer(1, 6))
-
-    story.append(Paragraph("KYC Detail", H2))
-    story.append(_hbox_table([
-        ["12(a). Bank Name", ""],
-        ["12(b). Bank Account Number", ""],
-        ["12(c). IFSC Code", ""],
-        ["12(d). Aadhaar Number", c.get("aadhaar_number", "")],
-        ["12(e). PAN", c.get("pan_number", "")],
-    ]))
-    story.append(Spacer(1, 6))
-
-    story.append(Paragraph(
-        "I certify that the particulars are true to the best of my knowledge. I authorise EPFO to use my "
-        "Aadhaar for verification / authentication / e-KYC purposes for service delivery.", BODY))
-    story.append(Spacer(1, 8))
-    story.append(_hbox_table([["Date", ""], ["Place", ""], ["Signature of Member", ""]]))
-
-
-def _esi_form(story, c):
-    story.append(PageBreak())
-    story.append(Paragraph("ESI TEMP CARD DETAILS", H1))
-    full_name = f"{c.get('first_name', '')} {c.get('last_name', '')}".strip()
-    story.append(_hbox_table([
-        ["1. Employee Name", full_name],
-        ["2. DOB", c.get("dob", "")],
-        ["3. Gender", c.get("gender", "")],
-        ["4. Marital Status", ""],
-        ["5. Aadhaar No.", c.get("aadhaar_number", "")],
-        ["6. Contact No.", c.get("mobile", "")],
-        ["7. Father's Name", c.get("father_or_husband_name", "")],
-        ["8. Spouse Name (if married)", ""],
-        ["9. Correspondence Address", _addr_line(c)],
-        ["10. Permanent Address", _addr_line(c)],
-        ["11. ESI No. (if any)", ""],
-        ["12. Nearest ESI Dispensary", ""],
-    ]))
-    story.append(Spacer(1, 6))
-
-    story.append(Paragraph("Nominee Details", H2))
+    story.append(_para("<b>CERTIFICATE BY EMPLOYER</b>", BODYL))
+    story.append(_para(
+        "Certified that the above declaration and nomination has been signed / thumb impressed before me by ____ employed in my "
+        "establishment after he has read the entry/entries been read over to him by me and got confirmed by him.", BODY))
     story.append(_grid_table(
-        ["Nominee Name", "Relationship", "Contact No.", "Address"],
-        _empty_rows(["", "", "", ""], 1),
+        ["Place", "Date", "Signature of the Employer / Authorised Officer", "Designation"],
+        _blank_rows(4, 1),
+        col_widths=[28 * mm, 28 * mm, 65 * mm, 40 * mm],
+    ))
+
+
+def _section_7_form11(story, c):
+    story.append(PageBreak())
+    story.append(_para("New Form 11 — Declaration Form", H1))
+    story.append(_para("(To be retained by the employer for future reference)", SUBTITLE))
+    story.append(_para("EMPLOYEES' PROVIDENT FUND ORGANIZATION", CENTER_BOLD))
+    story.append(_para(
+        "Employees' Provident Fund Scheme, 1952 (Paragraphs 34 &amp; 57) &amp; Employees' Pension Scheme, 1995 (Paragraph 24). "
+        "Declaration by a person taking up employment in any establishment to which the EPF Scheme is applicable.", BODY))
+    story.append(Spacer(1, 6))
+
+    rows = [
+        ["1", "Name of the Member", _full_name(c)],
+        ["2", "Father's / Spouse's Name", c.get("father_or_husband_name", "")],
+        ["3", "Date of Birth (DD/MM/YYYY)", c.get("dob", "")],
+        ["4", "Gender (Male / Female / Transgender)", c.get("gender", "")],
+        ["5", "Marital Status (Married / Unmarried / Widow / Widower / Divorcee)", ""],
+        ["6", "Email ID", c.get("email", "")],
+        ["7", "Mobile No.", c.get("mobile", "")],
+        ["8", "Whether earlier a member of EPF Scheme, 1952", ""],
+        ["9", "Whether earlier a member of EPS Scheme, 1995", ""],
+        ["10(a)", "Universal Account Number", ""],
+        ["10(b)", "Previous PF Account Number", ""],
+        ["10(c)", "Date of exit from previous employment (DD/MM/YYYY)", ""],
+        ["10(d)", "Scheme Certificate Number (if issued)", ""],
+        ["10(e)", "Pension Payment Order Number (if issued)", ""],
+        ["11(a)", "International Worker", "No"],
+        ["11(b)", "If Yes, Country of Origin", ""],
+        ["11(c)", "Passport Number", ""],
+        ["11(d)", "Validity of Passport (From — To)", ""],
+        ["12(a)", "Bank Name", ""],
+        ["12(b)", "Bank Account Number", ""],
+        ["12(c)", "IFSC Code", ""],
+        ["12(d)", "Aadhaar Number", c.get("aadhaar_number", "")],
+        ["12(e)", "Permanent Account Number (PAN)", c.get("pan_number", "")],
+    ]
+    story.append(_grid_table(
+        ["Sr.", "Particular", "Details"],
+        rows,
+        col_widths=[14 * mm, 80 * mm, 76 * mm],
+        font_size=8.5,
+    ))
+    story.append(Spacer(1, 6))
+    story.append(_para("<b>UNDERTAKING</b>", BODYL))
+    story.append(_para(
+        "Certified that the particulars are true to the best of my knowledge. I authorise EPFO to use my Aadhaar for "
+        "verification / authentication / e-KYC purposes for service delivery. Kindly transfer the funds and service detail, "
+        "if applicable, from the previous PF Account as declared above to the present PF Account. (The transfer would be "
+        "possible only if the identified KYC details approved by the previous employer have been verified by the present "
+        "employer using a Digital Signature Certificate.) In case of change in the above details, the same shall be intimated "
+        "to the employer at the earliest.", BODY))
+    story.append(Spacer(1, 6))
+    story.append(_grid_table(
+        ["Date", "Place", "Signature of Member"],
+        _blank_rows(3, 1),
+        col_widths=[40 * mm, 50 * mm, 80 * mm],
+    ))
+
+
+def _section_8_esi(story, c):
+    story.append(PageBreak())
+    story.append(_para("ESI Temp Card Details", H1))
+    name = _full_name(c)
+    rows = [
+        ["1", "Employee Name", name],
+        ["2", "Employee DOB", c.get("dob", "")],
+        ["3", "Gender", c.get("gender", "")],
+        ["4", "Marital Status", ""],
+        ["5", "Aadhaar No.", c.get("aadhaar_number", "")],
+        ["6", "Contact No.", c.get("mobile", "")],
+        ["7", "Father Name", c.get("father_or_husband_name", "")],
+        ["8", "Spouse Name (if married)", ""],
+        ["9", "Correspondence Address", _addr_line(c)],
+        ["10", "Permanent Address", _addr_line(c)],
+        ["11", "ESI No. (if any)", ""],
+        ["12", "Mention nearest ESI Dispensary", ""],
+    ]
+    story.append(_grid_table(
+        ["Sr.", "Particular", "Details"],
+        rows,
+        col_widths=[12 * mm, 60 * mm, 98 * mm],
+        font_size=9,
+    ))
+    story.append(Spacer(1, 6))
+    story.append(_para("<b>Nominee Details</b>", BODYL))
+    story.append(_grid_table(
+        ["Nominee Name", "Relationship", "Contact No.", "Nominee Address"],
+        _blank_rows(4, 1),
         col_widths=[40 * mm, 30 * mm, 30 * mm, 65 * mm],
     ))
     story.append(Spacer(1, 4))
-    story.append(Paragraph("Family Details", H2))
+    story.append(_para("<b>Family Details</b>", BODYL))
     story.append(_grid_table(
         ["Relationship", "Name", "DOB", "Aadhaar No."],
         [["Father", "", "", ""], ["Mother", "", "", ""], ["Spouse", "", "", ""],
@@ -463,89 +662,125 @@ def _esi_form(story, c):
     ))
 
 
-def _notice_period_declaration(story, c):
+def _section_9_notice(story, c):
     story.append(PageBreak())
-    story.append(Paragraph("DECLARATION — NOTICE PERIOD", H1))
-    full_name = f"{c.get('first_name', '')} {c.get('last_name', '')}".strip()
-    story.append(Paragraph(
-        f"I, <b>{full_name or '_______________'}</b>, S/o or D/o or W/o "
-        f"<b>{c.get('father_or_husband_name', '_______________')}</b>, residing at "
-        f"<b>{_addr_line(c) or '_______________'}</b>, am joining Radhya Micro Finance Private Limited "
-        f"on <b>{_fmt_date(c.get('expected_joining_date')) or '_______________'}</b> "
-        f"in the role of <b>{c.get('position', '_______________')}</b>. "
-        "I have been informed of the following notice-period requirement applicable on resignation:", BODY))
+    story.append(_para(_hi("घोषणा पत्र"), H1))
+
+    name = _full_name(c) or "_______________"
+    fhn = c.get("father_or_husband_name") or "_______________"
+    addr = _addr_line(c) or "_______________"
+    role = c.get("position") or "_______________"
+    doj = _fmt_date(c.get("expected_joining_date")) or "_______________"
+
+    en_intro = (f"I, <b>{name}</b>, S/o or D/o or W/o <b>{fhn}</b>, residing at <b>{addr}</b>, am joining "
+                f"Radhya Micro Finance Private Limited on <b>{doj}</b> in the role of <b>{role}</b>. "
+                "I have been informed regarding resignation that I will have to complete my notice-period as per the "
+                "details given below.")
+    hi_intro = _hi(
+        f"मैं पुत्र / पुत्री / पत्नी ____, पता ____, थाना ____, जिला ____ का निवासी हूँ। मैं आज दिनांक "
+        f"{doj or '____'} को राधा माइक्रो फाइनेंस प्राइवेट लिमिटेड में {role} के पद पर शामिल हो रहा हूँ, और मुझे "
+        "त्याग पत्र के संदर्भ में यह भी बताया गया है कि मुझे अपने त्याग पत्र की अवधि पूरी करनी होगी, जिसका विवरण निम्नलिखित है।"
+    )
+    story.append(_para(en_intro, BODY))
+    story.append(_para(hi_intro, BODY))
     story.append(Spacer(1, 4))
+
     story.append(_grid_table(
-        ["Sr.", "Grade", "Notice Period"],
-        [["1", "Trainee", "15 Days"], ["2", "Probation", "30 Days"],
-         ["3", "Up to Sr. Officer", "60 Days"], ["4", "Asst. Manager & Above", "90 Days"]],
-        col_widths=[15 * mm, 70 * mm, 80 * mm],
+        ["Sr No", "Grade", "Notice Period"],
+        [["1", "Trainee", "15 Days"],
+         ["2", "Probation", "30 Days"],
+         ["3", "Up to Sr. Officer", "60 Days"],
+         ["4", "Asst. Manager &amp; Above", "90 Days"]],
+        col_widths=[20 * mm, 80 * mm, 70 * mm],
     ))
     story.append(Spacer(1, 6))
-    story.append(Paragraph(
-        "I have read the above and have been informed by the HR officer that, in the event the notice "
-        "period is not duly served, the HR Department may take appropriate action.", BODY))
+    story.append(_para(
+        "I have read all the above statements, and I have also been explained by the HR officer that on failure to "
+        "complete the notice period, the HR Department may take action on behalf of the Company.",
+        BODY))
+    story.append(_para(_hi(
+        "उपरोक्त सभी कथन मैंने पढ़ लिए हैं, और मुझे HR अधिकारी द्वारा यह भी समझाया गया है कि नोटिस अवधि पूरी न करने पर "
+        "कंपनी की तरफ से HR विभाग अपनी कार्यवाही करेगा।"), BODY))
     story.append(Spacer(1, 8))
-    story.append(_hbox_table([
-        ["Employee Name", full_name],
-        ["Employee Code", "(To be assigned by HR)"],
-        ["Date of Joining", _fmt_date(c.get("expected_joining_date"))],
-        ["Employee Signature", ""],
+    story.append(_kv_table([
+        [_para("<b>Employee Signature :</b>", BODYL), _para("", BODYL)],
+        [_para("<b>Employee Name :</b>", BODYL), _para(name, BODYL)],
+        [_para("<b>Employee Code :</b>", BODYL), _para(c.get("employee_id", ""), BODYL)],
+        [_para("<b>Date of Joining :</b>", BODYL), _para(doj, BODYL)],
     ]))
 
 
-def _asset_declaration(story, c):
+def _section_10_assets(story, c):
     story.append(PageBreak())
-    story.append(Paragraph("ACKNOWLEDGEMENT & ASSETS DECLARATION BY EMPLOYEE", H1))
-    full_name = f"{c.get('first_name', '')} {c.get('last_name', '')}".strip()
-    story.append(Paragraph(
-        f"I, <b>{full_name or 'Mr./Ms. _______________'}</b>, hereby acknowledge that I have received the assets "
-        "listed below along with the conditions stated. I understand that I am being issued the asset(s) "
-        "as a tool to facilitate my work and I am responsible for them.", BODY))
-    story.append(Paragraph(
-        "I will care for the equipment in such a manner as to prevent loss or damage. The asset(s) shall not be "
-        "carried outside the office without prior approval. In the event of damages or abuse — or my failure to "
-        "follow Company technology acceptable use policies — I shall be held responsible for repairs or replacement. "
-        "All asset(s) shall be returned to IT immediately upon termination of my employment. No unauthorised or "
-        "illegal software shall be installed on the laptop and no pornographic / communal content shall be stored.", BODY))
-    story.append(Spacer(1, 8))
-
-    story.append(Paragraph("Asset Handover", H2))
-    story.append(_grid_table(
-        ["Sr.", "Particular", "Asset Code", "Issue Date", "Return Date", "Remarks"],
-        _empty_rows(["", "", "", "", "", ""], 6),
-        col_widths=[10 * mm, 50 * mm, 30 * mm, 25 * mm, 25 * mm, 35 * mm],
-    ))
+    story.append(_para("ACKNOWLEDGEMENT AND ASSETS DECLARATION BY EMPLOYEE", H1))
+    name = _full_name(c) or "Mr/Ms ____"
+    story.append(_para(
+        f"I, <b>{name}</b>, hereby acknowledge that I have received the above-mentioned assets along with the below conditions:",
+        BODY))
+    story.append(Spacer(1, 4))
+    story.append(_para(
+        "I understand that I am being issued a laptop / desktop as a tool to facilitate my work. I understand that I am responsible "
+        "for the equipment issued to me and will care for it in such a manner as to prevent loss or damage. I further understand:",
+        BODY))
+    bullets = [
+        "The laptop is a work tool and should not be carried outside office premises (in case of business requirement, MD / Vertical Head approval will be required and submitted to IT immediately).",
+        "In the case of any damages or abuse of the laptop, or my failure to follow Company technology acceptable use policies (including this agreement), I shall be held responsible for payment of repairs or replacement. The Company reserves the right to withhold payment from my pay cheque if I fail to make appropriate payment.",
+        "In the event of loss or theft of the laptop, I am responsible to obtain an incident-specific police report immediately and notify my Manager / IT Department for repair or replacement matters.",
+        "The laptop / desktop and any accessories shall be returned to IT immediately upon termination of my employment.",
+        "Any data corruption or configuration errors caused by the installation of unauthorised or illegal software may result in loss of all data due to a complete reload.",
+        "No data of pornographic or communal nature may be stored on the laptop. Unauthorised or illegal software may not be installed.",
+        "Failure to follow this may result in penalty and immediate seizure of laptop.",
+        "I am responsible for backing up all data on the laptop / desktop. Data should be kept on the network shared drive only. The Company / IT is not liable for lost data and for any recovery of lost data.",
+        "No USB storage / external network drive shall be used without IT authorisation.",
+        "Use of this laptop is governed by the Information Technology Resource Usage Policy of Radhya Microfinance Pvt Ltd.",
+    ]
+    for b in bullets:
+        story.append(_para(f"• {b}", BODY))
     story.append(Spacer(1, 6))
-    story.append(_hbox_table([
-        ["Employee Name", full_name],
-        ["Employee Signature", ""],
-        ["Date", ""],
+    story.append(_para(
+        "I agree to the above terms and conditions and agree to fully cooperate with property loss reporting requirements and "
+        "with property loss incident investigations. My signature below indicates I have thoroughly read and understood the "
+        "above information.", BODY))
+    story.append(Spacer(1, 8))
+    story.append(_kv_table([
+        [_para("<b>Employee Signature</b>", BODYL), _para("", BODYL)],
+        [_para("<b>Date</b>", BODYL), _para("", BODYL)],
     ]))
+    story.append(Spacer(1, 4))
+    story.append(_para("I have received the following item(s) for my laptop computer and am responsible for replacing any lost items at the time the laptop is returned.", BODY))
 
 
-def _nda(story, c, company):
+def _section_11_nda(story, c, company):
     story.append(PageBreak())
-    story.append(Paragraph("NON-DISCLOSURE AGREEMENT", H1))
-    full_name = f"{c.get('first_name', '')} {c.get('last_name', '')}".strip()
+    story.append(_para("Non-Disclosure Agreement", H1))
+    name = _full_name(c) or "_______________"
+    fhn = c.get("father_or_husband_name") or "_______________"
+    addr = _addr_line(c) or "_______________"
     company_name = company.get("company_name") or "Radhya Micro Finance Private Limited"
-    company_addr = company.get("address") or "MIG-29, Ram Ganga Vihar, Vistar, Moradabad — 244001"
-    story.append(Paragraph(
-        f"This Non-Disclosure Agreement (\"Agreement\") is made and entered into as of the date of joining, "
-        f"by and between <b>{company_name}</b>, a Non-Banking Financial Company incorporated under the "
-        f"Companies Act 2013 having its registered office at {company_addr} (the \"Company\"), AND "
-        f"<b>{full_name or 'the undersigned employee'}</b>, "
-        f"S/o or D/o or W/o <b>{c.get('father_or_husband_name', '_______________')}</b>, residing at "
-        f"<b>{_addr_line(c) or '_______________'}</b> (the \"Employee\").", BODY))
+    company_addr = company.get("address") or "MIG-29, Ram Ganga Vihar Vistar, Moradabad - 244001"
 
-    story.append(Paragraph("Purpose", H2))
-    story.append(Paragraph(
-        "The Employee acknowledges that during the course of employment they may have access to, or be exposed to, "
-        "confidential and proprietary information. This Agreement is intended to prevent the unauthorised disclosure "
-        "and use of such information.", BODY))
+    story.append(_para(
+        "This Non-Disclosure Agreement (\"Agreement\") is made and entered into as of the date of joining by and between:",
+        BODY))
+    story.append(_para(
+        f"<b>{company_name}</b>, a Non-Banking Financial Company incorporated under the Companies Act, 2013, having its "
+        f"registered office at {company_addr} (hereinafter referred to as the \"Company\"),", BODY))
+    story.append(_para("AND", CENTER_BOLD))
+    story.append(_para(
+        f"The undersigned employee, <b>{name}</b>, Father / Spouse Name: <b>{fhn}</b>, Employee ID: "
+        f"<b>{c.get('employee_id') or '_______________'}</b>, residing at <b>{addr}</b> "
+        "(hereinafter referred to as the \"Employee\").", BODY))
+    story.append(Spacer(1, 4))
 
-    story.append(Paragraph("Definition of Confidential Information", H2))
-    items = [
+    story.append(_para("<b>Purpose</b>", BODYL))
+    story.append(_para(
+        "The Employee acknowledges that during the course of employment with the Company, they may have access to, or be "
+        "exposed to, confidential and proprietary information. This Agreement is intended to prevent the unauthorized "
+        "disclosure and use of such information.", BODY))
+
+    story.append(_para("<b>Definition of Confidential Information</b>", BODYL))
+    story.append(_para('For the purposes of this Agreement, "Confidential Information" includes but is not limited to:', BODY))
+    for it in [
         "Business plans and strategies",
         "Financial and operational data",
         "Client lists and information",
@@ -553,52 +788,96 @@ def _nda(story, c, company):
         "Marketing and sales strategies",
         "Employee information",
         "Any non-public information related to the Company or its affiliates",
-    ]
-    for it in items:
-        story.append(Paragraph(f"• {it}", BODY))
-    story.append(Paragraph(
-        "Confidential Information may be oral, written, digital or in any other form, whether marked confidential or not.", BODY))
+    ]:
+        story.append(_para(f"• {it}", BODY))
+    story.append(_para(
+        "Confidential Information may be oral, written, digital, or in any other form, whether marked confidential or not.",
+        BODY))
 
-    story.append(Paragraph("Obligations of the Employee", H2))
-    obligations = [
+    story.append(_para("<b>Obligations of the Employee</b>", BODYL))
+    for ob in [
         "(A) Hold the Confidential Information in strict confidence and exercise a reasonable degree of care to prevent disclosure to others.",
         "(B) Not reproduce the Confidential Information nor use it commercially or for any purpose other than the performance of duties.",
         "(C) Take all reasonable precautions to prevent any unauthorised use or disclosure.",
         "(D) Immediately notify Radhya of any unauthorised use or disclosure of Confidential Information.",
-        "(E) In the event of any intentional, unintentional or mistaken leak or exposure, immediately inform the Company and cooperate fully to mitigate any damage.",
-    ]
-    for o in obligations:
-        story.append(Paragraph(o, BODY))
+        "(E) In the event of any intentional, unintentional or mistaken leak or exposure of Confidential Information, the Employee shall immediately inform the Company and cooperate fully to mitigate any damage.",
+    ]:
+        story.append(_para(ob, BODY))
 
-    story.append(Paragraph("Return of Property", H2))
-    story.append(Paragraph(
-        "Upon termination of employment or upon request, the Employee shall return all materials, assets, "
+    story.append(_para("<b>Return of Property</b>", BODYL))
+    story.append(_para(
+        "Upon termination of employment or upon request by the Company, the Employee shall return all materials, assets, "
         "documents and other property containing or relating to the Confidential Information.", BODY))
 
-    story.append(Paragraph("Term", H2))
-    story.append(Paragraph(
-        "This Agreement shall remain in effect during the term of the Employee's employment and shall continue "
-        "for a period of two (2) years after termination of employment, regardless of the reason.", BODY))
+    story.append(_para("<b>Term</b>", BODYL))
+    story.append(_para(
+        "This Agreement shall remain in effect during the term of the Employee's employment and shall continue for a period "
+        "of two (2) years after termination of employment, regardless of the reason for such termination.", BODY))
 
-    story.append(Paragraph("Remedies", H2))
-    story.append(Paragraph(
-        "Any unauthorised disclosure or use of Confidential Information may cause irreparable harm to the Company. "
-        "The Company shall be entitled to seek injunctive relief or specific performance and other appropriate relief, "
-        "including monetary damages.", BODY))
+    story.append(_para("<b>Remedies</b>", BODYL))
+    story.append(_para(
+        "Any unauthorised disclosure or use of Confidential Information may cause irreparable harm to the Company. The Company "
+        "shall be entitled to seek injunctive relief or specific performance and such other relief as may be proper "
+        "(including monetary damages if appropriate).", BODY))
 
-    story.append(Paragraph("Governing Law and Jurisdiction", H2))
-    story.append(Paragraph(
-        "This Agreement shall be governed by the laws of India. Disputes shall be subject to the exclusive "
-        "jurisdiction of the courts located in Moradabad, Uttar Pradesh.", BODY))
+    story.append(_para("<b>Governing Law and Jurisdiction</b>", BODYL))
+    story.append(_para(
+        "This Agreement shall be governed by and construed in accordance with the laws of India. Any disputes arising under "
+        "or in connection with this Agreement shall be subject to the exclusive jurisdiction of the courts located in "
+        "Moradabad, Uttar Pradesh.", BODY))
 
-    story.append(Spacer(1, 12))
+    story.append(Spacer(1, 8))
+    story.append(_para(
+        "IN WITNESS WHEREOF, the Parties have executed this Agreement as of the date below.", BODY))
+    story.append(Spacer(1, 6))
     story.append(_grid_table(
         [f"For {company_name}", "Employee"],
-        [["Signature: _______________", "Signature: _______________"],
-         ["Name: Shivani Pathak", f"Name: {full_name or '_______________'}"],
-         ["Designation: Asst. HR Manager", f"Designation: {c.get('position') or '_______________'}"],
-         ["Date: _______________", "Date: _______________"]],
-        col_widths=[80 * mm, 80 * mm],
+        [["Signature : ____________________", "Signature : ____________________"],
+         ["Name : Shivani Pathak", f"Name : {name}"],
+         ["Designation : Asst. H.R. Manager", f"Designation : {c.get('position') or '_______________'}"],
+         ["Date : ____________________", "Date : ____________________"]],
+        col_widths=[85 * mm, 85 * mm],
+        font_size=9,
+        header_bold=True,
+    ))
+
+
+def _section_12_asset_form(story, c):
+    story.append(PageBreak())
+    story.append(_para("ASSET DECLARATION FORM", H1))
+    rows = [
+        ["1", "EMPLOYEE NAME", _full_name(c)],
+        ["2", "EMPLOYEE CODE", c.get("employee_id", "")],
+        ["3", "DEPARTMENT", c.get("department", "")],
+        ["4", "DESIGNATION", c.get("position", "")],
+        ["5", "JOINING LOCATION", c.get("joining_location") or "Head Office, Moradabad"],
+    ]
+    story.append(_grid_table(
+        ["Sr.", "Particular", "Details"],
+        rows,
+        col_widths=[12 * mm, 60 * mm, 98 * mm],
+        font_size=9,
+    ))
+    story.append(Spacer(1, 6))
+    story.append(_para("<b>Dear Employee,</b>", BODYL))
+    story.append(_para(
+        "Please find the below asset(s) handed over to you to support you in carrying out your assignment in a most proficient manner.",
+        BODY))
+    story.append(Spacer(1, 4))
+
+    asset_rows = [[str(i + 1), "", "", "", "", ""] for i in range(20)]
+    story.append(_grid_table(
+        ["Sr.", "Particular", "Asset Code", "Issuance Date", "Date of Return", "Remarks"],
+        asset_rows,
+        col_widths=[12 * mm, 50 * mm, 28 * mm, 28 * mm, 28 * mm, 24 * mm],
+        font_size=8,
+    ))
+    story.append(Spacer(1, 8))
+    story.append(_grid_table(
+        ["Signature", "Approved By HR Department", "Signature", "Issued By Administration Department"],
+        _blank_rows(4, 1),
+        col_widths=[40 * mm, 50 * mm, 40 * mm, 40 * mm],
+        font_size=8.5,
     ))
 
 
@@ -608,27 +887,32 @@ def _nda(story, c, company):
 def build_joining_kit_pdf(candidate: dict, company: dict | None = None,
                           has_aadhaar_doc: bool = False, has_pan_doc: bool = False) -> bytes:
     company = company or {}
+    candidate = dict(candidate)  # shallow copy
+    candidate["_has_aadhaar_doc"] = has_aadhaar_doc
+    candidate["_has_pan_doc"] = has_pan_doc
+
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
-        leftMargin=15 * mm, rightMargin=15 * mm,
+        leftMargin=14 * mm, rightMargin=14 * mm,
         topMargin=12 * mm, bottomMargin=12 * mm,
-        title=f"Joining Kit - {candidate.get('first_name', '')} {candidate.get('last_name', '')}".strip(),
+        title=f"Joining Kit - {_full_name(candidate)}",
         author=company.get("company_name", "Radhya Micro Finance"),
     )
     story = []
-    _header(story, candidate, company)
-    _documents_checklist(story, candidate, has_aadhaar_doc, has_pan_doc)
-    _employee_info_sheet(story, candidate)
-    _staff_undertaking(story, candidate)
-    _insurance_form(story, candidate)
-    _gratuity_form(story, candidate)
-    _epf_form(story, candidate)
-    _esi_form(story, candidate)
-    _notice_period_declaration(story, candidate)
-    _asset_declaration(story, candidate)
-    _nda(story, candidate, company)
+    _section_1(story, candidate, company)
+    _section_2_employee_info(story, candidate)
+    _section_3_undertaking(story, candidate)
+    _section_4_insurance(story, candidate)
+    _section_5_gratuity(story, candidate)
+    _section_6_pf(story, candidate)
+    _section_7_form11(story, candidate)
+    _section_8_esi(story, candidate)
+    _section_9_notice(story, candidate)
+    _section_10_assets(story, candidate)
+    _section_11_nda(story, candidate, company)
+    _section_12_asset_form(story, candidate)
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
