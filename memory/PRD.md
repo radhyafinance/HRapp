@@ -36,6 +36,9 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 14. **Continuous GPS Tracking for Field Staff** - Frontend pings `/api/attendance/location-update` every 2 minutes between punch-in and punch-out (skipped for management role). Live "Tracking active" indicator on Attendance page.
 15. **Field Tracking Map (Manager view)** - New page `/field-tracking` (HR Admin / Management / Manager only) with Leaflet + OpenStreetMap route map, polyline of full route, start/end markers, auto-fit bounds, and **stops > 15 min** detection (50m cluster) shown as orange markers + summary table with "Open in Maps" links.
 16. **Management Role Attendance** - Management role bypasses selfie + geofence; gets a one-click "Mark Present" without camera. Selfie+geofence still mandatory for HR Admin / Manager / HO Staff / Field Staff.
+17. **Aadhaar OCR (Front + Back) for Candidates** - Add Candidate flow now has Aadhaar Front + Back upload + "Extract" button (Gemini 2.5 Flash via emergentintegrations). Auto-fills first/last name, DOB, gender, father/husband name, full 12-digit Aadhaar #, address, city, state, pincode. Friendly 422 error for unreadable images.
+18. **PAN OCR for Candidates** - PAN card upload + "Extract" button. Auto-fills 10-character PAN number (and falls back to populate name/DOB if Aadhaar didn't run).
+19. **KYC Document Storage** - Aadhaar Front, Aadhaar Back, PAN Card images saved per candidate in `candidate_documents` Mongo collection; viewable in Candidate Detail with click-to-zoom (authenticated blob fetch).
 
 ## Office Locations (Seeded)
 - Head Office: Moradabad (28.880786, 78.746678)

@@ -550,8 +550,7 @@ function CandidateDetailModal({ candidate, onClose }) {
     return () => {
       Object.values(docBlobs).forEach((u) => URL.revokeObjectURL(u));
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [docBlobs]);
 
   const c = candidate;
   return (

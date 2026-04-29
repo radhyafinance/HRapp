@@ -231,7 +231,10 @@ async def ocr_aadhaar_preview(data: AadhaarOCRRequest, current_user: dict = Depe
     try:
         extracted = await _gemini_vision_extract(prompt, files)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OCR failed: {str(e)}")
+        msg = str(e)
+        if "INVALID_ARGUMENT" in msg or "Unable to process input image" in msg:
+            raise HTTPException(status_code=422, detail="Could not read the Aadhaar image — please retry with a clearer photo.")
+        raise HTTPException(status_code=500, detail=f"OCR failed: {msg}")
 
     # Normalize fields
     def _clean(v):
@@ -270,7 +273,10 @@ async def ocr_pan_preview(data: PANOCRRequest, current_user: dict = Depends(get_
     try:
         extracted = await _gemini_vision_extract(prompt, [(data.image_base64, data.mime_type)])
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OCR failed: {str(e)}")
+        msg = str(e)
+        if "INVALID_ARGUMENT" in msg or "Unable to process input image" in msg:
+            raise HTTPException(status_code=422, detail="Could not read the PAN image — please retry with a clearer photo.")
+        raise HTTPException(status_code=500, detail=f"OCR failed: {msg}")
     pan_no = (extracted.get("pan_number") or "").upper().strip()
     pan_no = re.sub(r"[^A-Z0-9]", "", pan_no)
     if re.match(r"^[A-Z]{5}[0-9]{4}[A-Z]$", pan_no):
