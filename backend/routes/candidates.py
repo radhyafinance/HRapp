@@ -28,7 +28,9 @@ class CandidateCreate(BaseModel):
     position: str
     department: str
     interview_date: Optional[str] = None
+    interview_time: Optional[str] = None  # HH:MM (24-hour)
     interviewer: Optional[str] = None
+    meet_link: Optional[str] = None
     status: str = "pending"  # pending, selected, rejected
     rejection_reason: Optional[str] = None
     expected_joining_date: Optional[str] = None
@@ -60,6 +62,10 @@ class CandidateUpdate(BaseModel):
     expected_joining_date: Optional[str] = None
     offered_ctc: Optional[float] = None
     notes: Optional[str] = None
+    interview_date: Optional[str] = None
+    interview_time: Optional[str] = None
+    interviewer: Optional[str] = None
+    meet_link: Optional[str] = None
     dob: Optional[str] = None
     gender: Optional[str] = None
     father_or_husband_name: Optional[str] = None

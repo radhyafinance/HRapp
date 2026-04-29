@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import API from "../utils/api";
-import { UserPlus, Search, X, Camera, Sparkles, Image as ImageIcon, FileText, CheckCircle2, AlertCircle, Eye, Undo2 } from "lucide-react";
+import { UserPlus, Search, X, Camera, Sparkles, Image as ImageIcon, FileText, CheckCircle2, AlertCircle, Eye, Undo2, CalendarClock, Send, Copy, Mail } from "lucide-react";
 
 const STATUS_COLORS = { pending: "bg-amber-100 text-amber-700", selected: "bg-green-100 text-green-700", rejected: "bg-red-100 text-red-700" };
 
@@ -81,7 +81,8 @@ function Modal({ title, onClose, children, wide }) {
 
 const INITIAL_FORM = {
   first_name: "", last_name: "", mobile: "", email: "",
-  position: "", department: "", interview_date: "",
+  position: "", department: "",
+  interview_date: "", interview_time: "", interviewer: "", meet_link: "",
   status: "pending", rejection_reason: "", expected_joining_date: "", offered_ctc: "", notes: "",
   // KYC fields auto-filled by OCR
   dob: "", gender: "", father_or_husband_name: "",
@@ -147,6 +148,7 @@ export default function Candidates() {
   const [statusFilter, setStatusFilter] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [showDetail, setShowDetail] = useState(null);
+  const [scheduleFor, setScheduleFor] = useState(null);
   const [form, setForm] = useState(INITIAL_FORM);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -365,13 +367,13 @@ export default function Candidates() {
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="candidates-table">
             <thead><tr className="bg-slate-50 border-b">
-              {["Name", "Mobile", "Aadhaar", "PAN", "Position", "Department", "Status", "Actions"].map(h => (
+              {["Name", "Mobile", "Aadhaar", "PAN", "Position", "Department", "Interview", "Status", "Actions"].map(h => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
               ))}
             </tr></thead>
             <tbody>
-              {loading ? <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
-                : candidates.length === 0 ? <tr><td colSpan={8} className="px-4 py-12 text-center text-slate-400">No candidates found</td></tr>
+              {loading ? <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                : candidates.length === 0 ? <tr><td colSpan={9} className="px-4 py-12 text-center text-slate-400">No candidates found</td></tr>
                 : candidates.map(c => (
                   <tr key={c.id} className="border-b border-slate-100 hover:bg-slate-50">
                     <td className="px-4 py-3">
@@ -383,10 +385,25 @@ export default function Candidates() {
                     <td className="px-4 py-3 text-xs font-mono text-slate-600">{c.pan_number || "-"}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{c.position}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{c.department}</td>
+                    <td className="px-4 py-3 text-xs">
+                      {c.interview_date ? (
+                        <div>
+                          <p className="font-medium text-slate-700">{c.interview_date}{c.interview_time && ` ${c.interview_time}`}</p>
+                          {c.meet_link && (
+                            <a href={c.meet_link} target="_blank" rel="noopener noreferrer" className="text-[#E85B1E] hover:underline truncate inline-block max-w-[140px]" title={c.meet_link}>Meet link</a>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-slate-300">Not scheduled</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[c.status] || "bg-slate-100 text-slate-700"}`}>{c.status}</span></td>
                     <td className="px-4 py-3">
-                      <div className="flex gap-2">
+                      <div className="flex flex-wrap gap-1.5">
                         <button onClick={() => setShowDetail(c)} data-testid={`view-cand-${c.id}`} className="text-xs px-2 py-1 bg-[#1E2A47]/10 text-[#1E2A47] rounded-lg hover:bg-[#1E2A47]/20">View</button>
+                        <button onClick={() => setScheduleFor(c)} data-testid={`schedule-cand-${c.id}`} className="flex items-center gap-1 text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200">
+                          <CalendarClock size={12} /> {c.interview_date ? "Reschedule" : "Schedule"}
+                        </button>
                         {c.status === "pending" && (
                           <>
                             <button onClick={() => handleStatusUpdate(c.id, "selected")} data-testid={`select-cand-${c.id}`} className="text-xs px-2 py-1 bg-green-100 text-green-700 rounded-lg hover:bg-green-200">Select</button>
@@ -551,7 +568,22 @@ export default function Candidates() {
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Interview Date</label>
                   <input type="date" value={form.interview_date} onChange={e => setForm({ ...form, interview_date: e.target.value })}
-                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="form-interview-date" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Interview Time</label>
+                  <input type="time" value={form.interview_time} onChange={e => setForm({ ...form, interview_time: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="form-interview-time" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Interviewer</label>
+                  <input value={form.interviewer} onChange={e => setForm({ ...form, interviewer: e.target.value })} placeholder="Name of interviewer"
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="form-interviewer" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Google Meet Link <span className="text-slate-400 font-normal">(paste from Google Calendar)</span></label>
+                  <input type="url" value={form.meet_link} onChange={e => setForm({ ...form, meet_link: e.target.value })} placeholder="https://meet.google.com/..."
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="form-meet-link" />
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Status</label>
@@ -607,13 +639,25 @@ export default function Candidates() {
         <CandidateDetailModal
           candidate={showDetail}
           onClose={() => setShowDetail(null)}
+          onSchedule={(c) => { setShowDetail(null); setScheduleFor(c); }}
+        />
+      )}
+
+      {scheduleFor && (
+        <ScheduleInterviewModal
+          candidate={scheduleFor}
+          onClose={() => setScheduleFor(null)}
+          onSaved={(updated) => {
+            setScheduleFor(null);
+            setCandidates((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+          }}
         />
       )}
     </div>
   );
 }
 
-function CandidateDetailModal({ candidate, onClose }) {
+function CandidateDetailModal({ candidate, onClose, onSchedule }) {
   const [docsMeta, setDocsMeta] = useState(null);
   const [zoomDoc, setZoomDoc] = useState(null);
   const apiBase = (process.env.REACT_APP_BACKEND_URL || "") + "/api";
@@ -683,6 +727,28 @@ function CandidateDetailModal({ candidate, onClose }) {
         </div>
 
         <div className="border-t pt-4">
+          <div className="flex items-center justify-between mb-2">
+            <h4 className="font-bold text-[#1E2A47] text-sm">Interview</h4>
+            <button onClick={() => onSchedule(c)} data-testid="detail-schedule-btn" className="flex items-center gap-1 text-xs px-3 py-1.5 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200">
+              <CalendarClock size={12} /> {c.interview_date ? "Reschedule / Share" : "Schedule"}
+            </button>
+          </div>
+          {c.interview_date ? (
+            <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-sm space-y-1">
+              <p><span className="text-slate-500">Date & Time:</span> <span className="font-semibold text-[#0F172A]">{c.interview_date}{c.interview_time && ` • ${c.interview_time}`}</span></p>
+              {c.interviewer && <p><span className="text-slate-500">Interviewer:</span> <span className="font-medium">{c.interviewer}</span></p>}
+              {c.meet_link && (
+                <p className="break-all"><span className="text-slate-500">Meet:</span>{" "}
+                  <a href={c.meet_link} target="_blank" rel="noopener noreferrer" className="text-[#E85B1E] hover:underline">{c.meet_link}</a>
+                </p>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-slate-400">No interview scheduled.</p>
+          )}
+        </div>
+
+        <div className="border-t pt-4">
           <h4 className="font-bold text-[#1E2A47] text-sm mb-3">KYC Documents</h4>
           <div className="grid grid-cols-3 gap-3">
             {[
@@ -719,6 +785,173 @@ function CandidateDetailModal({ candidate, onClose }) {
             <img src={zoomDoc.url} alt={zoomDoc.label} className="max-w-full max-h-full rounded-lg shadow-2xl" />
           </div>
         )}
+      </div>
+    </Modal>
+  );
+}
+
+
+function buildInviteMessage({ first_name, last_name, position, interview_date, interview_time, interviewer, meet_link }) {
+  const fullName = `${first_name || ""} ${last_name || ""}`.trim();
+  const lines = [
+    `Hello ${fullName || "Candidate"},`,
+    "",
+    `You are invited to an interview at Radhya Micro Finance for the role of ${position || "the open position"}.`,
+    "",
+    `Date: ${interview_date || "TBD"}`,
+    `Time: ${interview_time || "TBD"} (IST)`,
+  ];
+  if (interviewer) lines.push(`Interviewer: ${interviewer}`);
+  if (meet_link) {
+    lines.push("");
+    lines.push(`Google Meet link: ${meet_link}`);
+    lines.push("Please join 5 minutes before the scheduled time.");
+  }
+  lines.push("");
+  lines.push("Please confirm your availability by replying to this message.");
+  lines.push("");
+  lines.push("Regards,");
+  lines.push("HR Team — Radhya Micro Finance");
+  return lines.join("\n");
+}
+
+function ScheduleInterviewModal({ candidate, onClose, onSaved }) {
+  const [date, setDate] = useState(candidate.interview_date || "");
+  const [time, setTime] = useState(candidate.interview_time || "");
+  const [interviewer, setInterviewer] = useState(candidate.interviewer || "");
+  const [meetLink, setMeetLink] = useState(candidate.meet_link || "");
+  const [saving, setSaving] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [err, setErr] = useState("");
+
+  const message = buildInviteMessage({
+    first_name: candidate.first_name,
+    last_name: candidate.last_name,
+    position: candidate.position,
+    interview_date: date,
+    interview_time: time,
+    interviewer,
+    meet_link: meetLink,
+  });
+
+  const cleanedMobile = (candidate.mobile || "").replace(/\D/g, "");
+  // Default to India country code if mobile doesn't already include one
+  const waNumber = cleanedMobile.length === 10 ? `91${cleanedMobile}` : cleanedMobile;
+  const waUrl = waNumber ? `https://wa.me/${waNumber}?text=${encodeURIComponent(message)}` : null;
+  const subject = `Interview invitation — Radhya Micro Finance (${candidate.position || ""})`;
+  const mailto = candidate.email
+    ? `mailto:${candidate.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(message)}`
+    : null;
+
+  const save = async () => {
+    setSaving(true);
+    setErr("");
+    try {
+      const res = await API.put(`/candidates/${candidate.id}`, {
+        interview_date: date || "",
+        interview_time: time || "",
+        interviewer: interviewer || "",
+        meet_link: meetLink || "",
+      });
+      onSaved(res.data);
+    } catch (e) {
+      setErr(e.response?.data?.detail || "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const copyMessage = async () => {
+    try {
+      await navigator.clipboard.writeText(message);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (e) {
+      setErr("Could not copy. Select the text and copy manually.");
+    }
+  };
+
+  return (
+    <Modal title="Schedule Interview" onClose={onClose}>
+      <div className="space-y-5">
+        <div className="bg-slate-50 p-3 rounded-lg flex items-center justify-between">
+          <div>
+            <p className="font-bold text-[#1E2A47] text-sm">{candidate.first_name} {candidate.last_name}</p>
+            <p className="text-xs text-slate-500">{candidate.position} • {candidate.department}</p>
+          </div>
+          <span className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${STATUS_COLORS[candidate.status]}`}>{candidate.status}</span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">Date</label>
+            <input type="date" value={date} onChange={e => setDate(e.target.value)} data-testid="schedule-date"
+              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">Time</label>
+            <input type="time" value={time} onChange={e => setTime(e.target.value)} data-testid="schedule-time"
+              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+          </div>
+          <div className="col-span-2">
+            <label className="block text-xs font-semibold text-slate-700 mb-1">Interviewer</label>
+            <input value={interviewer} onChange={e => setInterviewer(e.target.value)} placeholder="Name of interviewer"
+              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="schedule-interviewer" />
+          </div>
+          <div className="col-span-2">
+            <label className="block text-xs font-semibold text-slate-700 mb-1">Google Meet Link <span className="text-slate-400 font-normal">(create one in Google Calendar and paste here)</span></label>
+            <input type="url" value={meetLink} onChange={e => setMeetLink(e.target.value)} placeholder="https://meet.google.com/..."
+              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="schedule-meet-link" />
+            <p className="text-[10px] text-slate-500 mt-1">
+              Tip: open <a className="text-[#E85B1E] hover:underline" href="https://calendar.google.com/calendar/u/0/r/eventedit" target="_blank" rel="noopener noreferrer">Google Calendar → New Event → Add Google Meet</a>, then copy-paste the link here.
+            </p>
+          </div>
+        </div>
+
+        {err && (
+          <div className="bg-red-50 border border-red-200 text-red-700 text-sm p-3 rounded-lg flex items-start gap-2">
+            <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />
+            <span>{err}</span>
+          </div>
+        )}
+
+        <div className="border-t pt-4">
+          <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-2">Invitation message preview</p>
+          <pre data-testid="invite-preview" className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-700 whitespace-pre-wrap font-sans max-h-40 overflow-y-auto">{message}</pre>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2">
+          <button type="button" onClick={copyMessage} data-testid="copy-invite-btn"
+            className="flex items-center justify-center gap-1 px-3 py-2 bg-slate-100 text-slate-700 rounded-lg text-xs font-semibold hover:bg-slate-200">
+            <Copy size={12} /> {copied ? "Copied!" : "Copy"}
+          </button>
+          <a
+            href={waUrl || "#"}
+            onClick={(e) => { if (!waUrl) { e.preventDefault(); alert("Mobile number is missing for this candidate."); } }}
+            target="_blank"
+            rel="noopener noreferrer"
+            data-testid="whatsapp-share-btn"
+            className={`flex items-center justify-center gap-1 px-3 py-2 rounded-lg text-xs font-semibold ${waUrl ? "bg-green-500 text-white hover:bg-green-600" : "bg-slate-200 text-slate-400 cursor-not-allowed"}`}
+          >
+            <Send size={12} /> WhatsApp
+          </a>
+          <a
+            href={mailto || "#"}
+            onClick={(e) => { if (!mailto) { e.preventDefault(); alert("Email is missing for this candidate."); } }}
+            data-testid="email-share-btn"
+            className={`flex items-center justify-center gap-1 px-3 py-2 rounded-lg text-xs font-semibold ${mailto ? "bg-blue-600 text-white hover:bg-blue-700" : "bg-slate-200 text-slate-400 cursor-not-allowed"}`}
+          >
+            <Mail size={12} /> Email
+          </a>
+        </div>
+
+        <div className="flex gap-3 pt-2 border-t">
+          <button type="button" onClick={onClose} className="flex-1 px-4 py-2.5 border-2 border-slate-300 text-slate-600 rounded-lg text-sm font-medium">Close</button>
+          <button type="button" onClick={save} disabled={saving} data-testid="save-schedule-btn"
+            className="flex-1 px-4 py-2.5 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold disabled:opacity-60">
+            {saving ? "Saving..." : "Save Interview"}
+          </button>
+        </div>
       </div>
     </Modal>
   );
