@@ -139,12 +139,14 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
             raise HTTPException(status_code=400, detail=face_result["reason"])
 
     now = datetime.now(timezone.utc)
+    # Only persist the selfie if face match failed/flagged — saves DB space when matched
+    keep_photo = data.photo_base64 if face_result.get("matched") is False else None
     record = {
         "employee_id": data.employee_id,
         "date": today,
         "punch_in_time": now.isoformat(),
         "punch_in_location": {"lat": data.latitude, "lon": data.longitude, "name": location_name},
-        "punch_in_photo": data.photo_base64 if data.photo_base64 else None,
+        "punch_in_photo": keep_photo,
         "punch_in_face_matched": face_result.get("matched"),
         "punch_in_face_distance": face_result.get("distance"),
         "punch_in_face_warning": face_result.get("reason") if face_result.get("matched") is False else None,
@@ -193,12 +195,13 @@ async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current
     now = datetime.now(timezone.utc)
     punch_in_time = datetime.fromisoformat(record["punch_in_time"])
     hours_worked = (now - punch_in_time).total_seconds() / 3600
+    keep_photo = data.photo_base64 if face_result.get("matched") is False else None
     await db.attendance_records.update_one(
         {"_id": record["_id"]},
         {"$set": {
             "punch_out_time": now.isoformat(),
             "punch_out_location": {"lat": data.latitude, "lon": data.longitude, "name": location_name},
-            "punch_out_photo": data.photo_base64 if data.photo_base64 else None,
+            "punch_out_photo": keep_photo,
             "punch_out_face_matched": face_result.get("matched"),
             "punch_out_face_distance": face_result.get("distance"),
             "punch_out_face_warning": face_result.get("reason") if face_result.get("matched") is False else None,
