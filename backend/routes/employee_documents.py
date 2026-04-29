@@ -133,6 +133,22 @@ async def upload_document(
     return {"success": True, "doc_type": body.doc_type, "size": size_bytes}
 
 
+@router.get("/document-completeness/all")
+async def document_completeness_all(current_user: dict = Depends(get_current_user)):
+    """Return a map of employee_id -> {uploaded, total, percent} for all employees."""
+    if current_user.get("role") not in ["hr_admin", "management", "branch_manager"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    total = len(ALLOWED_DOC_TYPES)
+    out = {}
+    async for d in db.employee_documents.find({}):
+        emp_id = d.get("employee_id")
+        if not emp_id:
+            continue
+        uploaded = sum(1 for k in ALLOWED_DOC_TYPES if isinstance(d.get(k), dict))
+        out[emp_id] = {"uploaded": uploaded, "total": total, "percent": round(uploaded * 100 / total)}
+    return {"total_doc_types": total, "completeness": out}
+
+
 @router.get("/{employee_id}/joining-kit")
 async def generate_employee_joining_kit(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Build the bilingual joining kit PDF on-demand from the employee's current data."""

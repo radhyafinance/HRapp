@@ -61,6 +61,46 @@ function fileToBase64(file) {
   });
 }
 
+/* Circular completeness ring (SVG, ~32px) */
+function DocCompletenessRing({ uploaded = 0, total = 23, size = 34 }) {
+  const stroke = 4;
+  const radius = (size - stroke) / 2;
+  const circ = 2 * Math.PI * radius;
+  const pct = total > 0 ? Math.min(1, uploaded / total) : 0;
+  const offset = circ * (1 - pct);
+  // Color band
+  let color = "#EF4444"; // red
+  if (pct >= 0.66) color = "#10B981"; // green
+  else if (pct >= 0.34) color = "#F59E0B"; // amber
+  return (
+    <div
+      className="inline-flex items-center justify-center relative"
+      style={{ width: size, height: size }}
+      title={`${uploaded} of ${total} documents uploaded (${Math.round(pct * 100)}%)`}
+      data-testid="doc-completeness-ring"
+    >
+      <svg width={size} height={size} className="-rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={radius} stroke="#E5E7EB" strokeWidth={stroke} fill="none" />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke={color}
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={circ}
+          strokeDashoffset={offset}
+          fill="none"
+          style={{ transition: "stroke-dashoffset 0.4s ease" }}
+        />
+      </svg>
+      <span className="absolute text-[9px] font-bold leading-none" style={{ color }}>
+        {uploaded}/{total}
+      </span>
+    </div>
+  );
+}
+
 const ROLES = ["hr_admin", "management", "branch_manager", "employee", "field_agent"];
 const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", branch_manager: "Manager", employee: "HO Staff", field_agent: "Field Staff" };
 const ROLE_COLORS = { hr_admin: "bg-purple-100 text-purple-700", management: "bg-blue-100 text-blue-700", branch_manager: "bg-teal-100 text-teal-700", employee: "bg-slate-100 text-slate-700", field_agent: "bg-orange-100 text-orange-700" };
@@ -444,7 +484,7 @@ const DOC_GROUPS = [
   },
 ];
 
-function EmployeeDocumentsTab({ employeeId }) {
+function EmployeeDocumentsTab({ employeeId, onDocsChanged }) {
   const [docs, setDocs] = useState({});
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState(null);
@@ -482,6 +522,7 @@ function EmployeeDocumentsTab({ employeeId }) {
         file_name: toSend.name || `${docType}.bin`,
       });
       await refresh();
+      onDocsChanged && onDocsChanged();
     } catch (e) {
       setErr(e.response?.data?.detail || "Upload failed");
     } finally {
@@ -495,6 +536,7 @@ function EmployeeDocumentsTab({ employeeId }) {
     try {
       await API.delete(`/employees/${employeeId}/documents/${docType}`);
       await refresh();
+      onDocsChanged && onDocsChanged();
     } catch (e) { setErr("Delete failed"); }
     finally { setBusyKey(null); }
   };
@@ -628,8 +670,8 @@ function EmployeeDocumentsTab({ employeeId }) {
 }
 
 /* ── Tabbed Employee Modal ── */
-function EmployeeModal({ emp, onClose, onUpdated }) {
-  const [tab, setTab] = useState("view");
+function EmployeeModal({ emp, onClose, onUpdated, onDocsChanged }) {
+  const [tab, setTab] = useState(emp._initialTab || "view");
   const [current, setCurrent] = useState(emp);
   return (
     <Modal title={`${current.first_name} ${current.last_name} (${current.employee_id})`} onClose={onClose} wide>
@@ -657,13 +699,14 @@ function EmployeeModal({ emp, onClose, onUpdated }) {
           }}
         />
       )}
-      {tab === "docs" && <EmployeeDocumentsTab employeeId={current.employee_id} />}
+      {tab === "docs" && <EmployeeDocumentsTab employeeId={current.employee_id} onDocsChanged={onDocsChanged} />}
     </Modal>
   );
 }
 
 export default function Employees() {
   const [employees, setEmployees] = useState([]);
+  const [completeness, setCompleteness] = useState({}); // emp_id -> {uploaded, total, percent}
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -690,6 +733,13 @@ export default function Employees() {
     }
   };
 
+  const fetchCompleteness = async () => {
+    try {
+      const res = await API.get("/employees/document-completeness/all");
+      setCompleteness(res.data.completeness || {});
+    } catch (e) { /* non-critical */ }
+  };
+
   const fetchNextId = async () => {
     try {
       const res = await API.get("/employees/next-id");
@@ -698,6 +748,7 @@ export default function Employees() {
   };
 
   useEffect(() => { fetchEmployees(); }, [search, statusFilter]);
+  useEffect(() => { fetchCompleteness(); }, []);
 
   const handleAdd = async (e) => {
     e.preventDefault();
@@ -789,7 +840,7 @@ export default function Employees() {
           <table className="w-full" data-testid="employees-table">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
-                {["Emp ID", "Name", "Designation", "Department", "Reports To", "Status", "Actions"].map(h => (
+                {["Emp ID", "Name", "Designation", "Department", "Reports To", "Status", "Docs", "Actions"].map(h => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
                 ))}
               </tr>
@@ -823,6 +874,19 @@ export default function Employees() {
                       : <span className="text-xs text-slate-400">—</span>}
                   </td>
                   <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[emp.status] || "bg-slate-100"}`}>{emp.status}</span></td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => setShowView({ ...emp, _initialTab: "docs" })}
+                      className="cursor-pointer"
+                      title="View documents"
+                      data-testid={`docs-ring-${emp.employee_id}`}
+                    >
+                      <DocCompletenessRing
+                        uploaded={completeness[emp.employee_id]?.uploaded || 0}
+                        total={completeness[emp.employee_id]?.total || 23}
+                      />
+                    </button>
+                  </td>
                   <td className="px-4 py-3">
                     <button onClick={() => setShowView(emp)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" data-testid={`view-emp-${emp.employee_id}`}><Eye size={16} /></button>
                   </td>
@@ -942,6 +1006,7 @@ export default function Employees() {
           emp={showView}
           onClose={() => setShowView(null)}
           onUpdated={(updated) => setEmployees(prev => prev.map(e => e.employee_id === updated.employee_id ? { ...e, ...updated } : e))}
+          onDocsChanged={fetchCompleteness}
         />
       )}
     </div>
