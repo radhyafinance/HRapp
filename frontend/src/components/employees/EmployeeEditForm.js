@@ -31,6 +31,7 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
     canteen_allowance: emp.salary?.canteen_allowance || "", conveyance_allowance: emp.salary?.conveyance_allowance || "",
     bank_name: emp.bank_details?.bank_name || "", account_number: emp.bank_details?.account_number || "",
     ifsc_code: emp.bank_details?.ifsc_code || "",
+    uan_number: emp.uan_number || "", esi_number: emp.esi_number || "",
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -107,6 +108,12 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
         {F("joining_location", "Joining Location")}
       </div>
       <ReportingManagerInput value={form.reporting_to} onChange={(val) => setForm({ ...form, reporting_to: val })} />
+
+      <h4 className="font-bold text-[#1E2A47] text-sm pt-2 border-t">Statutory Numbers</h4>
+      <div className="grid grid-cols-2 gap-3">
+        {F("uan_number", "UAN Number")}
+        {F("esi_number", "ESI Number")}
+      </div>
 
       <h4 className="font-bold text-[#1E2A47] text-sm pt-2 border-t">Salary</h4>
       <div className="grid grid-cols-3 gap-3">

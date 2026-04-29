@@ -105,6 +105,8 @@ class EmployeeCreate(BaseModel):
     date_of_birth: Optional[str] = None
     gender: Optional[str] = None
     blood_group: Optional[str] = None
+    uan_number: Optional[str] = None
+    esi_number: Optional[str] = None
     create_user_account: bool = True
     password: Optional[str] = None
 
@@ -143,6 +145,8 @@ class EmployeeUpdate(BaseModel):
     pincode: Optional[str] = None
     joining_location: Optional[str] = None
     status: Optional[str] = None
+    uan_number: Optional[str] = None
+    esi_number: Optional[str] = None
 
 
 @router.get("/next-id")
@@ -226,6 +230,8 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
         "date_of_birth": data.date_of_birth,
         "gender": data.gender,
         "blood_group": data.blood_group,
+        "uan_number": data.uan_number,
+        "esi_number": data.esi_number,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": current_user.get("employee_id"),
     }

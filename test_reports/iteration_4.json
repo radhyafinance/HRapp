@@ -1,0 +1,51 @@
+{
+  "summary": "Tested UAN/ESI employee fields (edit + view) and Payslip PDF download feature end-to-end. Backend: 12/12 tests pass for new features. Frontend: all 8 specified test points verified via Playwright - UAN/ESI in employee edit modal (Statutory Numbers section), UAN/ESI in employee detail view, PDF row button triggers download, payslip modal opens with all sections, modal Download PDF button works.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_uan_esi_payslip.py",
+    "/app/test_reports/pytest/pytest_iter4.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "payroll.py process_payroll: if present_days==0, defaults to full working_days=26. This causes RMF0003 payslip to show Payable Days=1 (only 1 attendance punch found) but Gross shows ₹18,000. Actual net is ₹617.89 — this is low-value test data, not a bug, but worth noting.",
+    "payslip_pdf.py: ROUNDEDCORNERS is not a standard ReportLab TableStyle command. It will be silently ignored. No impact on output since the net salary box renders without rounded corners via Table background color.",
+    "EmployeeEditForm.js: UAN/ESI fields use the generic F() helper which does NOT render with <select> or <textarea> — correct for these numeric string fields, and data-testid='edit-uan_number' / 'edit-esi_number' are properly applied via the data-testid={`edit-${key}`} pattern."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_uan_esi_payslip.py"
+  ],
+  "success_rate": {
+    "backend": "100% (12/12 tests pass)",
+    "frontend": "100% (all 8 test points verified)"
+  },
+  "test_credentials": "admin@radhyamfi.com / Admin@123",
+  "seed_data_creation": "Created 2 TEST_UAN ESI employees (RMF0045, RMF0046) during testing with uan_number=102108000001 then updated to 102108999999.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend test file for UAN/ESI + payslip PDF is at /app/backend/tests/test_uan_esi_payslip.py (12 tests). RMF0003 has uan_number=102108206145 and esi_number=3013878059. Payroll record 69f1e022c2a475886373f6b6 is the RMF0003 Apr-2026 record used for PDF testing. All previous test suites (test_hr_api.py, test_new_features.py, test_kyc_ocr.py) still pass.",
+  "verified_test_points": [
+    "✓ Employee edit modal 'Statutory Numbers' section has UAN Number and ESI Number fields",
+    "✓ Employee edit form pre-populates saved UAN/ESI values",
+    "✓ Employee detail (View tab) shows UAN Number and ESI Number",
+    "✓ UAN/ESI values (102108206145 / 3013878059) visible in View tab for RMF0003",
+    "✓ PUT /api/employees/{id} persists uan_number and esi_number",
+    "✓ GET /api/employees/{id} returns uan_number and esi_number",
+    "✓ Payroll page has both Eye (view) and FileText (PDF) buttons per row (11+11 for 11 records)",
+    "✓ Payslip modal shows employee info, earnings, deductions, net salary, Download PDF button",
+    "✓ PDF download row button triggers blob: download (Payslip_TEST_Track_Field_2026-04.pdf)",
+    "✓ Modal Download PDF button also triggers blob: download",
+    "✓ GET /api/payroll/{id}/payslip/pdf returns 200, Content-Type: application/pdf",
+    "✓ PDF starts with %PDF magic bytes (valid PDF)",
+    "✓ Content-Disposition: attachment with .pdf filename",
+    "✓ Invalid record_id returns 404",
+    "✓ Unauthenticated request returns 401"
+  ]
+}

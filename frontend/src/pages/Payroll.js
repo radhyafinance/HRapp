@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
-import { Play, Download, Eye, X, CreditCard } from "lucide-react";
+import { Play, Download, Eye, X, FileText } from "lucide-react";
 
 function Modal({ title, onClose, children }) {
   return (
@@ -28,6 +28,7 @@ export default function Payroll() {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [filterPeriod, setFilterPeriod] = useState("");
   const [showSlip, setShowSlip] = useState(null);
+  const [downloadingId, setDownloadingId] = useState(null);
   const isManager = ["hr_admin", "management"].includes(user?.role);
 
   const fetchRecords = async () => {
@@ -66,7 +67,26 @@ export default function Payroll() {
       const url = URL.createObjectURL(res.data);
       const a = document.createElement("a"); a.href = url; a.download = `NEFT_${period}.xlsx`; a.click();
     } catch (e) {
-      alert("Export failed");
+      alert("NEFT export failed");
+    }
+  };
+
+  const downloadPayslipPdf = async (record) => {
+    setDownloadingId(record.id);
+    try {
+      const res = await API.get(`/payroll/${record.id}/payslip/pdf`, { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Payslip_${record.employee_name}_${record.period}.pdf`.replace(/\s+/g, "_");
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      alert("Payslip PDF generation failed. Please try again.");
+    } finally {
+      setDownloadingId(null);
     }
   };
 
@@ -106,7 +126,7 @@ export default function Payroll() {
         <select value={filterPeriod} onChange={e => setFilterPeriod(e.target.value)}
           className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="payroll-period-filter">
           <option value="">All Periods</option>
-          {["2025-01","2025-02","2025-03","2025-04","2025-05","2025-06","2025-07","2025-08","2025-09","2025-10","2025-11","2025-12","2026-01","2026-02"].map(p => (
+          {["2025-01","2025-02","2025-03","2025-04","2025-05","2025-06","2025-07","2025-08","2025-09","2025-10","2025-11","2025-12","2026-01","2026-02","2026-03","2026-04","2026-05"].map(p => (
             <option key={p} value={p}>{p}</option>
           ))}
         </select>
@@ -116,7 +136,7 @@ export default function Payroll() {
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="payroll-table">
             <thead><tr className="bg-slate-50 border-b">
-              {["Employee", "Period", "Gross", "EPF (Emp)", "ESIC (Emp)", "Net Salary", "Status", "Action"].map(h => (
+              {["Employee", "Period", "Gross", "EPF (Emp)", "ESIC (Emp)", "Net Salary", "Status", "Actions"].map(h => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
               ))}
             </tr></thead>
@@ -134,9 +154,27 @@ export default function Payroll() {
                     <td className="px-4 py-3 text-sm text-red-600">-₹{r.epf_employee?.toLocaleString("en-IN")}</td>
                     <td className="px-4 py-3 text-sm text-red-600">-₹{r.esic_employee?.toLocaleString("en-IN")}</td>
                     <td className="px-4 py-3 text-sm font-bold text-green-700">₹{r.net_salary?.toLocaleString("en-IN")}</td>
-                    <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${r.status === "paid" ? "bg-green-100 text-green-700" : r.status === "processed" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"}`}>{r.status}</span></td>
                     <td className="px-4 py-3">
-                      <button onClick={() => setShowSlip(r)} data-testid={`view-slip-${r.id}`} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500"><Eye size={16} /></button>
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${r.status === "paid" ? "bg-green-100 text-green-700" : r.status === "processed" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"}`}>{r.status}</span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex gap-1.5">
+                        <button onClick={() => setShowSlip(r)} data-testid={`view-slip-${r.id}`}
+                          className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="View payslip">
+                          <Eye size={16} />
+                        </button>
+                        <button
+                          onClick={() => downloadPayslipPdf(r)}
+                          disabled={downloadingId === r.id}
+                          data-testid={`download-payslip-${r.id}`}
+                          className="p-1.5 rounded-lg hover:bg-[#E85B1E]/10 text-[#E85B1E] disabled:opacity-50"
+                          title="Download payslip PDF"
+                        >
+                          {downloadingId === r.id
+                            ? <div className="w-4 h-4 border-2 border-[#E85B1E] border-t-transparent rounded-full animate-spin" />
+                            : <FileText size={16} />}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -146,16 +184,52 @@ export default function Payroll() {
       </div>
 
       {showSlip && (
-        <Modal title="Payslip" onClose={() => setShowSlip(null)}>
+        <Modal title={`Payslip — ${showSlip.employee_name}`} onClose={() => setShowSlip(null)}>
           <div className="space-y-4" data-testid="payslip-modal">
-            <div className="bg-[#1E2A47] text-white p-4 rounded-lg">
-              <p className="text-lg font-bold">{showSlip.employee_name}</p>
-              <p className="text-slate-300 text-sm">{showSlip.designation} • {showSlip.department}</p>
-              <p className="text-slate-400 text-xs mt-1">{showSlip.employee_id} | {showSlip.period}</p>
+            {/* Header card */}
+            <div className="bg-[#1E2A47] text-white p-4 rounded-lg flex items-start justify-between gap-3">
+              <div>
+                <p className="text-lg font-bold">{showSlip.employee_name}</p>
+                <p className="text-slate-300 text-sm">{showSlip.designation} • {showSlip.department}</p>
+                <p className="text-slate-400 text-xs mt-1">{showSlip.employee_id} | {showSlip.period}</p>
+              </div>
+              <button
+                onClick={() => downloadPayslipPdf(showSlip)}
+                disabled={downloadingId === showSlip.id}
+                data-testid="modal-download-payslip-btn"
+                className="flex items-center gap-2 px-3 py-2 bg-[#E85B1E] text-white rounded-lg text-xs font-semibold hover:bg-[#D04A15] disabled:opacity-60 whitespace-nowrap"
+              >
+                {downloadingId === showSlip.id
+                  ? <><div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" /> Generating...</>
+                  : <><FileText size={14} /> Download PDF</>}
+              </button>
             </div>
-            <div className="space-y-2">
+
+            {/* Attendance info */}
+            <div className="grid grid-cols-3 gap-3">
+              {[
+                ["Days in Month", showSlip.working_days || 26],
+                ["Payable Days",  showSlip.present_days || showSlip.working_days || 26],
+                ["Leave Days",    showSlip.leave_days || 0],
+              ].map(([label, val]) => (
+                <div key={label} className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-center">
+                  <p className="text-xs text-slate-500">{label}</p>
+                  <p className="text-lg font-bold text-[#1E2A47]">{val}</p>
+                </div>
+              ))}
+            </div>
+
+            {/* Earnings */}
+            <div className="space-y-1.5">
               <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Earnings</p>
-              {[["Basic", showSlip.basic], ["HRA", showSlip.hra], ["Special Allowance", showSlip.special_allowance], ["Canteen Allowance", showSlip.canteen_allowance], ["Conveyance", showSlip.conveyance_allowance]].map(([label, val]) => val > 0 && (
+              {[
+                ["Basic Salary", showSlip.basic],
+                ["HRA", showSlip.hra],
+                ["Special Allowance", showSlip.special_allowance],
+                ["Canteen Allowance", showSlip.canteen_allowance],
+                ["Conveyance", showSlip.conveyance_allowance],
+                ["Other Income", showSlip.other_additions],
+              ].filter(([, v]) => v > 0).map(([label, val]) => (
                 <div key={label} className="flex justify-between text-sm border-b border-slate-100 pb-1">
                   <span className="text-slate-600">{label}</span>
                   <span className="text-green-700 font-medium">₹{val?.toLocaleString("en-IN")}</span>
@@ -166,20 +240,32 @@ export default function Payroll() {
                 <span>₹{showSlip.gross_salary?.toLocaleString("en-IN")}</span>
               </div>
             </div>
-            <div className="space-y-2">
+
+            {/* Deductions */}
+            <div className="space-y-1.5">
               <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Deductions</p>
-              {[["EPF (Employee 12%)", showSlip.epf_employee], ["ESIC (Employee 0.75%)", showSlip.esic_employee], ["TDS", showSlip.tds], ["Other Deductions", showSlip.other_deductions]].map(([label, val]) => val > 0 && (
+              {[
+                ["EPF (Employee 12%)", showSlip.epf_employee],
+                ["ESIC (Employee 0.75%)", showSlip.esic_employee],
+                ["TDS", showSlip.tds],
+                ["Other Deductions", showSlip.other_deductions],
+              ].filter(([, v]) => v > 0).map(([label, val]) => (
                 <div key={label} className="flex justify-between text-sm border-b border-slate-100 pb-1">
                   <span className="text-slate-600">{label}</span>
                   <span className="text-red-600 font-medium">-₹{val?.toLocaleString("en-IN")}</span>
                 </div>
               ))}
             </div>
+
+            {/* Net salary */}
             <div className="bg-[#E85B1E] text-white p-4 rounded-lg flex justify-between items-center">
-              <span className="font-bold text-lg">Net Salary</span>
+              <span className="font-bold text-lg">Net Take Home Salary</span>
               <span className="font-bold text-2xl">₹{showSlip.net_salary?.toLocaleString("en-IN")}</span>
             </div>
+
+            {/* Employer contributions */}
             <div className="text-xs text-slate-500 space-y-1 bg-slate-50 p-3 rounded-lg">
+              <p className="font-semibold text-slate-600 mb-1">Employer contributions (for reference)</p>
               <p>EPF Employer: ₹{showSlip.epf_employer?.toLocaleString("en-IN")} | ESIC Employer: ₹{showSlip.esic_employer?.toLocaleString("en-IN")}</p>
               <p>Monthly Gratuity Provision: ₹{showSlip.gratuity_monthly?.toLocaleString("en-IN")}</p>
               <p>Monthly CTC: ₹{showSlip.ctc_monthly?.toLocaleString("en-IN")}</p>

@@ -115,7 +115,7 @@ async def process_payroll(data: ProcessPayrollRequest, current_user: dict = Depe
             "status": "approved",
             "start_date": {"$regex": f"^{period}"},
         }).to_list(100)
-        leave_days = sum(l.get("days", 0) for l in approved_leaves)
+        leave_days = sum(lv.get("days", 0) for lv in approved_leaves)
         record = {
             "employee_id": emp_id,
             "employee_name": f"{emp.get('first_name', '')} {emp.get('last_name', '')}",
@@ -298,6 +298,36 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{record_id}/payslip/pdf")
+async def download_payslip_pdf(record_id: str, current_user: dict = Depends(get_current_user)):
+    record = await db.payroll_records.find_one({"_id": ObjectId(record_id)})
+    if not record:
+        raise HTTPException(status_code=404, detail="Payroll record not found")
+    # Permission: HR/management can download any; employees/field_agents only their own
+    if current_user.get("role") in ["employee", "field_agent"]:
+        if record.get("employee_id") != current_user.get("employee_id"):
+            raise HTTPException(status_code=403, detail="Access denied")
+    employee = await db.employees.find_one({"employee_id": record.get("employee_id")})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    # Remove MongoDB _id before passing to PDF builder
+    record.pop("_id", None)
+    employee.pop("_id", None)
+    try:
+        from services.payslip_pdf import build_payslip_pdf
+        pdf_bytes = build_payslip_pdf(record, employee)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {str(e)}")
+    emp_name = f"{employee.get('first_name','')}_{employee.get('last_name','')}".strip("_")
+    period   = record.get("period", "unknown")
+    filename = f"Payslip_{emp_name}_{period}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/{record_id}")

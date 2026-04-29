@@ -57,6 +57,8 @@ export function EmployeeDetailView({ emp }) {
           ["Father / Husband", emp.father_or_husband_name],
           ["Aadhaar #", emp.aadhaar_number ? emp.aadhaar_number.replace(/(\d{4})(?=\d)/g, "$1 ") : null],
           ["PAN", emp.pan_number],
+          ["UAN Number", emp.uan_number],
+          ["ESI Number", emp.esi_number],
           ["Blood Group", emp.blood_group],
           ["City", emp.city],
           ["State", emp.state],
