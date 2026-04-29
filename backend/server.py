@@ -74,23 +74,52 @@ async def startup():
     except Exception:
         pass
 
-    # Seed admin user
-    admin_email = os.environ.get("ADMIN_EMAIL", "admin@radhyamfi.com")
+    # Seed / migrate admin user — login by username "admin" (no longer email-based)
+    admin_username = os.environ.get("ADMIN_USERNAME", "admin")
     admin_password = os.environ.get("ADMIN_PASSWORD", "Admin@123")
-    existing = await db.users.find_one({"email": admin_email})
-    if not existing:
+    legacy_admin_email = "admin@radhyamfi.com"
+
+    # 1. If a legacy email-based admin exists, migrate it to username-based
+    legacy = await db.users.find_one({"email": legacy_admin_email, "username": {"$exists": False}})
+    if legacy:
+        await db.users.update_one(
+            {"_id": legacy["_id"]},
+            {"$set": {"username": admin_username, "name": legacy.get("name") or "Admin", "role": "hr_admin"}},
+        )
+        logger.info(f"Migrated legacy admin {legacy_admin_email} → username '{admin_username}'")
+
+    # 2. Ensure admin exists (idempotent)
+    existing_admin = await db.users.find_one({"username": admin_username})
+    if not existing_admin:
         await db.users.insert_one({
-            "email": admin_email,
+            "username": admin_username,
+            "email": None,
             "password_hash": hash_password(admin_password),
-            "name": "HR Admin",
+            "name": "Admin",
             "role": "hr_admin",
             "employee_id": None,
             "is_active": True,
             "created_at": datetime.now(timezone.utc).isoformat(),
         })
-        logger.info(f"Admin user created: {admin_email}")
-    elif not __import__('bcrypt').checkpw(admin_password.encode(), existing["password_hash"].encode()):
-        await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
+        logger.info(f"Admin user created: username='{admin_username}'")
+    else:
+        # Refresh password if .env value changed
+        try:
+            if not __import__('bcrypt').checkpw(admin_password.encode(), existing_admin["password_hash"].encode()):
+                await db.users.update_one(
+                    {"_id": existing_admin["_id"]},
+                    {"$set": {"password_hash": hash_password(admin_password)}},
+                )
+        except Exception:
+            pass
+
+    # 3. One-shot migration: any user that has employee_id but no username → set username = employee_id
+    async for u in db.users.find({"employee_id": {"$ne": None}, "username": {"$exists": False}}):
+        if u.get("employee_id"):
+            await db.users.update_one(
+                {"_id": u["_id"]},
+                {"$set": {"username": u["employee_id"]}},
+            )
 
     # Seed office locations
     count = await db.office_locations.count_documents({})

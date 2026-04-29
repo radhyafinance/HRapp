@@ -151,6 +151,8 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
         {F("emergency_contact_mobile", "Mobile", "tel")}
       </div>
 
+      <ResetPasswordSection employeeId={emp.employee_id} />
+
       {err && (
         <div className="bg-red-50 border border-red-200 text-red-700 text-sm p-3 rounded-lg flex gap-2">
           <AlertCircle size={16} className="flex-shrink-0 mt-0.5" /><span>{err}</span>
@@ -163,5 +165,62 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
         </button>
       </div>
     </form>
+  );
+}
+
+
+function ResetPasswordSection({ employeeId }) {
+  const [show, setShow] = useState(false);
+  const [pwd, setPwd] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const [err, setErr] = useState("");
+
+  const reset = async () => {
+    setMsg(""); setErr("");
+    if (!pwd || pwd.length < 4) { setErr("Password must be at least 4 characters."); return; }
+    if (!window.confirm(`Reset login password for ${employeeId}?\n\nThe employee will need to use this new password to log in.`)) return;
+    setBusy(true);
+    try {
+      await API.post(`/auth/employees/${employeeId}/reset-password`, { new_password: pwd });
+      setMsg(`Password reset. Login as ${employeeId} / ${pwd}. Share with employee securely.`);
+      setPwd("");
+    } catch (e) {
+      setErr(e.response?.data?.detail || "Failed to reset password.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="border-t pt-4">
+      <h4 className="font-bold text-[#1E2A47] text-sm mb-2">Login Account</h4>
+      <p className="text-xs text-slate-500 mb-2">
+        Login username: <span className="font-mono font-semibold text-[#E85B1E]">{employeeId}</span>
+      </p>
+      {!show ? (
+        <button type="button" onClick={() => setShow(true)} data-testid="show-reset-pwd-btn"
+          className="text-xs px-3 py-1.5 border border-amber-300 text-amber-700 rounded-lg hover:bg-amber-50">
+          Reset Password
+        </button>
+      ) : (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
+          <label className="block text-xs font-semibold text-slate-700">New Password</label>
+          <input type="text" value={pwd} onChange={(e) => setPwd(e.target.value)} placeholder="e.g. Welcome@123"
+            data-testid="reset-pwd-input"
+            className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+          {msg && <p className="text-xs text-green-700 bg-green-50 border border-green-200 rounded p-2" data-testid="reset-pwd-success">{msg}</p>}
+          {err && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">{err}</p>}
+          <div className="flex gap-2">
+            <button type="button" onClick={() => { setShow(false); setPwd(""); setMsg(""); setErr(""); }}
+              className="flex-1 text-xs px-3 py-1.5 border border-slate-300 text-slate-600 rounded-lg">Close</button>
+            <button type="button" onClick={reset} disabled={busy} data-testid="confirm-reset-pwd-btn"
+              className="flex-1 text-xs px-3 py-1.5 bg-amber-600 text-white rounded-lg disabled:opacity-60">
+              {busy ? "Resetting..." : "Confirm Reset"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

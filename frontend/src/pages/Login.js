@@ -4,7 +4,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { Eye, EyeOff, LogIn } from "lucide-react";
 
 export default function Login() {
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -17,11 +17,11 @@ export default function Login() {
     setLoading(true);
     setError("");
     try {
-      await login(email, password);
+      await login(username.trim(), password);
       navigate("/dashboard");
     } catch (err) {
       const detail = err.response?.data?.detail;
-      setError(typeof detail === "string" ? detail : "Invalid email or password");
+      setError(typeof detail === "string" ? detail : "Invalid username or password");
     } finally {
       setLoading(false);
     }
@@ -74,18 +74,22 @@ export default function Login() {
 
           <form onSubmit={handleSubmit} className="space-y-5">
             <div>
-              <label className="block text-sm font-semibold text-[#0F172A] mb-1.5" data-testid="email-label">
-                Email Address
+              <label className="block text-sm font-semibold text-[#0F172A] mb-1.5" data-testid="username-label">
+                Username
               </label>
               <input
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@radhyamfi.com"
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="admin or RMF0001"
                 required
-                data-testid="email-input"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck="false"
+                data-testid="username-input"
                 className="w-full border border-slate-300 rounded-lg px-4 py-3 text-[#0F172A] focus:ring-2 focus:ring-[#E85B1E] focus:border-transparent outline-none transition-all text-sm"
               />
+              <p className="text-xs text-slate-500 mt-1">Use your <strong>Employee ID</strong> (e.g. RMF0001) or <strong>admin</strong> for HR.</p>
             </div>
             <div>
               <label className="block text-sm font-semibold text-[#0F172A] mb-1.5">Password</label>

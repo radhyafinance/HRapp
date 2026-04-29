@@ -264,7 +264,7 @@ export default function Settings() {
           <div className="overflow-x-auto">
             <table className="w-full" data-testid="users-table">
               <thead><tr className="bg-slate-50 border-b">
-                {["Name", "Email", "Role", "Emp ID", "Status", "Action"].map(h => (
+                {["Name", "Username", "Role", "Emp ID", "Status", "Action"].map(h => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
                 ))}
               </tr></thead>
@@ -272,12 +272,12 @@ export default function Settings() {
                 {users.map(u => (
                   <tr key={u._id} className="border-b border-slate-100 hover:bg-slate-50">
                     <td className="px-4 py-3 text-sm font-medium text-[#0F172A]">{u.name}</td>
-                    <td className="px-4 py-3 text-sm text-slate-500">{u.email}</td>
+                    <td className="px-4 py-3 text-sm font-mono text-slate-700">{u.username || "-"}</td>
                     <td className="px-4 py-3"><span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">{u.role}</span></td>
                     <td className="px-4 py-3 text-xs font-mono text-[#E85B1E]">{u.employee_id || "-"}</td>
                     <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${u.is_active ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>{u.is_active ? "Active" : "Inactive"}</span></td>
                     <td className="px-4 py-3">
-                      {u.email !== user?.email && (
+                      {u.username !== user?.username && (
                         <button onClick={() => toggleUser(u._id)} className={`text-xs px-2 py-1 rounded-lg ${u.is_active ? "bg-red-100 text-red-700 hover:bg-red-200" : "bg-green-100 text-green-700 hover:bg-green-200"}`}>
                           {u.is_active ? "Deactivate" : "Activate"}
                         </button>

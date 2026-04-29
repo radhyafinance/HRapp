@@ -21,10 +21,10 @@ def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
-def create_token(user_id: str, email: str, role: str, employee_id: str = None, name: str = "") -> str:
+def create_token(user_id: str, username: str, role: str, employee_id: str = None, name: str = "") -> str:
     payload = {
         "sub": user_id,
-        "email": email,
+        "username": username,
         "role": role,
         "employee_id": employee_id,
         "name": name,

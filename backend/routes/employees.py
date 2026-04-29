@@ -249,6 +249,7 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
     if data.create_user_account:
         password = data.password or "Welcome@123"
         user_doc = {
+            "username": employee_id,
             "email": data.email.lower(),
             "password_hash": hash_password(password),
             "name": f"{data.first_name} {data.last_name}",
@@ -418,8 +419,9 @@ async def bulk_upload(file: UploadFile = File(...), current_user: dict = Depends
             })
             password = row.get("password", "Welcome@123")
             await db.users.update_one(
-                {"email": email},
+                {"username": employee_id},
                 {"$setOnInsert": {
+                    "username": employee_id,
                     "email": email,
                     "password_hash": hash_password(password),
                     "name": f"{row.get('first_name', '')} {row.get('last_name', '')}",

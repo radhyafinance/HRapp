@@ -563,10 +563,11 @@ async def convert_candidate_to_employee(
         "EL": {"total": 12, "used": 0, "remaining": 12},
     })
 
-    # User account
+    # User account — login username = employee_id
     from auth_utils import hash_password
     password = body.password or "Welcome@123"
     await db.users.insert_one({
+        "username": employee_id,
         "email": email,
         "password_hash": hash_password(password),
         "name": f"{cand.get('first_name', '')} {cand.get('last_name', '')}".strip(),
