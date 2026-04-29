@@ -146,7 +146,7 @@ async def get_designations(current_user: dict = Depends(get_current_user)):
 
 @router.get("")
 async def list_employees(
-    status: str = "active",
+    status: str = "all",
     department: str = None,
     role: str = None,
     search: str = None,
