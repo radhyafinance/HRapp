@@ -3,7 +3,7 @@ import React from "react";
 /**
  * Reusable salary breakup form.
  * Manual fields:   CTC, Basic, HRA, Special, Canteen, Conveyance, EPF (employee)
- * Auto-computed:   ESIC employee (0.75%), ESIC employer (3.25%), Gratuity (Basic×15/26)
+ * Auto-computed:   ESIC employee (0.75%), ESIC employer (3.25%), Gratuity (Basic×15/26/12)
  *
  * Props:
  *   form      — object containing the salary field keys
@@ -19,10 +19,10 @@ export function SalaryBreakupForm({ form, onChange }) {
   const epf      = parseFloat(form.epf_employee)      || 0;
 
   const gross          = basic + hra + special + canteen + conv;
-  const esicApplicable = gross > 0 && gross <= 21000;
-  const esicEmp        = esicApplicable ? Math.round(gross * 0.0075) : 0;
-  const esicEr         = esicApplicable ? Math.round(gross * 0.0325) : 0;
-  const gratuity       = basic > 0 ? Math.round((basic * 15) / 26) : 0;
+  const esicApplicable = basic > 0 && basic <= 21000;
+  const esicEmp        = esicApplicable ? Math.round(basic * 0.0075) : 0;
+  const esicEr         = esicApplicable ? Math.round(basic * 0.0325) : 0;
+  const gratuity       = basic > 0 ? Math.round((basic * 15) / 26 / 12) : 0;
   const totalDeduction = epf + esicEmp;
   const netTakeHome    = gross - totalDeduction;
   const totalCostToCompany = gross + esicEr + gratuity;
@@ -72,19 +72,19 @@ export function SalaryBreakupForm({ form, onChange }) {
 
           <div className="space-y-1.5">
             <div className="flex justify-between">
-              <span className="text-slate-500">ESIC — Employee (0.75%)</span>
+              <span className="text-slate-500">ESIC — Employee (0.75% of Basic)</span>
               <span className={`font-medium ${esicApplicable ? "text-red-600" : "text-slate-400 italic"}`}>
-                {esicApplicable ? `-₹${esicEmp.toLocaleString("en-IN")}` : "Not applicable (Gross > ₹21,000)"}
+                {esicApplicable ? `-₹${esicEmp.toLocaleString("en-IN")}` : "Not applicable (Basic > ₹21,000)"}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-500">ESIC — Employer (3.25%)</span>
+              <span className="text-slate-500">ESIC — Employer (3.25% of Basic)</span>
               <span className={`font-medium ${esicApplicable ? "text-orange-600" : "text-slate-400 italic"}`}>
                 {esicApplicable ? `₹${esicEr.toLocaleString("en-IN")}` : "Not applicable"}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-500">Gratuity provision (Basic × 15 ÷ 26)</span>
+              <span className="text-slate-500">Gratuity provision (Basic × 15 ÷ 26 ÷ 12)</span>
               <span className="font-medium text-orange-600">₹{gratuity.toLocaleString("en-IN")}/mo</span>
             </div>
           </div>

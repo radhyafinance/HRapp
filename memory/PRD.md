@@ -59,16 +59,24 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 
 ## Payroll Formula
 - Gross = Basic + HRA + Special + Canteen + Conveyance
-- EPF Employee = 12% of Basic
+- EPF Employee = manual input (`epf_employee` field on employee); falls back to 12% of Basic if not set
 - EPF Employer = 12% of Basic
-- ESIC Employee = 0.75% of Gross (if Gross ≤ ₹21,000)
-- ESIC Employer = 3.25% of Gross (if Gross ≤ ₹21,000)
-- Monthly Gratuity = (Basic × 15) / (26 × 12)
+- ESIC Employee = 0.75% of **Basic** (if Basic ≤ ₹21,000)
+- ESIC Employer = 3.25% of **Basic** (if Basic ≤ ₹21,000)
+- Monthly Gratuity provision = (Basic × 15) / (26 × 12)   ← monthly accrual; ×12 = annual gratuity per year of service
 - Monthly CTC = Gross + EPF Employer + ESIC Employer + Monthly Gratuity
 - Net = Gross - EPF Employee - ESIC Employee - TDS - Other Deductions
 
+### ✅ Phase 3 (Feb 2026)
+26. **Payslip PDF (ReportLab)** - `GET /api/payroll/{record_id}/payslip/pdf` returns ink-friendly payslip with Radhya logo and proper ₹ symbol via FreeSans font (`/app/backend/services/payslip_pdf.py`).
+27. **Salary Breakup Form (Manual + Auto)** - Shared `SalaryBreakupForm.js` used in Add Candidate, Convert-to-Employee, and Edit Employee. Manual: CTC, Basic, HRA, Special, Canteen, Conveyance, EPF (employee). Auto-computed: ESIC employee/employer (0.75%/3.25% of **Basic**, only when Basic ≤ ₹21,000), monthly Gratuity provision = `Basic × 15 ÷ 26 ÷ 12`, Gross, Net Take-Home, Monthly CTC. Backend `payroll.py` keeps in lock-step.
+
 ## Refactoring (Apr 2026)
 - Extracted `Candidates.js` (1430 lines) into 5 standalone components in `/src/components/candidates/`: `AddCandidateModal`, `CandidateDetailModal`, `JoiningKitPanel`, `ScheduleInterviewModal`, `DocUploadCard`
+- Extracted `Employees.js` (1014 lines) into 5 standalone components in `/src/components/employees/`: `EmployeeModal`, `EmployeeDetailView`, `EmployeeEditForm`, `EmployeeDocumentsTab`, `DocCompletenessRing`, `ReportingManagerInput`
+- Created `/src/components/shared/Modal.js` — reusable base modal
+- Created `/src/utils/imageCompression.js` — canonical `compressImage`, `fileToBase64`, `fileToBase64String`
+- Result: Candidates.js → 150 lines, Employees.js → 309 lines (1430 lines) into 5 standalone components in `/src/components/candidates/`: `AddCandidateModal`, `CandidateDetailModal`, `JoiningKitPanel`, `ScheduleInterviewModal`, `DocUploadCard`
 - Extracted `Employees.js` (1014 lines) into 5 standalone components in `/src/components/employees/`: `EmployeeModal`, `EmployeeDetailView`, `EmployeeEditForm`, `EmployeeDocumentsTab`, `DocCompletenessRing`, `ReportingManagerInput`
 - Created `/src/components/shared/Modal.js` — reusable base modal
 - Created `/src/utils/imageCompression.js` — canonical `compressImage`, `fileToBase64`, `fileToBase64String`

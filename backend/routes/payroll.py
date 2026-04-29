@@ -35,16 +35,17 @@ def calc_payroll_components(emp: dict, working_days: int = 26, present_days: int
         epf_employee = round(basic_payable * 0.12, 2)
     epf_employer = round(basic_payable * 0.12, 2)
 
-    # ESIC: applicable for gross <= 21000
-    if gross <= 21000:
-        esic_employee = round(gross_payable * 0.0075, 2)
-        esic_employer = round(gross_payable * 0.0325, 2)
+    # ESIC: applicable when basic <= 21000, calculated on basic salary
+    if basic <= 21000:
+        esic_employee = round(basic_payable * 0.0075, 2)
+        esic_employer = round(basic_payable * 0.0325, 2)
     else:
         esic_employee = 0
         esic_employer = 0
 
-    # Gratuity provision (monthly): Basic × 15 / 26
-    gratuity_monthly = round((basic_payable * 15) / 26, 2)
+    # Gratuity provision (monthly): (Basic × 15 / 26) / 12
+    # 15/26 of basic = annual gratuity per year of service; divide by 12 for monthly accrual
+    gratuity_monthly = round((basic_payable * 15) / 26 / 12, 2)
 
     # CTC components
     ctc_monthly = gross + epf_employer + esic_employer + gratuity_monthly
