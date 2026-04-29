@@ -19,6 +19,13 @@ function Modal({ title, onClose, children }) {
 
 const months = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 
+function daysInPeriod(period) {
+  if (!period) return 26;
+  const [yr, mo] = period.split("-").map(Number);
+  if (!yr || !mo) return 26;
+  return new Date(yr, mo, 0).getDate(); // last day of month = total days
+}
+
 export default function Payroll() {
   const { user } = useAuth();
   const [records, setRecords] = useState([]);
@@ -208,7 +215,7 @@ export default function Payroll() {
             {/* Attendance info */}
             <div className="grid grid-cols-3 gap-3">
               {[
-                ["Days in Month", showSlip.working_days || 26],
+                ["Days in Month", daysInPeriod(showSlip.period)],
                 ["Payable Days",  showSlip.present_days || showSlip.working_days || 26],
                 ["Leave Days",    showSlip.leave_days || 0],
               ].map(([label, val]) => (
