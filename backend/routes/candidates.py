@@ -411,6 +411,7 @@ async def aadhaar_ocr_for_candidate(cand_id: str, data: AadhaarOCRRequest, curre
 
 class ConvertToEmployeeRequest(BaseModel):
     role: Optional[str] = None  # field_agent, employee, branch_manager, etc.
+    ctc_monthly: float = 0  # CTC per month (₹). When >0 and basic/hra=0, server auto-distributes.
     basic: float = 0
     hra: float = 0
     special_allowance: float = 0
@@ -480,10 +481,35 @@ async def convert_candidate_to_employee(
         # Best-effort: keep but warn (HR can fix in employee detail)
         pass
 
+    # Validate reporting_to (must be an existing Employee ID, if provided)
+    reporting_to_value = (body.reporting_to or "").strip().upper() or None
+    if reporting_to_value:
+        rep = await db.employees.find_one({"employee_id": reporting_to_value})
+        if not rep:
+            raise HTTPException(status_code=400, detail=f"Reporting To: no employee with ID {reporting_to_value} found.")
+
+    # Validate IFSC if provided
+    ifsc_value = (body.ifsc_code or "").strip().upper() or None
+    if ifsc_value:
+        import re as _re_ifsc
+        if not _re_ifsc.match(r"^[A-Z]{4}0[A-Z0-9]{6}$", ifsc_value):
+            raise HTTPException(status_code=400, detail="Invalid IFSC code. Format: 4 letters + 0 + 6 alphanumeric (e.g. HDFC0001234).")
+
+    # Salary breakup: if HR passed basic/hra etc directly, use those; else if only CTC is given, auto-distribute.
+    basic = body.basic
+    hra = body.hra
+    special = body.special_allowance
+    canteen = body.canteen_allowance
+    conveyance = body.conveyance_allowance
+    if (basic + hra + special + canteen + conveyance) == 0 and body.ctc_monthly > 0:
+        # Standard Indian split: 50% Basic, 20% HRA, 30% Special
+        basic = round(body.ctc_monthly * 0.50, 2)
+        hra = round(body.ctc_monthly * 0.20, 2)
+        special = round(body.ctc_monthly * 0.30, 2)
+    gross = basic + hra + special + canteen + conveyance
+    ctc_monthly = body.ctc_monthly if body.ctc_monthly > 0 else gross
+    ctc_annual = round(ctc_monthly * 12, 2)
     full_addr = ", ".join([p for p in [cand.get("address"), cand.get("city"), cand.get("state"), cand.get("pincode")] if p])
-    gross = (
-        body.basic + body.hra + body.special_allowance + body.canteen_allowance + body.conveyance_allowance
-    )
 
     emp_doc = {
         "employee_id": employee_id,
@@ -494,21 +520,25 @@ async def convert_candidate_to_employee(
         "department": department,
         "designation": designation,
         "role": role,
-        "reporting_to": body.reporting_to,
+        "reporting_to": reporting_to_value,
         "joining_date": cand["expected_joining_date"],
         "status": "probation",
         "salary": {
-            "basic": body.basic,
-            "hra": body.hra,
-            "special_allowance": body.special_allowance,
-            "canteen_allowance": body.canteen_allowance,
-            "conveyance_allowance": body.conveyance_allowance,
+            "basic": basic,
+            "hra": hra,
+            "special_allowance": special,
+            "canteen_allowance": canteen,
+            "conveyance_allowance": conveyance,
             "gross": gross,
+            "ctc_monthly": ctc_monthly,
+            "ctc_annual": ctc_annual,
         },
+        "ctc_monthly": ctc_monthly,
+        "ctc_annual": ctc_annual,
         "bank_details": {
             "bank_name": body.bank_name,
             "account_number": body.account_number,
-            "ifsc_code": body.ifsc_code,
+            "ifsc_code": ifsc_value,
         },
         "address": {"current": full_addr, "permanent": full_addr},
         "aadhaar_number": cand.get("aadhaar_number"),

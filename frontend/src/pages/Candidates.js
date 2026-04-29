@@ -977,10 +977,49 @@ function JoiningKitPanel({ candidate, onCandidateUpdate }) {
   const [converting, setConverting] = useState(false);
   const [convertedInfo, setConvertedInfo] = useState(null);
   const [convertForm, setConvertForm] = useState({
-    role: "field_agent", basic: 12000, hra: 4800, special_allowance: 3200,
+    role: "field_agent",
+    ctc_monthly: "",
+    basic: 0, hra: 0, special_allowance: 0,
     canteen_allowance: 0, conveyance_allowance: 0,
-    bank_name: "", account_number: "", ifsc_code: "", reporting_to: "", password: "",
+    bank_name: "", account_number: "", account_number_confirm: "",
+    ifsc_code: "", reporting_to: "", password: "",
   });
+  const [reportingToInfo, setReportingToInfo] = useState(null); // {name, designation} | {error}
+  const [reportingToChecking, setReportingToChecking] = useState(false);
+
+  const ctcNum = parseFloat(convertForm.ctc_monthly) || 0;
+  const computedBasic = ctcNum > 0 ? Math.round(ctcNum * 0.5) : parseFloat(convertForm.basic) || 0;
+  const computedHra = ctcNum > 0 ? Math.round(ctcNum * 0.2) : parseFloat(convertForm.hra) || 0;
+  const computedSpecial = ctcNum > 0 ? Math.round(ctcNum * 0.3) : parseFloat(convertForm.special_allowance) || 0;
+  const grossDisplay = computedBasic + computedHra + computedSpecial +
+    (parseFloat(convertForm.canteen_allowance) || 0) + (parseFloat(convertForm.conveyance_allowance) || 0);
+
+  const ifscValid = !convertForm.ifsc_code || /^[A-Z]{4}0[A-Z0-9]{6}$/.test(convertForm.ifsc_code.toUpperCase());
+  const accNumMatch = !convertForm.account_number || convertForm.account_number === convertForm.account_number_confirm;
+
+  // Lookup Reporting-To employee on debounce
+  useEffect(() => {
+    const value = (convertForm.reporting_to || "").trim().toUpperCase();
+    setReportingToInfo(null);
+    if (!value) return;
+    setReportingToChecking(true);
+    const t = setTimeout(async () => {
+      try {
+        const res = await API.get(`/employees/${value}`);
+        const e = res.data;
+        setReportingToInfo({
+          name: `${e.first_name || ""} ${e.last_name || ""}`.trim(),
+          designation: e.designation,
+          department: e.department,
+        });
+      } catch (err) {
+        setReportingToInfo({ error: err.response?.status === 404 ? `No employee with ID ${value}` : "Lookup failed" });
+      } finally {
+        setReportingToChecking(false);
+      }
+    }, 350);
+    return () => { clearTimeout(t); setReportingToChecking(false); };
+  }, [convertForm.reporting_to]);
 
   const dirty =
     empId.trim() !== (candidate.employee_id || "") ||
@@ -1047,18 +1086,35 @@ function JoiningKitPanel({ candidate, onCandidateUpdate }) {
 
   const doConvert = async () => {
     setErr("");
+    // Client-side validation
+    if (convertForm.ifsc_code && !ifscValid) {
+      setErr("Invalid IFSC code. Must be 4 letters + 0 + 6 alphanumeric (e.g. HDFC0001234).");
+      return;
+    }
+    if (convertForm.account_number && !accNumMatch) {
+      setErr("Account numbers do not match. Please re-enter to confirm.");
+      return;
+    }
+    if (reportingToInfo?.error) {
+      setErr(reportingToInfo.error);
+      return;
+    }
     setConverting(true);
     try {
-      const payload = { ...convertForm };
-      if (!payload.role) payload.role = "employee";
-      ["basic", "hra", "special_allowance", "canteen_allowance", "conveyance_allowance"].forEach(k => {
-        payload[k] = parseFloat(payload[k] || 0);
-      });
-      if (!payload.password) delete payload.password;
-      if (!payload.reporting_to) delete payload.reporting_to;
-      if (!payload.bank_name) delete payload.bank_name;
-      if (!payload.account_number) delete payload.account_number;
-      if (!payload.ifsc_code) delete payload.ifsc_code;
+      const payload = {
+        role: convertForm.role || "employee",
+        ctc_monthly: parseFloat(convertForm.ctc_monthly) || 0,
+        basic: ctcNum > 0 ? 0 : parseFloat(convertForm.basic) || 0,
+        hra: ctcNum > 0 ? 0 : parseFloat(convertForm.hra) || 0,
+        special_allowance: ctcNum > 0 ? 0 : parseFloat(convertForm.special_allowance) || 0,
+        canteen_allowance: parseFloat(convertForm.canteen_allowance) || 0,
+        conveyance_allowance: parseFloat(convertForm.conveyance_allowance) || 0,
+      };
+      if (convertForm.bank_name) payload.bank_name = convertForm.bank_name;
+      if (convertForm.account_number) payload.account_number = convertForm.account_number;
+      if (convertForm.ifsc_code) payload.ifsc_code = convertForm.ifsc_code.toUpperCase();
+      if (convertForm.reporting_to) payload.reporting_to = convertForm.reporting_to.trim().toUpperCase();
+      if (convertForm.password) payload.password = convertForm.password;
 
       const res = await API.post(`/candidates/${candidate.id}/convert-to-employee`, payload);
       setConvertedInfo(res.data);
@@ -1185,8 +1241,28 @@ function JoiningKitPanel({ candidate, onCandidateUpdate }) {
 
         {showConvert && (
           <div className="mt-3 bg-white border border-slate-200 rounded-lg p-3 space-y-3" data-testid="convert-form">
-            <p className="text-xs text-slate-500">Set salary &amp; role then confirm. KYC documents (Aadhaar / PAN) and personal data will be copied automatically.</p>
+            <p className="text-xs text-slate-500">Set CTC, role and bank details. KYC documents (Aadhaar / PAN) and personal data will be copied automatically.</p>
+
+            {/* CTC + role */}
             <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Monthly CTC (₹) <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="number" min="0" step="100"
+                  value={convertForm.ctc_monthly}
+                  onChange={e => setConvertForm({ ...convertForm, ctc_monthly: e.target.value })}
+                  data-testid="convert-ctc-monthly"
+                  placeholder="e.g. 20000"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
+                />
+                {ctcNum > 0 && (
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Annual CTC: <span className="font-semibold">₹{(ctcNum * 12).toLocaleString("en-IN")}</span>
+                  </p>
+                )}
+              </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Role</label>
                 <select value={convertForm.role} onChange={e => setConvertForm({ ...convertForm, role: e.target.value })}
@@ -1199,62 +1275,123 @@ function JoiningKitPanel({ candidate, onCandidateUpdate }) {
                   <option value="management">Management</option>
                 </select>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Reporting To <span className="text-slate-400">(Employee ID)</span></label>
-                <input value={convertForm.reporting_to} onChange={e => setConvertForm({ ...convertForm, reporting_to: e.target.value.toUpperCase() })}
-                  placeholder="e.g. RMF0002" data-testid="convert-reporting-to"
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+            </div>
+
+            {/* Auto-distributed salary breakup display */}
+            {ctcNum > 0 && (
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs space-y-1" data-testid="ctc-breakup">
+                <p className="font-semibold text-[#1E2A47]">Salary Breakup (auto-distributed from CTC)</p>
+                <div className="grid grid-cols-3 gap-2 text-slate-600">
+                  <div>Basic (50%): <span className="font-mono font-semibold text-[#1E2A47]">₹{computedBasic.toLocaleString("en-IN")}</span></div>
+                  <div>HRA (20%): <span className="font-mono font-semibold text-[#1E2A47]">₹{computedHra.toLocaleString("en-IN")}</span></div>
+                  <div>Special (30%): <span className="font-mono font-semibold text-[#1E2A47]">₹{computedSpecial.toLocaleString("en-IN")}</span></div>
+                </div>
+                <p className="text-[10px] text-slate-400 italic">HR can fine-tune the breakup later from the Employee detail page.</p>
               </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Basic (₹)</label>
-                <input type="number" value={convertForm.basic} onChange={e => setConvertForm({ ...convertForm, basic: e.target.value })}
-                  data-testid="convert-basic"
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">HRA (₹)</label>
-                <input type="number" value={convertForm.hra} onChange={e => setConvertForm({ ...convertForm, hra: e.target.value })}
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Special Allowance (₹)</label>
-                <input type="number" value={convertForm.special_allowance} onChange={e => setConvertForm({ ...convertForm, special_allowance: e.target.value })}
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Conveyance (₹)</label>
-                <input type="number" value={convertForm.conveyance_allowance} onChange={e => setConvertForm({ ...convertForm, conveyance_allowance: e.target.value })}
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
-              </div>
+            )}
+
+            {/* Reporting To with live lookup */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Reporting To <span className="text-slate-400">(Employee ID)</span>
+              </label>
+              <input
+                value={convertForm.reporting_to}
+                onChange={e => setConvertForm({ ...convertForm, reporting_to: e.target.value.toUpperCase() })}
+                placeholder="e.g. RMF0002"
+                data-testid="convert-reporting-to"
+                className={`w-full border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none ${reportingToInfo?.error ? "border-red-300" : "border-slate-300"}`}
+              />
+              {reportingToChecking && (
+                <p className="text-[11px] text-slate-400 mt-1 flex items-center gap-1">
+                  <div className="w-3 h-3 border-2 border-slate-300 border-t-slate-600 rounded-full animate-spin" /> Looking up...
+                </p>
+              )}
+              {!reportingToChecking && reportingToInfo && !reportingToInfo.error && (
+                <p className="text-[11px] text-green-700 mt-1 flex items-center gap-1" data-testid="reporting-to-name">
+                  <CheckCircle2 size={12} /> {reportingToInfo.name} <span className="text-slate-500">— {reportingToInfo.designation}, {reportingToInfo.department}</span>
+                </p>
+              )}
+              {!reportingToChecking && reportingToInfo?.error && (
+                <p className="text-[11px] text-red-600 mt-1 flex items-center gap-1" data-testid="reporting-to-error">
+                  <AlertCircle size={12} /> {reportingToInfo.error}
+                </p>
+              )}
+            </div>
+
+            {/* Bank details */}
+            <div className="border-t border-slate-100 pt-3 grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Bank Name</label>
                 <input value={convertForm.bank_name} onChange={e => setConvertForm({ ...convertForm, bank_name: e.target.value })}
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
               </div>
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Bank A/c No.</label>
-                <input value={convertForm.account_number} onChange={e => setConvertForm({ ...convertForm, account_number: e.target.value })}
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none" />
-              </div>
-              <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">IFSC Code</label>
-                <input value={convertForm.ifsc_code} onChange={e => setConvertForm({ ...convertForm, ifsc_code: e.target.value.toUpperCase() })}
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                <input
+                  value={convertForm.ifsc_code}
+                  onChange={e => setConvertForm({ ...convertForm, ifsc_code: e.target.value.toUpperCase() })}
+                  data-testid="convert-ifsc"
+                  placeholder="HDFC0001234"
+                  maxLength={11}
+                  className={`w-full border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none ${convertForm.ifsc_code && !ifscValid ? "border-red-300" : "border-slate-300"}`}
+                />
+                {convertForm.ifsc_code && !ifscValid && (
+                  <p className="text-[11px] text-red-600 mt-1" data-testid="ifsc-error">
+                    Invalid format. Must be 4 letters + 0 + 6 alphanumeric.
+                  </p>
+                )}
+                {convertForm.ifsc_code && ifscValid && (
+                  <p className="text-[11px] text-green-600 mt-1" data-testid="ifsc-valid">Valid IFSC format.</p>
+                )}
               </div>
               <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Bank A/c No.</label>
+                <input
+                  type="password"
+                  value={convertForm.account_number}
+                  onChange={e => setConvertForm({ ...convertForm, account_number: e.target.value.replace(/\D/g, "") })}
+                  data-testid="convert-account-number"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Re-enter A/c No. <span className="text-slate-400">(confirmation)</span>
+                </label>
+                <input
+                  value={convertForm.account_number_confirm}
+                  onChange={e => setConvertForm({ ...convertForm, account_number_confirm: e.target.value.replace(/\D/g, "") })}
+                  data-testid="convert-account-number-confirm"
+                  className={`w-full border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none ${convertForm.account_number_confirm && !accNumMatch ? "border-red-300" : "border-slate-300"}`}
+                />
+                {convertForm.account_number_confirm && !accNumMatch && (
+                  <p className="text-[11px] text-red-600 mt-1" data-testid="account-number-mismatch">
+                    Account numbers do not match.
+                  </p>
+                )}
+                {convertForm.account_number_confirm && accNumMatch && convertForm.account_number && (
+                  <p className="text-[11px] text-green-600 mt-1">Account numbers match.</p>
+                )}
+              </div>
+              <div className="col-span-2">
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Initial Password <span className="text-slate-400">(default: Welcome@123)</span></label>
                 <input value={convertForm.password} onChange={e => setConvertForm({ ...convertForm, password: e.target.value })}
                   placeholder="Welcome@123" data-testid="convert-password"
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none" />
               </div>
             </div>
-            <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-2">
-              <strong>Will copy:</strong> Name, Mobile, Email, DOB, Gender, Father/Husband, Aadhaar, PAN, Address (current = permanent), Department, Designation (= Position), Joining Date, Joining Location, KYC document images.
-            </div>
+
+            {ctcNum > 0 && (
+              <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-2">
+                <strong>Will copy:</strong> Name, Mobile, Email, DOB, Gender, Father/Husband, Aadhaar, PAN, Address (current = permanent), Department, Designation (= Position), Joining Date, Joining Location, KYC document images.
+              </div>
+            )}
+
             <button
               type="button"
               onClick={doConvert}
-              disabled={converting}
+              disabled={converting || ctcNum <= 0 || !ifscValid || !accNumMatch || reportingToInfo?.error}
               data-testid="confirm-convert-btn"
               className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 disabled:opacity-50"
             >
@@ -1264,6 +1401,9 @@ function JoiningKitPanel({ candidate, onCandidateUpdate }) {
                 <><UserCheck size={14} /> Confirm — Create Employee</>
               )}
             </button>
+            {ctcNum <= 0 && (
+              <p className="text-[11px] text-amber-700">Set a Monthly CTC to enable conversion.</p>
+            )}
           </div>
         )}
       </div>
