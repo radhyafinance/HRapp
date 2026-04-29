@@ -40,6 +40,8 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 18. **PAN OCR for Candidates** - PAN card upload + "Extract" button. Auto-fills 10-character PAN number (and falls back to populate name/DOB if Aadhaar didn't run).
 19. **KYC Document Storage** - Aadhaar Front, Aadhaar Back, PAN Card images saved per candidate in `candidate_documents` Mongo collection; viewable in Candidate Detail with click-to-zoom (authenticated blob fetch).
 20. **Interview Scheduling** - Each candidate has a Schedule/Reschedule button. Schedule modal accepts date + time + interviewer + Google Meet link (manual paste from Google Calendar). Auto-builds an invitation message and offers three one-click share actions: **WhatsApp** (`wa.me` deep link with mobile + pre-filled text), **Email** (`mailto:` with pre-filled subject + body), **Copy** to clipboard.
+21. **Tentative Joining Date** - Visible in Candidate Detail when `status=selected`. Editable inline.
+22. **Joining Kit PDF Generator** - 13-page pre-filled joining kit PDF mirroring the company's `Joining Kit Online.docx` template. Sections: Header, Documents Checklist (auto-ticks Aadhaar/PAN if uploaded), Employee Information Sheet, Education + Employment + References tables, Staff Undertaking, Insurance Member Enrolment, Gratuity Form F, EPF Form 2 + Form 11, ESI Card, Notice-Period Declaration, Asset Declaration, NDA. All KYC fields (Name, Father/Spouse, DOB, Mobile, Email, Aadhaar, PAN, Address, City, State, Pincode, Designation, Department, Date of Joining) auto-filled. Uses `reportlab` (English-only v1).
 
 ## Office Locations (Seeded)
 - Head Office: Moradabad (28.880786, 78.746678)

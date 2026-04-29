@@ -405,6 +405,41 @@ async def aadhaar_ocr_for_candidate(cand_id: str, data: AadhaarOCRRequest, curre
     return {"success": True, "data": extracted}
 
 
+@router.get("/{cand_id}/joining-kit")
+async def joining_kit_pdf(cand_id: str, current_user: dict = Depends(get_current_user)):
+    """Generate a pre-filled Joining Kit PDF for a selected candidate."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    cand = await db.candidates.find_one({"_id": ObjectId(cand_id)})
+    if not cand:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    if cand.get("status") != "selected":
+        raise HTTPException(status_code=400, detail="Joining kit can only be generated for selected candidates.")
+    if not cand.get("expected_joining_date"):
+        raise HTTPException(status_code=400, detail="Set a tentative joining date before generating the kit.")
+
+    docs = await db.candidate_documents.find_one({"candidate_id": cand_id}) or {}
+    company = await db.app_settings.find_one({"key": "company"}) or {}
+
+    cand_safe = {k: v for k, v in cand.items() if k != "_id"}
+    company_safe = {k: v for k, v in company.items() if k not in ("_id", "key")}
+
+    from services.joining_kit_pdf import build_joining_kit_pdf
+    pdf_bytes = build_joining_kit_pdf(
+        cand_safe,
+        company=company_safe,
+        has_aadhaar_doc=bool(docs.get("aadhaar_front") or docs.get("aadhaar_back")),
+        has_pan_doc=bool(docs.get("pan_card")),
+    )
+    safe_name = f"{(cand.get('first_name') or '').replace(' ', '_')}_{(cand.get('last_name') or '').replace(' ', '_')}".strip("_") or "candidate"
+    filename = f"JoiningKit_{safe_name}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.put("/{cand_id}/documents-checklist")
 async def update_checklist(cand_id: str, checklist: dict, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management"]:

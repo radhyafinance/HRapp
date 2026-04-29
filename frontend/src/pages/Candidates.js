@@ -658,10 +658,13 @@ export default function Candidates() {
 }
 
 function CandidateDetailModal({ candidate, onClose, onSchedule }) {
+  const [c, setC] = useState(candidate);
   const [docsMeta, setDocsMeta] = useState(null);
   const [zoomDoc, setZoomDoc] = useState(null);
-  const apiBase = (process.env.REACT_APP_BACKEND_URL || "") + "/api";
-  const token = localStorage.getItem("token");
+  const [joiningDate, setJoiningDate] = useState(candidate.expected_joining_date || "");
+  const [savingJoining, setSavingJoining] = useState(false);
+  const [downloadingKit, setDownloadingKit] = useState(false);
+  const [joinErr, setJoinErr] = useState("");
 
   useEffect(() => {
     (async () => {
@@ -672,7 +675,6 @@ function CandidateDetailModal({ candidate, onClose, onSchedule }) {
     })();
   }, [candidate.id]);
 
-  const docUrl = (type) => `${apiBase}/candidates/${candidate.id}/documents/${type}?t=${token}`;
   // Note: we use a fetch->blob viewer to attach Authorization header
   const [docBlobs, setDocBlobs] = useState({});
   const fetchDoc = async (type) => {
@@ -684,13 +686,52 @@ function CandidateDetailModal({ candidate, onClose, onSchedule }) {
     } catch (e) { return null; }
   };
 
+  const saveJoiningDate = async () => {
+    setSavingJoining(true);
+    setJoinErr("");
+    try {
+      const res = await API.put(`/candidates/${c.id}`, { expected_joining_date: joiningDate });
+      setC(res.data);
+    } catch (e) {
+      setJoinErr(e.response?.data?.detail || "Failed to save");
+    } finally {
+      setSavingJoining(false);
+    }
+  };
+
+  const downloadJoiningKit = async () => {
+    setDownloadingKit(true);
+    setJoinErr("");
+    try {
+      const res = await API.get(`/candidates/${c.id}/joining-kit`, { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `JoiningKit_${c.first_name || "candidate"}_${c.last_name || ""}.pdf`.replace(/\s+/g, "_");
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 500);
+    } catch (e) {
+      // axios returns blob even for errors; try to read
+      try {
+        const text = await e.response.data.text();
+        const parsed = JSON.parse(text);
+        setJoinErr(parsed.detail || "Failed to generate PDF");
+      } catch (_) {
+        setJoinErr("Failed to generate PDF");
+      }
+    } finally {
+      setDownloadingKit(false);
+    }
+  };
+
   useEffect(() => {
     return () => {
       Object.values(docBlobs).forEach((u) => URL.revokeObjectURL(u));
     };
   }, [docBlobs]);
 
-  const c = candidate;
   return (
     <Modal title={`${c.first_name} ${c.last_name}`} onClose={onClose} wide>
       <div className="space-y-5">
@@ -747,6 +788,67 @@ function CandidateDetailModal({ candidate, onClose, onSchedule }) {
             <p className="text-xs text-slate-400">No interview scheduled.</p>
           )}
         </div>
+
+        {c.status === "selected" && (
+          <div className="border-t pt-4" data-testid="joining-section">
+            <h4 className="font-bold text-[#1E2A47] text-sm mb-3 flex items-center gap-2">
+              <FileText size={14} className="text-[#E85B1E]" /> Joining Kit
+            </h4>
+            <div className="bg-amber-50 border border-amber-100 rounded-lg p-3 space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 items-end">
+                <div className="sm:col-span-2">
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Tentative Joining Date</label>
+                  <input
+                    type="date"
+                    value={joiningDate}
+                    onChange={(e) => setJoiningDate(e.target.value)}
+                    data-testid="tentative-joining-date"
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none bg-white"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={saveJoiningDate}
+                  disabled={savingJoining || !joiningDate || joiningDate === c.expected_joining_date}
+                  data-testid="save-joining-date-btn"
+                  className="px-4 py-2 bg-[#1E2A47] text-white rounded-lg text-sm font-semibold hover:bg-[#2A3A5E] disabled:opacity-50 transition-colors"
+                >
+                  {savingJoining ? "Saving..." : "Save Date"}
+                </button>
+              </div>
+              {c.expected_joining_date && (
+                <p className="text-xs text-slate-600">
+                  Currently set to <span className="font-semibold text-[#1E2A47]">{c.expected_joining_date}</span>
+                </p>
+              )}
+              <button
+                type="button"
+                onClick={downloadJoiningKit}
+                disabled={downloadingKit || !c.expected_joining_date}
+                data-testid="download-joining-kit-btn"
+                className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] disabled:opacity-50 transition-colors"
+              >
+                {downloadingKit ? (
+                  <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Generating PDF...</>
+                ) : (
+                  <><FileText size={14} /> Download Joining Kit (PDF)</>
+                )}
+              </button>
+              {!c.expected_joining_date && (
+                <p className="text-[11px] text-amber-700">Set a tentative joining date to enable PDF generation.</p>
+              )}
+              {joinErr && (
+                <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-2 flex items-start gap-2">
+                  <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
+                  <span>{joinErr}</span>
+                </div>
+              )}
+              <p className="text-[11px] text-slate-500">
+                The PDF includes Employee Information Sheet, Staff Undertaking, Insurance Form, Gratuity Form F, EPF/EPS Forms, ESI Card, Notice-Period Declaration, Asset Declaration and NDA — all pre-filled with the candidate's KYC data.
+              </p>
+            </div>
+          </div>
+        )}
 
         <div className="border-t pt-4">
           <h4 className="font-bold text-[#1E2A47] text-sm mb-3">KYC Documents</h4>
