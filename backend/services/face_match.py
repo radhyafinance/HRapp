@@ -21,7 +21,7 @@ from PIL import Image, ImageOps
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOLERANCE = 0.40   # balanced
-MAX_DIM = 800              # resize before encoding for speed
+MAX_DIM = 1200             # resize before encoding for speed (preserves enough detail for face detection)
 
 
 def _decode_base64_image(b64: str) -> np.ndarray | None:
@@ -44,14 +44,19 @@ def _decode_base64_image(b64: str) -> np.ndarray | None:
 
 
 def _encode_face(arr: np.ndarray) -> np.ndarray | None:
-    """Get the first face encoding from an image array, or None if no face found."""
+    """Get the first face encoding from an image array, or None if no face found.
+
+    Tries detection at upsample=1 first (fast); falls back to upsample=2 (catches
+    smaller / off-angle faces) before giving up.
+    """
     try:
-        # Use HOG (CPU, fast) — model="cnn" is slower but more accurate (needs GPU)
-        locations = face_recognition.face_locations(arr, model="hog")
-        if not locations:
-            return None
-        encodings = face_recognition.face_encodings(arr, known_face_locations=locations[:1])
-        return encodings[0] if encodings else None
+        for upsample in (1, 2):
+            locations = face_recognition.face_locations(arr, model="hog", number_of_times_to_upsample=upsample)
+            if locations:
+                encodings = face_recognition.face_encodings(arr, known_face_locations=locations[:1])
+                if encodings:
+                    return encodings[0]
+        return None
     except Exception as e:
         logger.warning(f"face_encoding failed: {e}")
         return None

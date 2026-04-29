@@ -14,7 +14,15 @@ function CameraCapture({ onCapture, onClose }) {
   useEffect(() => {
     const startCamera = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+        // Request a reasonable HD-ish resolution so face detection has enough pixels to work with
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: "user",
+            width: { ideal: 1280 },
+            height: { ideal: 960 },
+          },
+          audio: false,
+        });
         streamRef.current = stream;
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -31,10 +39,15 @@ function CameraCapture({ onCapture, onClose }) {
   const capture = () => {
     if (!videoRef.current || !canvasRef.current) return;
     const canvas = canvasRef.current;
-    canvas.width = 320;
-    canvas.height = 240;
-    canvas.getContext("2d").drawImage(videoRef.current, 0, 0, 320, 240);
-    const base64 = canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+    // Use the native video resolution so small faces are still detectable.
+    // Cap at 1280×960 to keep payload reasonable.
+    const v = videoRef.current;
+    const w = Math.min(v.videoWidth || 640, 1280);
+    const h = Math.min(v.videoHeight || 480, 960);
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext("2d").drawImage(v, 0, 0, w, h);
+    const base64 = canvas.toDataURL("image/jpeg", 0.85).split(",")[1];
     if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
     onCapture(base64);
   };
@@ -46,8 +59,15 @@ function CameraCapture({ onCapture, onClose }) {
         {error ? (
           <div className="bg-red-50 text-red-700 p-3 rounded-lg text-sm mb-3">{error}</div>
         ) : (
-          <video ref={videoRef} autoPlay playsInline muted className="w-full rounded-lg bg-slate-900 mb-3" style={{ height: 240 }} />
+          <div className="relative mb-3">
+            <video ref={videoRef} autoPlay playsInline muted className="w-full rounded-lg bg-slate-900" style={{ height: 280, objectFit: "cover" }} />
+            {/* Face positioning guide overlay */}
+            <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+              <div className="border-2 border-white/70 border-dashed rounded-full" style={{ width: 160, height: 200 }} />
+            </div>
+          </div>
         )}
+        <p className="text-[11px] text-slate-500 mb-3 text-center">Position your full face inside the oval. Make sure lighting is even.</p>
         <canvas ref={canvasRef} className="hidden" />
         <div className="flex gap-3">
           <button onClick={onClose} className="flex-1 px-4 py-2.5 border-2 border-slate-300 text-slate-600 rounded-lg text-sm font-medium">Cancel</button>
