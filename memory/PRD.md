@@ -30,6 +30,13 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 10. **Gratuity** - Eligibility check (5yr), calculation, monthly provision
 11. **Settings** - 5 office locations (Moradabad HO, Chandpur, Najibabad, Budaun, Chandausi)
 
+### ✅ Phase 2 Complete (Apr 2026)
+12. **NEFT Sheet (RMF0001 Bank Format)** - Exact 8-column bank format: Transaction Type, Amount, Debit Account No (12 digit, from settings), IFSC, Beneficiary Account, Beneficiary Name (cleaned uppercase, max 32, no special chars), Remarks for Client (max 21), Remarks for Beneficiary (max 30). Filename `NEFT_RMF0001_<period>.xlsx`. Locale-safe period label (e.g. `Apr26`).
+13. **Company / Bank Settings Tab** - Company profile (name, CIN, address, contacts) + NEFT bank credentials (debit account, IFSC, transaction type) — used in NEFT export.
+14. **Continuous GPS Tracking for Field Staff** - Frontend pings `/api/attendance/location-update` every 2 minutes between punch-in and punch-out (skipped for management role). Live "Tracking active" indicator on Attendance page.
+15. **Field Tracking Map (Manager view)** - New page `/field-tracking` (HR Admin / Management / Manager only) with Leaflet + OpenStreetMap route map, polyline of full route, start/end markers, auto-fit bounds, and **stops > 15 min** detection (50m cluster) shown as orange markers + summary table with "Open in Maps" links.
+16. **Management Role Attendance** - Management role bypasses selfie + geofence; gets a one-click "Mark Present" without camera. Selfie+geofence still mandatory for HR Admin / Manager / HO Staff / Field Staff.
+
 ## Office Locations (Seeded)
 - Head Office: Moradabad (28.880786, 78.746678)
 - Chandpur: (29.132224, 78.283153)
@@ -52,8 +59,9 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 - Net = Gross - EPF Employee - ESIC Employee - TDS - Other Deductions
 
 ## P0 Backlog (Next Phase)
-- [ ] NEFT sheet custom format (user to provide format)
+- [x] NEFT sheet custom format (RMF0001 8-column bank format) ✅ Apr 2026
 - [ ] Payslip PDF download
+- [ ] Letter PDFs (Offer / Appointment / Warning etc.) with company letterhead
 - [ ] Employee confirmation letter after probation
 - [ ] Monthly salary register export
 - [ ] Leave encashment calculation

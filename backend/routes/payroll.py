@@ -214,10 +214,11 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
     txn_type = (settings_doc.get("transaction_type") or "NFT").strip()
     short_code = (settings_doc.get("company_short_code") or "RMF0001").strip()
 
-    # Period -> "Apr26"
+    # Period -> "Apr26" (locale-independent)
+    _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     try:
         y, m = period.split("-")
-        month_short = datetime(int(y), int(m), 1).strftime("%b")
+        month_short = _MONTHS[int(m) - 1]
         period_label = f"{month_short}{y[-2:]}"
     except Exception:
         period_label = period
