@@ -11,6 +11,7 @@ from auth_utils import hash_password
 
 from routes import auth, employees, candidates, attendance, leaves, payroll
 from routes import performance, exit_routes, letters, locations, dashboard, gratuity, settings as app_settings
+from routes import employee_documents
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ database.db = db_instance
 
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
 app.include_router(employees.router, prefix="/api/employees", tags=["Employees"])
+app.include_router(employee_documents.router, prefix="/api/employees", tags=["Employee Documents"])
 app.include_router(candidates.router, prefix="/api/candidates", tags=["Candidates"])
 app.include_router(attendance.router, prefix="/api/attendance", tags=["Attendance"])
 app.include_router(leaves.router, prefix="/api/leaves", tags=["Leaves"])

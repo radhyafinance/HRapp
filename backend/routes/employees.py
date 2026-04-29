@@ -112,21 +112,36 @@ class EmployeeCreate(BaseModel):
 class EmployeeUpdate(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
+    email: Optional[str] = None
     mobile: Optional[str] = None
     department: Optional[str] = None
     designation: Optional[str] = None
     role: Optional[str] = None
     reporting_to: Optional[str] = None
+    joining_date: Optional[str] = None
+    date_of_birth: Optional[str] = None
+    gender: Optional[str] = None
+    father_or_husband_name: Optional[str] = None
+    aadhaar_number: Optional[str] = None
+    pan_number: Optional[str] = None
+    blood_group: Optional[str] = None
+    emergency_contact_name: Optional[str] = None
+    emergency_contact_mobile: Optional[str] = None
     basic: Optional[float] = None
     hra: Optional[float] = None
     special_allowance: Optional[float] = None
     canteen_allowance: Optional[float] = None
     conveyance_allowance: Optional[float] = None
+    ctc_monthly: Optional[float] = None
     bank_name: Optional[str] = None
     account_number: Optional[str] = None
     ifsc_code: Optional[str] = None
     address_current: Optional[str] = None
     address_permanent: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    joining_location: Optional[str] = None
     status: Optional[str] = None
 
 
@@ -256,15 +271,92 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
     update_data = {k: v for k, v in data.model_dump().items() if v is not None}
-    if any(k in update_data for k in ["basic", "hra", "special_allowance", "canteen_allowance", "conveyance_allowance"]):
-        salary = emp.get("salary", {})
-        salary.update({k: update_data.pop(k) for k in ["basic", "hra", "special_allowance", "canteen_allowance", "conveyance_allowance"] if k in update_data})
-        salary["gross"] = sum(salary.get(k, 0) for k in ["basic", "hra", "special_allowance", "canteen_allowance", "conveyance_allowance"])
+
+    # Validate IFSC
+    if update_data.get("ifsc_code"):
+        import re as _re_ifsc
+        ifsc = update_data["ifsc_code"].upper().strip()
+        if not _re_ifsc.match(r"^[A-Z]{4}0[A-Z0-9]{6}$", ifsc):
+            raise HTTPException(status_code=400, detail="Invalid IFSC code. Format: 4 letters + 0 + 6 alphanumeric.")
+        update_data["ifsc_code"] = ifsc
+
+    # Validate reporting_to
+    if update_data.get("reporting_to"):
+        rep = update_data["reporting_to"].strip().upper()
+        if rep == employee_id:
+            raise HTTPException(status_code=400, detail="An employee cannot report to themselves.")
+        rep_emp = await db.employees.find_one({"employee_id": rep})
+        if not rep_emp:
+            raise HTTPException(status_code=400, detail=f"Reporting To: no employee with ID {rep} found.")
+        update_data["reporting_to"] = rep
+
+    # Validate email uniqueness if changed
+    if update_data.get("email"):
+        new_email = update_data["email"].lower().strip()
+        if new_email != emp.get("email"):
+            if await db.employees.find_one({"email": new_email, "employee_id": {"$ne": employee_id}}):
+                raise HTTPException(status_code=400, detail=f"Email {new_email} is already in use.")
+            update_data["email"] = new_email
+            # Update the linked user account too
+            await db.users.update_one({"employee_id": employee_id}, {"$set": {"email": new_email}})
+
+    # Salary recalculation (or auto-distribute from CTC)
+    salary_keys = ["basic", "hra", "special_allowance", "canteen_allowance", "conveyance_allowance"]
+    salary_changed = any(k in update_data for k in salary_keys) or "ctc_monthly" in update_data
+    if salary_changed:
+        salary = emp.get("salary", {}) or {}
+        for k in salary_keys:
+            if k in update_data:
+                salary[k] = update_data.pop(k)
+        if "ctc_monthly" in update_data:
+            ctc = update_data.pop("ctc_monthly") or 0
+            current_total = sum(salary.get(k, 0) or 0 for k in salary_keys)
+            # If user set CTC and didn't touch breakup, auto-distribute
+            if ctc > 0 and current_total == 0:
+                salary["basic"] = round(ctc * 0.50, 2)
+                salary["hra"] = round(ctc * 0.20, 2)
+                salary["special_allowance"] = round(ctc * 0.30, 2)
+            salary["ctc_monthly"] = ctc
+            salary["ctc_annual"] = round(ctc * 12, 2)
+            update_data["ctc_monthly"] = ctc
+            update_data["ctc_annual"] = round(ctc * 12, 2)
+        salary["gross"] = sum(salary.get(k, 0) or 0 for k in salary_keys)
+        if not salary.get("ctc_monthly"):
+            salary["ctc_monthly"] = salary["gross"]
+            salary["ctc_annual"] = round(salary["gross"] * 12, 2)
         update_data["salary"] = salary
-    if any(k in update_data for k in ["bank_name", "account_number", "ifsc_code"]):
-        bank = emp.get("bank_details", {})
-        bank.update({k: update_data.pop(k) for k in ["bank_name", "account_number", "ifsc_code"] if k in update_data})
+
+    # Bank consolidation
+    bank_keys = ["bank_name", "account_number", "ifsc_code"]
+    if any(k in update_data for k in bank_keys):
+        bank = emp.get("bank_details", {}) or {}
+        for k in bank_keys:
+            if k in update_data:
+                bank[k] = update_data.pop(k)
         update_data["bank_details"] = bank
+
+    # Address consolidation
+    addr_keys = ["address_current", "address_permanent"]
+    if any(k in update_data for k in addr_keys):
+        addr = emp.get("address", {}) or {}
+        for k in addr_keys:
+            if k in update_data:
+                addr[k.replace("address_", "")] = update_data.pop(k)
+        update_data["address"] = addr
+
+    # Emergency contact consolidation
+    if "emergency_contact_name" in update_data or "emergency_contact_mobile" in update_data:
+        ec = emp.get("emergency_contact", {}) or {}
+        if "emergency_contact_name" in update_data:
+            ec["name"] = update_data.pop("emergency_contact_name")
+        if "emergency_contact_mobile" in update_data:
+            ec["mobile"] = update_data.pop("emergency_contact_mobile")
+        update_data["emergency_contact"] = ec
+
+    # If role changes, sync user account too
+    if "role" in update_data:
+        await db.users.update_one({"employee_id": employee_id}, {"$set": {"role": update_data["role"]}})
+
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.employees.update_one({"employee_id": employee_id}, {"$set": update_data})
     emp = await db.employees.find_one({"employee_id": employee_id})
