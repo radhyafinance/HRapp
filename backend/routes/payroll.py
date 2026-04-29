@@ -209,26 +209,91 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
     records = await db.payroll_records.find({"period": period}).to_list(1000)
+    settings_doc = await db.app_settings.find_one({"key": "company"}) or {}
+    debit_account = (settings_doc.get("debit_account_no") or "").strip()
+    txn_type = (settings_doc.get("transaction_type") or "NFT").strip()
+    short_code = (settings_doc.get("company_short_code") or "RMF0001").strip()
+
+    # Period -> "Apr26"
+    try:
+        y, m = period.split("-")
+        month_short = datetime(int(y), int(m), 1).strftime("%b")
+        period_label = f"{month_short}{y[-2:]}"
+    except Exception:
+        period_label = period
+
+    remark_full = f"{short_code} Salary {period_label}"  # e.g. "RMF0001 Salary Apr26"
+    remark_client = remark_full[:21]
+    remark_beneficiary = remark_full[:30]
+
+    def clean_name(name: str) -> str:
+        if not name:
+            return ""
+        # Allow letters and spaces only, uppercase, max 32 chars
+        cleaned = "".join(ch for ch in name.upper() if ch.isalpha() or ch == " ")
+        cleaned = " ".join(cleaned.split())
+        return cleaned[:32]
+
     try:
         import openpyxl
+        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = f"NEFT_{period}"
-        headers = ["Sr No", "Employee ID", "Employee Name", "Bank Name", "Account Number", "IFSC Code", "Net Salary", "Remarks"]
+        headers = [
+            "Transaction type \n(Within Bank (WIB)/\nNEFT (NFT)/\nRTGS (RTG)/\nIMPS (IFC))",
+            "Amount (\u20b9)\n(Should not be more than 15 digit including decimals and paise)",
+            "Debit Account no\nShould be exactly 12 digit",
+            "IFSC (Always 11 character alphanumeric and 5th character always 0 (zero)) (For ICICI bank accounts keep it blank)",
+            "Beneficiary Account No (Max length for other bank 34 character alphanumeric and for ICICI Bank 12 digit number )",
+            "Beneficiary Name (Max length 32 Character) (No Special Character is allowed but Space is allowed)",
+            "Remarks for Client\n(should not be more than 21 characters)",
+            "Remarks for Beneficiary\n(should not be more than 30 characters)",
+        ]
         ws.append(headers)
-        for i, r in enumerate(records, 1):
+        # Header styling
+        header_fill = PatternFill("solid", fgColor="1E2A47")
+        header_font = Font(bold=True, color="FFFFFF", size=10)
+        thin = Side(border_style="thin", color="CCCCCC")
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+            cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        ws.row_dimensions[1].height = 90
+        widths = [22, 18, 18, 16, 26, 28, 22, 28]
+        for i, w in enumerate(widths, 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+
+        for r in records:
+            net_amount = round(float(r.get("net_salary", 0) or 0), 2)
+            beneficiary_acct = (r.get("bank_account") or "").strip()
+            ifsc = (r.get("ifsc_code") or "").strip().upper()
+            name = clean_name(r.get("employee_name", ""))
             ws.append([
-                i, r.get("employee_id"), r.get("employee_name"),
-                r.get("bank_name", ""), r.get("bank_account", ""),
-                r.get("ifsc_code", ""), r.get("net_salary", 0), ""
+                txn_type,
+                net_amount,
+                debit_account,
+                ifsc,
+                beneficiary_acct,
+                name,
+                remark_client,
+                remark_beneficiary,
             ])
+        # Body styling
+        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=8):
+            for cell in row:
+                cell.alignment = Alignment(vertical="center", wrap_text=False)
+                cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
         buffer = io.BytesIO()
         wb.save(buffer)
         buffer.seek(0)
+        filename = f"NEFT_{short_code}_{period}.xlsx"
         return Response(
             content=buffer.getvalue(),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f'attachment; filename="NEFT_{period}.xlsx"'},
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

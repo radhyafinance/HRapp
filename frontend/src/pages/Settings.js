@@ -19,6 +19,20 @@ function Modal({ title, onClose, children }) {
 
 const INIT_FORM = { name: "", address: "", latitude: "", longitude: "", radius_meters: 10, location_type: "branch" };
 
+const INIT_COMPANY = {
+  company_name: "",
+  company_short_code: "RMF0001",
+  debit_account_no: "",
+  debit_account_ifsc: "",
+  debit_bank_name: "",
+  transaction_type: "NFT",
+  address: "",
+  cin: "",
+  phone: "",
+  email: "",
+  website: "",
+};
+
 export default function Settings() {
   const { user } = useAuth();
   const [locations, setLocations] = useState([]);
@@ -29,16 +43,23 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [users, setUsers] = useState([]);
   const [activeTab, setActiveTab] = useState("locations");
+  const [company, setCompany] = useState(INIT_COMPANY);
+  const [companyOriginal, setCompanyOriginal] = useState(INIT_COMPANY);
+  const [savingCompany, setSavingCompany] = useState(false);
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [locRes, userRes] = await Promise.all([
+      const [locRes, userRes, compRes] = await Promise.all([
         API.get("/locations"),
         API.get("/auth/users"),
+        API.get("/settings/company"),
       ]);
       setLocations(locRes.data);
       setUsers(userRes.data);
+      const c = { ...INIT_COMPANY, ...compRes.data };
+      setCompany(c);
+      setCompanyOriginal(c);
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
   };
@@ -78,6 +99,19 @@ export default function Settings() {
     } catch (e) { alert("Failed"); }
   };
 
+  const saveCompany = async (e) => {
+    e.preventDefault();
+    setSavingCompany(true);
+    try {
+      const res = await API.put("/settings/company", company);
+      const c = { ...INIT_COMPANY, ...res.data };
+      setCompany(c);
+      setCompanyOriginal(c);
+      alert("Company settings saved");
+    } catch (err) { alert(err.response?.data?.detail || "Failed to save"); }
+    finally { setSavingCompany(false); }
+  };
+
   const TYPE_BADGE = { head_office: "bg-[#1E2A47] text-white", branch: "bg-blue-100 text-blue-700", field: "bg-green-100 text-green-700" };
 
   return (
@@ -89,7 +123,7 @@ export default function Settings() {
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 border-b border-slate-200">
-        {[["locations", "Office Locations"], ["users", "User Management"]].map(([val, label]) => (
+        {[["locations", "Office Locations"], ["company", "Company / Bank"], ["users", "User Management"]].map(([val, label]) => (
           <button key={val} onClick={() => setActiveTab(val)} data-testid={`settings-tab-${val}`}
             className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${activeTab === val ? "border-[#E85B1E] text-[#E85B1E]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             {label}
@@ -133,6 +167,95 @@ export default function Settings() {
                 </div>
               ))}
           </div>
+        </div>
+      )}
+
+      {activeTab === "company" && (
+        <div className="max-w-3xl">
+          <form onSubmit={saveCompany} className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-5" data-testid="company-settings-form">
+            <div>
+              <h3 className="font-bold text-[#1E2A47] text-base mb-1" style={{ fontFamily: "'Outfit', sans-serif" }}>Company Profile</h3>
+              <p className="text-xs text-slate-500">Used on letters, payslips and NEFT files.</p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Company Name</label>
+                <input type="text" value={company.company_name} onChange={e => setCompany({ ...company, company_name: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="company-name-input" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Short Code (NEFT remarks)</label>
+                <input type="text" value={company.company_short_code} onChange={e => setCompany({ ...company, company_short_code: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="company-short-code-input" />
+                <p className="text-xs text-slate-400 mt-1">Used as remark prefix, e.g. <span className="font-mono">RMF0001 Salary Apr26</span></p>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">CIN</label>
+                <input type="text" value={company.cin} onChange={e => setCompany({ ...company, cin: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Phone</label>
+                <input type="text" value={company.phone} onChange={e => setCompany({ ...company, phone: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Email</label>
+                <input type="email" value={company.email} onChange={e => setCompany({ ...company, email: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Website</label>
+                <input type="text" value={company.website} onChange={e => setCompany({ ...company, website: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Registered Address</label>
+                <textarea rows="2" value={company.address} onChange={e => setCompany({ ...company, address: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+            </div>
+
+            <div className="border-t border-slate-100 pt-5">
+              <h3 className="font-bold text-[#1E2A47] text-base mb-1" style={{ fontFamily: "'Outfit', sans-serif" }}>Bank / NEFT Configuration</h3>
+              <p className="text-xs text-slate-500 mb-4">Used to populate the Debit Account column in the NEFT export.</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Debit Account No (12 digit)</label>
+                  <input type="text" maxLength={12} value={company.debit_account_no} onChange={e => setCompany({ ...company, debit_account_no: e.target.value.replace(/\D/g, "") })}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="debit-account-input" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Debit Account IFSC</label>
+                  <input type="text" maxLength={11} value={company.debit_account_ifsc} onChange={e => setCompany({ ...company, debit_account_ifsc: e.target.value.toUpperCase() })}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Debit Bank Name</label>
+                  <input type="text" value={company.debit_bank_name} onChange={e => setCompany({ ...company, debit_bank_name: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Default Transaction Type</label>
+                  <select value={company.transaction_type} onChange={e => setCompany({ ...company, transaction_type: e.target.value })}
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm bg-white focus:ring-2 focus:ring-[#E85B1E] outline-none">
+                    <option value="NFT">NFT (NEFT)</option>
+                    <option value="RTG">RTG (RTGS)</option>
+                    <option value="IFC">IFC (IMPS)</option>
+                    <option value="WIB">WIB (Within Bank)</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex gap-3 justify-end">
+              <button type="button" onClick={() => setCompany(companyOriginal)} className="px-4 py-2.5 border-2 border-slate-300 text-slate-600 rounded-lg text-sm font-medium">Reset</button>
+              <button type="submit" disabled={savingCompany} className="px-6 py-2.5 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold disabled:opacity-60" data-testid="save-company-btn">
+                {savingCompany ? "Saving..." : "Save Settings"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 

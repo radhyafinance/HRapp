@@ -178,10 +178,93 @@ async def location_track(employee_id: str, date_str: str = None, current_user: d
     today = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     logs = await db.location_logs.find(
         {"employee_id": employee_id, "date": today}
-    ).sort("timestamp", 1).to_list(1000)
+    ).sort("timestamp", 1).to_list(2000)
     for log in logs:
         log["id"] = str(log.pop("_id"))
-    return {"employee_id": employee_id, "date": today, "locations": logs}
+
+    # Detect stops: cluster of consecutive points within 50m for >= 15 min
+    STOP_RADIUS_M = 50
+    STOP_DURATION_MIN = 15
+    stops = []
+    if logs:
+        i = 0
+        n = len(logs)
+        while i < n:
+            anchor = logs[i]
+            j = i + 1
+            while j < n:
+                d = haversine_distance(
+                    anchor["latitude"], anchor["longitude"],
+                    logs[j]["latitude"], logs[j]["longitude"],
+                )
+                if d <= STOP_RADIUS_M:
+                    j += 1
+                else:
+                    break
+            cluster_end = j - 1
+            if cluster_end > i:
+                t_start = datetime.fromisoformat(anchor["timestamp"].replace("Z", "+00:00"))
+                t_end = datetime.fromisoformat(logs[cluster_end]["timestamp"].replace("Z", "+00:00"))
+                duration_min = (t_end - t_start).total_seconds() / 60
+                if duration_min >= STOP_DURATION_MIN:
+                    avg_lat = sum(p["latitude"] for p in logs[i:cluster_end + 1]) / (cluster_end - i + 1)
+                    avg_lon = sum(p["longitude"] for p in logs[i:cluster_end + 1]) / (cluster_end - i + 1)
+                    stops.append({
+                        "latitude": round(avg_lat, 6),
+                        "longitude": round(avg_lon, 6),
+                        "start": anchor["timestamp"],
+                        "end": logs[cluster_end]["timestamp"],
+                        "duration_minutes": round(duration_min, 1),
+                        "points": cluster_end - i + 1,
+                    })
+            i = cluster_end + 1
+
+    attendance = await db.attendance_records.find_one({"employee_id": employee_id, "date": today})
+    if attendance:
+        attendance["id"] = str(attendance.pop("_id"))
+        attendance.pop("punch_in_photo", None)
+        attendance.pop("punch_out_photo", None)
+
+    return {
+        "employee_id": employee_id,
+        "date": today,
+        "locations": logs,
+        "stops": stops,
+        "attendance": attendance,
+    }
+
+
+@router.get("/field-staff/active")
+async def list_active_field_staff(current_user: dict = Depends(get_current_user)):
+    """List employees who have punched in today and have location updates."""
+    if current_user.get("role") not in ["hr_admin", "management", "branch_manager"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    records = await db.attendance_records.find({"date": today, "punch_in_time": {"$exists": True}}).to_list(1000)
+    out = []
+    for r in records:
+        emp_id = r["employee_id"]
+        emp = await db.employees.find_one({"employee_id": emp_id})
+        if not emp:
+            continue
+        loc_count = await db.location_logs.count_documents({"employee_id": emp_id, "date": today})
+        last_log = await db.location_logs.find_one(
+            {"employee_id": emp_id, "date": today}, sort=[("timestamp", -1)]
+        )
+        out.append({
+            "employee_id": emp_id,
+            "name": f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip(),
+            "designation": emp.get("designation", ""),
+            "department": emp.get("department", ""),
+            "role": emp.get("role", ""),
+            "punch_in_time": r.get("punch_in_time"),
+            "punch_out_time": r.get("punch_out_time"),
+            "location_points": loc_count,
+            "last_seen": last_log["timestamp"] if last_log else r.get("punch_in_time"),
+            "last_lat": last_log["latitude"] if last_log else (r.get("punch_in_location", {}) or {}).get("lat"),
+            "last_lon": last_log["longitude"] if last_log else (r.get("punch_in_location", {}) or {}).get("lon"),
+        })
+    return out
 
 
 @router.get("")

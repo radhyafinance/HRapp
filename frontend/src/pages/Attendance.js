@@ -72,7 +72,11 @@ export default function Attendance() {
   const [processing, setProcessing] = useState(false);
   const [result, setResult] = useState(null);
   const [todaySummary, setTodaySummary] = useState(null);
+  const [trackingActive, setTrackingActive] = useState(false);
+  const trackingTimerRef = useRef(null);
   const isManager = ["hr_admin", "management", "branch_manager"].includes(user?.role);
+  // Selfie+geofence required for everyone except management role per company policy
+  const skipSelfieAndGeofence = user?.role === "management";
 
   const fetchData = async () => {
     setLoading(true);
@@ -107,25 +111,29 @@ export default function Attendance() {
   useEffect(() => { getLocation(); }, []);
 
   const startPunch = (type) => {
+    if (skipSelfieAndGeofence) {
+      // Management: punch without selfie / geofence
+      doPunch(type, null);
+      return;
+    }
     if (!location) { getLocation(); setLocError("Getting location... Try again in a moment."); return; }
     setPunchType(type);
     setShowCamera(true);
   };
 
-  const handleCapture = async (photo_base64) => {
-    setShowCamera(false);
-    if (!location) return;
+  const doPunch = async (type, photo_base64) => {
     setProcessing(true);
     setResult(null);
     try {
-      const endpoint = punchType === "in" ? "/attendance/punch-in" : "/attendance/punch-out";
-      const res = await API.post(endpoint, {
+      const endpoint = type === "in" ? "/attendance/punch-in" : "/attendance/punch-out";
+      const payload = {
         employee_id: user.employee_id,
-        latitude: location.lat,
-        longitude: location.lon,
-        accuracy: location.accuracy,
+        latitude: location?.lat || 0,
+        longitude: location?.lon || 0,
+        accuracy: location?.accuracy,
         photo_base64,
-      });
+      };
+      const res = await API.post(endpoint, payload);
       setResult({ success: true, ...res.data });
       fetchData();
     } catch (e) {
@@ -135,9 +143,61 @@ export default function Attendance() {
     }
   };
 
+  const handleCapture = async (photo_base64) => {
+    setShowCamera(false);
+    if (!location) return;
+    setPunchType(prev => prev); // keep punchType
+    await doPunch(punchType, photo_base64);
+  };
+
   const today = new Date().toISOString().split("T")[0];
   const alreadyIn = !!todayRecord?.punch_in_time;
   const alreadyOut = !!todayRecord?.punch_out_time;
+
+  // Continuous GPS tracking (every 2 min) between punch-in and punch-out
+  useEffect(() => {
+    const stopTracking = () => {
+      if (trackingTimerRef.current) {
+        clearInterval(trackingTimerRef.current);
+        trackingTimerRef.current = null;
+      }
+      setTrackingActive(false);
+    };
+
+    if (!alreadyIn || alreadyOut || !user?.employee_id) {
+      stopTracking();
+      return;
+    }
+    if (skipSelfieAndGeofence) {
+      // Management role: no continuous tracking required
+      stopTracking();
+      return;
+    }
+    if (trackingTimerRef.current) return; // already running
+
+    const sendPing = () => {
+      if (!navigator.geolocation) return;
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          try {
+            await API.post("/attendance/location-update", {
+              employee_id: user.employee_id,
+              latitude: pos.coords.latitude,
+              longitude: pos.coords.longitude,
+              accuracy: pos.coords.accuracy,
+            });
+          } catch (_) {}
+        },
+        () => {},
+        { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 }
+      );
+    };
+
+    sendPing(); // immediate
+    trackingTimerRef.current = setInterval(sendPing, 2 * 60 * 1000);
+    setTrackingActive(true);
+    return stopTracking;
+  }, [alreadyIn, alreadyOut, user?.employee_id, skipSelfieAndGeofence]);
 
   return (
     <div style={{ fontFamily: "'Work Sans', sans-serif" }}>
@@ -152,15 +212,31 @@ export default function Attendance() {
           <h3 className="font-bold text-[#1E2A47] text-lg mb-4" style={{ fontFamily: "'Outfit', sans-serif" }}>Mark Attendance</h3>
 
           {/* Location Status */}
-          <div className={`flex items-center gap-2 p-3 rounded-lg mb-4 text-sm ${location ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"}`}>
-            <MapPin size={16} />
-            {location ? (
-              <span>Location found (accuracy: {Math.round(location.accuracy || 0)}m)</span>
-            ) : (
-              <span>{locError || "Getting location..."}</span>
-            )}
-            {!location && <button onClick={getLocation} className="ml-auto"><RefreshCw size={14} /></button>}
-          </div>
+          {!skipSelfieAndGeofence && (
+            <div className={`flex items-center gap-2 p-3 rounded-lg mb-4 text-sm ${location ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-700"}`}>
+              <MapPin size={16} />
+              {location ? (
+                <span>Location found (accuracy: {Math.round(location.accuracy || 0)}m)</span>
+              ) : (
+                <span>{locError || "Getting location..."}</span>
+              )}
+              {!location && <button onClick={getLocation} className="ml-auto"><RefreshCw size={14} /></button>}
+            </div>
+          )}
+
+          {skipSelfieAndGeofence && (
+            <div className="flex items-center gap-2 p-3 rounded-lg mb-4 text-sm bg-blue-50 text-blue-700">
+              <CheckCircle size={16} />
+              <span>Management — selfie & geofence are not required for your role.</span>
+            </div>
+          )}
+
+          {trackingActive && !alreadyOut && (
+            <div className="flex items-center gap-2 p-3 rounded-lg mb-4 text-xs bg-[#1E2A47] text-white" data-testid="tracking-active-indicator">
+              <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
+              <span>Live tracking active — sending GPS ping every 2 minutes</span>
+            </div>
+          )}
 
           {/* Today Status */}
           {alreadyIn && (

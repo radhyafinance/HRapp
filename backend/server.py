@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from auth_utils import hash_password
 
 from routes import auth, employees, candidates, attendance, leaves, payroll
-from routes import performance, exit_routes, letters, locations, dashboard, gratuity
+from routes import performance, exit_routes, letters, locations, dashboard, gratuity, settings as app_settings
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -46,6 +46,7 @@ app.include_router(letters.router, prefix="/api/letters", tags=["Letters"])
 app.include_router(locations.router, prefix="/api/locations", tags=["Locations"])
 app.include_router(dashboard.router, prefix="/api/dashboard", tags=["Dashboard"])
 app.include_router(gratuity.router, prefix="/api/gratuity", tags=["Gratuity"])
+app.include_router(app_settings.router, prefix="/api/settings", tags=["Settings"])
 
 
 @app.get("/api")
