@@ -409,6 +409,179 @@ async def aadhaar_ocr_for_candidate(cand_id: str, data: AadhaarOCRRequest, curre
     return {"success": True, "data": extracted}
 
 
+class ConvertToEmployeeRequest(BaseModel):
+    role: Optional[str] = None  # field_agent, employee, branch_manager, etc.
+    basic: float = 0
+    hra: float = 0
+    special_allowance: float = 0
+    canteen_allowance: float = 0
+    conveyance_allowance: float = 0
+    bank_name: Optional[str] = None
+    account_number: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    reporting_to: Optional[str] = None
+    password: Optional[str] = None  # default Welcome@123
+
+
+@router.post("/{cand_id}/convert-to-employee")
+async def convert_candidate_to_employee(
+    cand_id: str,
+    body: ConvertToEmployeeRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Promote a Selected candidate to an Employee.
+
+    Copies KYC fields, employee_id, joining date, designation, department.
+    Re-keys uploaded Aadhaar/PAN images to employee_documents.
+    Creates a user account with the given (or default) password.
+    Initializes leave balances.
+    """
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    cand = await db.candidates.find_one({"_id": ObjectId(cand_id)})
+    if not cand:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    if cand.get("status") != "selected":
+        raise HTTPException(status_code=400, detail="Only selected candidates can be converted to employees.")
+    if not cand.get("employee_id"):
+        raise HTTPException(status_code=400, detail="Set an Employee ID in the Joining Kit panel before converting.")
+    if not cand.get("expected_joining_date"):
+        raise HTTPException(status_code=400, detail="Set a Tentative Joining Date before converting.")
+    if not cand.get("email"):
+        raise HTTPException(status_code=400, detail="Candidate email is required to create a user account.")
+
+    employee_id = str(cand["employee_id"]).strip().upper()
+    email = str(cand["email"]).lower().strip()
+
+    # Uniqueness checks
+    if await db.employees.find_one({"employee_id": employee_id}):
+        raise HTTPException(status_code=400, detail=f"Employee ID {employee_id} is already taken.")
+    if await db.employees.find_one({"email": email}):
+        raise HTTPException(status_code=400, detail=f"An employee with email {email} already exists.")
+    if await db.users.find_one({"email": email}):
+        raise HTTPException(status_code=400, detail=f"A user account with email {email} already exists.")
+
+    # Pick a sensible role based on the candidate's position
+    designation = (cand.get("position") or "").strip()
+    from routes.employees import FIELD_DESIGNATIONS, RISK_DESIGNATIONS, DEPARTMENTS
+    if body.role:
+        role = body.role
+    elif designation in FIELD_DESIGNATIONS:
+        role = "field_agent"
+    elif designation in RISK_DESIGNATIONS:
+        role = "employee"
+    elif designation in {"Branch Manager", "Senior Branch Manager"}:
+        role = "branch_manager"
+    else:
+        role = "employee"
+
+    department = (cand.get("department") or "").strip()
+    if department not in DEPARTMENTS:
+        # Best-effort: keep but warn (HR can fix in employee detail)
+        pass
+
+    full_addr = ", ".join([p for p in [cand.get("address"), cand.get("city"), cand.get("state"), cand.get("pincode")] if p])
+    gross = (
+        body.basic + body.hra + body.special_allowance + body.canteen_allowance + body.conveyance_allowance
+    )
+
+    emp_doc = {
+        "employee_id": employee_id,
+        "first_name": cand.get("first_name", ""),
+        "last_name": cand.get("last_name", ""),
+        "email": email,
+        "mobile": cand.get("mobile", ""),
+        "department": department,
+        "designation": designation,
+        "role": role,
+        "reporting_to": body.reporting_to,
+        "joining_date": cand["expected_joining_date"],
+        "status": "probation",
+        "salary": {
+            "basic": body.basic,
+            "hra": body.hra,
+            "special_allowance": body.special_allowance,
+            "canteen_allowance": body.canteen_allowance,
+            "conveyance_allowance": body.conveyance_allowance,
+            "gross": gross,
+        },
+        "bank_details": {
+            "bank_name": body.bank_name,
+            "account_number": body.account_number,
+            "ifsc_code": body.ifsc_code,
+        },
+        "address": {"current": full_addr, "permanent": full_addr},
+        "aadhaar_number": cand.get("aadhaar_number"),
+        "pan_number": cand.get("pan_number"),
+        "date_of_birth": cand.get("dob"),
+        "gender": cand.get("gender"),
+        "father_or_husband_name": cand.get("father_or_husband_name"),
+        "city": cand.get("city"),
+        "state": cand.get("state"),
+        "pincode": cand.get("pincode"),
+        "joining_location": cand.get("joining_location"),
+        "source_candidate_id": str(cand["_id"]),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_by": current_user.get("employee_id"),
+    }
+    emp_result = await db.employees.insert_one(emp_doc)
+    employee_db_id = str(emp_result.inserted_id)
+
+    # Leave balance
+    await db.leave_balances.insert_one({
+        "employee_id": employee_id,
+        "year": datetime.now(timezone.utc).year,
+        "CL": {"total": 7, "used": 0, "remaining": 7},
+        "SL": {"total": 15, "used": 0, "remaining": 15},
+        "EL": {"total": 12, "used": 0, "remaining": 12},
+    })
+
+    # User account
+    from auth_utils import hash_password
+    password = body.password or "Welcome@123"
+    await db.users.insert_one({
+        "email": email,
+        "password_hash": hash_password(password),
+        "name": f"{cand.get('first_name', '')} {cand.get('last_name', '')}".strip(),
+        "role": role,
+        "employee_id": employee_id,
+        "is_active": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    # Copy KYC documents (aadhaar + pan)
+    cand_docs = await db.candidate_documents.find_one({"candidate_id": cand_id})
+    if cand_docs:
+        emp_doc_payload = {"employee_id": employee_id, "created_at": datetime.now(timezone.utc).isoformat()}
+        for key in ("aadhaar_front", "aadhaar_back", "pan_card"):
+            if cand_docs.get(key):
+                emp_doc_payload[key] = cand_docs[key]
+        await db.employee_documents.update_one(
+            {"employee_id": employee_id},
+            {"$set": emp_doc_payload},
+            upsert=True,
+        )
+
+    # Mark candidate as converted
+    await db.candidates.update_one(
+        {"_id": ObjectId(cand_id)},
+        {"$set": {
+            "status": "converted",
+            "converted_at": datetime.now(timezone.utc).isoformat(),
+            "converted_by": current_user.get("employee_id"),
+            "employee_db_id": employee_db_id,
+        }},
+    )
+
+    return {
+        "success": True,
+        "employee_id": employee_id,
+        "employee_db_id": employee_db_id,
+        "default_password": password,
+        "message": f"{cand.get('first_name', '')} {cand.get('last_name', '')} converted to Employee {employee_id}",
+    }
+
+
 @router.get("/meta/next-employee-id")
 async def next_employee_id(current_user: dict = Depends(get_current_user)):
     """Suggest the next available Employee ID by scanning Employees + Candidates."""

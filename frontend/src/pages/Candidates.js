@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from "react";
 import API from "../utils/api";
-import { UserPlus, Search, X, Camera, Sparkles, Image as ImageIcon, FileText, CheckCircle2, AlertCircle, Eye, Undo2, CalendarClock, Send, Copy, Mail } from "lucide-react";
+import { UserPlus, Search, X, Camera, Sparkles, Image as ImageIcon, FileText, CheckCircle2, AlertCircle, Eye, Undo2, CalendarClock, Send, Copy, Mail, UserCheck } from "lucide-react";
 
-const STATUS_COLORS = { pending: "bg-amber-100 text-amber-700", selected: "bg-green-100 text-green-700", rejected: "bg-red-100 text-red-700" };
+const STATUS_COLORS = { pending: "bg-amber-100 text-amber-700", selected: "bg-green-100 text-green-700", rejected: "bg-red-100 text-red-700", converted: "bg-blue-100 text-blue-700" };
 
 const DEPARTMENTS = ["Accounts", "Administration", "Compliance", "Human Resources", "IT", "Operations", "Risk and Credit"];
 
@@ -360,6 +360,7 @@ export default function Candidates() {
           <option value="pending">Pending</option>
           <option value="selected">Selected</option>
           <option value="rejected">Rejected</option>
+          <option value="converted">Converted</option>
         </select>
       </div>
 
@@ -745,7 +746,7 @@ function CandidateDetailModal({ candidate, onClose, onSchedule }) {
           )}
         </div>
 
-        {c.status === "selected" && (
+        {(c.status === "selected" || c.status === "converted") && (
           <div className="border-t pt-4" data-testid="joining-section">
             <h4 className="font-bold text-[#1E2A47] text-sm mb-3 flex items-center gap-2">
               <FileText size={14} className="text-[#E85B1E]" /> Joining Kit
@@ -972,6 +973,14 @@ function JoiningKitPanel({ candidate, onCandidateUpdate }) {
   const [suggestionLoading, setSuggestionLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [err, setErr] = useState("");
+  const [showConvert, setShowConvert] = useState(false);
+  const [converting, setConverting] = useState(false);
+  const [convertedInfo, setConvertedInfo] = useState(null);
+  const [convertForm, setConvertForm] = useState({
+    role: "field_agent", basic: 12000, hra: 4800, special_allowance: 3200,
+    canteen_allowance: 0, conveyance_allowance: 0,
+    bank_name: "", account_number: "", ifsc_code: "", reporting_to: "", password: "",
+  });
 
   const dirty =
     empId.trim() !== (candidate.employee_id || "") ||
@@ -1034,6 +1043,33 @@ function JoiningKitPanel({ candidate, onCandidateUpdate }) {
   };
 
   const ready = !!(candidate.employee_id && candidate.expected_joining_date) && !dirty;
+  const isConverted = candidate.status === "converted";
+
+  const doConvert = async () => {
+    setErr("");
+    setConverting(true);
+    try {
+      const payload = { ...convertForm };
+      if (!payload.role) payload.role = "employee";
+      ["basic", "hra", "special_allowance", "canteen_allowance", "conveyance_allowance"].forEach(k => {
+        payload[k] = parseFloat(payload[k] || 0);
+      });
+      if (!payload.password) delete payload.password;
+      if (!payload.reporting_to) delete payload.reporting_to;
+      if (!payload.bank_name) delete payload.bank_name;
+      if (!payload.account_number) delete payload.account_number;
+      if (!payload.ifsc_code) delete payload.ifsc_code;
+
+      const res = await API.post(`/candidates/${candidate.id}/convert-to-employee`, payload);
+      setConvertedInfo(res.data);
+      setShowConvert(false);
+      onCandidateUpdate({ ...candidate, status: "converted", employee_db_id: res.data.employee_db_id });
+    } catch (e) {
+      setErr(e.response?.data?.detail || "Conversion failed");
+    } finally {
+      setConverting(false);
+    }
+  };
 
   return (
     <div className="bg-amber-50 border border-amber-100 rounded-lg p-4 space-y-4">
@@ -1111,6 +1147,125 @@ function JoiningKitPanel({ candidate, onCandidateUpdate }) {
             <><FileText size={14} /> Download Joining Kit (PDF)</>
           )}
         </button>
+      </div>
+
+      <div className="border-t border-amber-200 pt-3">
+        {convertedInfo ? (
+          <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm" data-testid="conversion-success">
+            <div className="flex items-start gap-2">
+              <CheckCircle2 size={16} className="text-green-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="font-semibold text-green-800">{convertedInfo.message}</p>
+                <p className="text-xs text-green-700 mt-1">Employee ID: <span className="font-mono">{convertedInfo.employee_id}</span></p>
+                <p className="text-xs text-green-700">Default password: <span className="font-mono">{convertedInfo.default_password}</span> — share with employee on day 1.</p>
+              </div>
+            </div>
+          </div>
+        ) : isConverted ? (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm flex items-center gap-2" data-testid="already-converted">
+            <CheckCircle2 size={16} className="text-blue-600" />
+            <span className="text-blue-800 font-semibold">Already converted to Employee</span>
+          </div>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={() => setShowConvert((s) => !s)}
+              disabled={!ready}
+              data-testid="open-convert-employee-btn"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 disabled:opacity-50"
+            >
+              <UserCheck size={14} /> {showConvert ? "Cancel Conversion" : "Convert to Employee"}
+            </button>
+            {!ready && (
+              <p className="text-[11px] text-amber-700 mt-2">Save Employee ID and Joining Date first.</p>
+            )}
+          </>
+        )}
+
+        {showConvert && (
+          <div className="mt-3 bg-white border border-slate-200 rounded-lg p-3 space-y-3" data-testid="convert-form">
+            <p className="text-xs text-slate-500">Set salary &amp; role then confirm. KYC documents (Aadhaar / PAN) and personal data will be copied automatically.</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Role</label>
+                <select value={convertForm.role} onChange={e => setConvertForm({ ...convertForm, role: e.target.value })}
+                  data-testid="convert-role-select"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-[#E85B1E] outline-none">
+                  <option value="field_agent">Field Staff</option>
+                  <option value="employee">HO Staff</option>
+                  <option value="branch_manager">Manager</option>
+                  <option value="hr_admin">HR Admin</option>
+                  <option value="management">Management</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Reporting To <span className="text-slate-400">(Employee ID)</span></label>
+                <input value={convertForm.reporting_to} onChange={e => setConvertForm({ ...convertForm, reporting_to: e.target.value.toUpperCase() })}
+                  placeholder="e.g. RMF0002" data-testid="convert-reporting-to"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Basic (₹)</label>
+                <input type="number" value={convertForm.basic} onChange={e => setConvertForm({ ...convertForm, basic: e.target.value })}
+                  data-testid="convert-basic"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">HRA (₹)</label>
+                <input type="number" value={convertForm.hra} onChange={e => setConvertForm({ ...convertForm, hra: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Special Allowance (₹)</label>
+                <input type="number" value={convertForm.special_allowance} onChange={e => setConvertForm({ ...convertForm, special_allowance: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Conveyance (₹)</label>
+                <input type="number" value={convertForm.conveyance_allowance} onChange={e => setConvertForm({ ...convertForm, conveyance_allowance: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Bank Name</label>
+                <input value={convertForm.bank_name} onChange={e => setConvertForm({ ...convertForm, bank_name: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Bank A/c No.</label>
+                <input value={convertForm.account_number} onChange={e => setConvertForm({ ...convertForm, account_number: e.target.value })}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">IFSC Code</label>
+                <input value={convertForm.ifsc_code} onChange={e => setConvertForm({ ...convertForm, ifsc_code: e.target.value.toUpperCase() })}
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Initial Password <span className="text-slate-400">(default: Welcome@123)</span></label>
+                <input value={convertForm.password} onChange={e => setConvertForm({ ...convertForm, password: e.target.value })}
+                  placeholder="Welcome@123" data-testid="convert-password"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+            </div>
+            <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-2">
+              <strong>Will copy:</strong> Name, Mobile, Email, DOB, Gender, Father/Husband, Aadhaar, PAN, Address (current = permanent), Department, Designation (= Position), Joining Date, Joining Location, KYC document images.
+            </div>
+            <button
+              type="button"
+              onClick={doConvert}
+              disabled={converting}
+              data-testid="confirm-convert-btn"
+              className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 disabled:opacity-50"
+            >
+              {converting ? (
+                <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Converting...</>
+              ) : (
+                <><UserCheck size={14} /> Confirm — Create Employee</>
+              )}
+            </button>
+          </div>
+        )}
       </div>
 
       {!ready && (empId.trim() === "" || !joiningDate) && (
