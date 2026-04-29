@@ -60,7 +60,20 @@ async def root():
 async def startup():
     db = db_instance
     # Create indexes
-    await db.users.create_index("email", unique=True)
+    # Drop legacy unique index on users.email (we now key by username; allow nullable email)
+    try:
+        existing_idxs = await db.users.list_indexes().to_list(50)
+        for idx in existing_idxs:
+            if idx.get("name") == "email_1" and idx.get("unique"):
+                await db.users.drop_index("email_1")
+                break
+    except Exception:
+        pass
+    try:
+        await db.users.create_index("username", unique=True, sparse=True)
+        await db.users.create_index("email", sparse=True)
+    except Exception:
+        pass
     try:
         await db.employees.create_index("employee_id", unique=True)
         await db.employees.create_index("email", unique=True)
@@ -73,10 +86,17 @@ async def startup():
         await db.candidate_documents.create_index("candidate_id", unique=True)
     except Exception:
         pass
+    # OTP TTL — expired codes auto-removed by Mongo
+    try:
+        await db.otp_codes.create_index("expires_at", expireAfterSeconds=0)
+        await db.otp_codes.create_index("username")
+    except Exception:
+        pass
 
     # Seed / migrate admin user — login by username "admin" (no longer email-based)
     admin_username = os.environ.get("ADMIN_USERNAME", "admin")
     admin_password = os.environ.get("ADMIN_PASSWORD", "Admin@123")
+    admin_email = os.environ.get("ADMIN_EMAIL", "admin@radhyamfi.com")
     legacy_admin_email = "admin@radhyamfi.com"
 
     # 1. If a legacy email-based admin exists, migrate it to username-based
@@ -93,7 +113,7 @@ async def startup():
     if not existing_admin:
         await db.users.insert_one({
             "username": admin_username,
-            "email": None,
+            "email": admin_email,
             "password_hash": hash_password(admin_password),
             "name": "Admin",
             "role": "hr_admin",
@@ -112,6 +132,12 @@ async def startup():
                 )
         except Exception:
             pass
+        # Ensure admin has an email on file (needed for OTP login)
+        if not existing_admin.get("email"):
+            await db.users.update_one(
+                {"_id": existing_admin["_id"]},
+                {"$set": {"email": admin_email}},
+            )
 
     # 3. One-shot migration: any user that has employee_id but no username → set username = employee_id
     async for u in db.users.find({"employee_id": {"$ne": None}, "username": {"$exists": False}}):

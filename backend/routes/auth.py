@@ -2,10 +2,20 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from database import db
 from auth_utils import hash_password, verify_password, create_token, get_current_user
-from datetime import datetime, timezone
+from services.email_service import send_otp_email
+from datetime import datetime, timezone, timedelta
 from bson import ObjectId
+import secrets
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+# OTP config
+OTP_TTL_MINUTES = 10
+OTP_COOLDOWN_SECONDS = 60
+OTP_MAX_ATTEMPTS = 5
 
 
 class LoginRequest(BaseModel):
@@ -29,6 +39,164 @@ class CreateUserRequest(BaseModel):
     role: str
     employee_id: str = None
     email: str = None
+
+
+class OtpRequestPayload(BaseModel):
+    username: str
+
+
+class OtpVerifyPayload(BaseModel):
+    username: str
+    otp: str
+
+
+def _mask_email(email: str) -> str:
+    if not email or "@" not in email:
+        return email or ""
+    local, domain = email.split("@", 1)
+    if len(local) <= 2:
+        masked = local[0] + "*"
+    else:
+        masked = local[0] + "*" * (len(local) - 2) + local[-1]
+    return f"{masked}@{domain}"
+
+
+async def _resolve_user_email(user: dict) -> str | None:
+    """Return the canonical email to send OTP to. For employees, prefer the email on the
+    employees collection (kept up-to-date when HR edits); fall back to user.email."""
+    emp_id = user.get("employee_id")
+    if emp_id:
+        emp = await db.employees.find_one({"employee_id": emp_id}, {"email": 1, "status": 1})
+        if emp and emp.get("email"):
+            return emp["email"]
+    return user.get("email")
+
+
+@router.post("/otp/request")
+async def request_otp(data: OtpRequestPayload):
+    """Generate a 6-digit OTP for the given username and email it to the user."""
+    username = data.username.strip()
+    user = await db.users.find_one({"username": username}) \
+        or await db.users.find_one({"username": username.lower()}) \
+        or await db.users.find_one({"username": username.upper()})
+    if not user:
+        raise HTTPException(status_code=404, detail="No account found for that username.")
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="Account is inactive. Contact HR.")
+    # Block exited employees
+    if user.get("employee_id"):
+        emp = await db.employees.find_one({"employee_id": user["employee_id"]}, {"status": 1})
+        if emp and emp.get("status") == "exited":
+            raise HTTPException(status_code=403, detail="Account disabled — employee has exited the organization.")
+    email = await _resolve_user_email(user)
+    if not email:
+        raise HTTPException(status_code=400, detail="No email address on file. Ask HR to update your record.")
+
+    # Cooldown: 1 OTP request per 60s per username
+    now = datetime.now(timezone.utc)
+    recent = await db.otp_codes.find_one({"username": user["username"]}, sort=[("created_at", -1)])
+    if recent:
+        last_at = recent.get("created_at")
+        if isinstance(last_at, str):
+            try:
+                last_at = datetime.fromisoformat(last_at.replace("Z", "+00:00"))
+            except Exception:
+                last_at = None
+        elif isinstance(last_at, datetime) and last_at.tzinfo is None:
+            last_at = last_at.replace(tzinfo=timezone.utc)
+        if last_at and (now - last_at).total_seconds() < OTP_COOLDOWN_SECONDS:
+            wait = int(OTP_COOLDOWN_SECONDS - (now - last_at).total_seconds())
+            raise HTTPException(status_code=429, detail=f"Please wait {wait}s before requesting another OTP.")
+
+    otp = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = now + timedelta(minutes=OTP_TTL_MINUTES)
+    # Replace any prior un-used OTP for this user
+    await db.otp_codes.delete_many({"username": user["username"]})
+    await db.otp_codes.insert_one({
+        "username": user["username"],
+        "otp_hash": hash_password(otp),
+        "attempts": 0,
+        "used": False,
+        "created_at": now,
+        "expires_at": expires_at,
+    })
+
+    try:
+        await send_otp_email(email, otp, name=user.get("name"))
+    except Exception as e:
+        logger.error(f"OTP send failed for {username}: {e}")
+        # If sending fails, remove the OTP so the user can retry without cooldown
+        await db.otp_codes.delete_many({"username": user["username"]})
+        raise HTTPException(status_code=502, detail="Failed to send OTP email. Please try again or use password login.")
+
+    return {
+        "message": "OTP sent",
+        "email_masked": _mask_email(email),
+        "expires_in_seconds": OTP_TTL_MINUTES * 60,
+    }
+
+
+@router.post("/otp/verify")
+async def verify_otp(data: OtpVerifyPayload):
+    username = data.username.strip()
+    user = await db.users.find_one({"username": username}) \
+        or await db.users.find_one({"username": username.lower()}) \
+        or await db.users.find_one({"username": username.upper()})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid OTP or username.")
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="Account is inactive. Contact HR.")
+    if user.get("employee_id"):
+        emp = await db.employees.find_one({"employee_id": user["employee_id"]}, {"status": 1})
+        if emp and emp.get("status") == "exited":
+            raise HTTPException(status_code=403, detail="Account disabled — employee has exited the organization.")
+
+    record = await db.otp_codes.find_one({"username": user["username"]})
+    if not record or record.get("used"):
+        raise HTTPException(status_code=401, detail="No active OTP. Request a new one.")
+    expires_at = record.get("expires_at")
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except Exception:
+            expires_at = None
+    elif isinstance(expires_at, datetime) and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if not expires_at or datetime.now(timezone.utc) > expires_at:
+        await db.otp_codes.delete_one({"_id": record["_id"]})
+        raise HTTPException(status_code=401, detail="OTP expired. Request a new one.")
+    if record.get("attempts", 0) >= OTP_MAX_ATTEMPTS:
+        await db.otp_codes.delete_one({"_id": record["_id"]})
+        raise HTTPException(status_code=429, detail="Too many wrong attempts. Request a new OTP.")
+
+    if not verify_password(data.otp.strip(), record["otp_hash"]):
+        await db.otp_codes.update_one({"_id": record["_id"]}, {"$inc": {"attempts": 1}})
+        remaining = OTP_MAX_ATTEMPTS - (record.get("attempts", 0) + 1)
+        raise HTTPException(status_code=401, detail=f"Wrong OTP. {max(remaining, 0)} attempts left.")
+
+    # Success — burn the OTP
+    await db.otp_codes.delete_one({"_id": record["_id"]})
+    token = create_token(
+        str(user["_id"]),
+        user["username"],
+        user["role"],
+        user.get("employee_id"),
+        user.get("name", ""),
+    )
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": str(user["_id"]),
+            "username": user["username"],
+            "name": user.get("name", ""),
+            "role": user["role"],
+            "employee_id": user.get("employee_id"),
+        },
+    }
+
+
+@router.get("/me")
 
 
 @router.post("/login")
