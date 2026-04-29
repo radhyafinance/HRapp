@@ -140,19 +140,20 @@ def build_payslip_pdf(record: dict, employee: dict) -> bytes:
         logo_img = RLImage(_LOGO_PATH, width=55*mm, height=15*mm, kind="proportional")
 
     slip_title = Paragraph(
-        f"SALARY SLIP<br/><font size='9' color='#94A3B8'>{month_name.upper()} {year_num}</font>",
-        ParagraphStyle("hslip", fontName=BOLD_FONT, fontSize=12, textColor=WHITE, alignment=TA_RIGHT)
+        f"SALARY SLIP<br/><font size='9' color='#64748B'>{month_name.upper()} {year_num}</font>",
+        ParagraphStyle("hslip", fontName=BOLD_FONT, fontSize=12, textColor=NAVY, alignment=TA_RIGHT)
     )
 
-    header_data = [[logo_img or Paragraph("RADHYA MICRO FINANCE", ParagraphStyle("hfall", fontName=BOLD_FONT, fontSize=11, textColor=WHITE)), slip_title]]
+    header_data = [[logo_img or Paragraph("RADHYA MICRO FINANCE", ParagraphStyle("hfall", fontName=BOLD_FONT, fontSize=11, textColor=NAVY)), slip_title]]
     header_tbl = Table(header_data, colWidths=["60%", "40%"])
     header_tbl.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, -1), NAVY),
+        ("BACKGROUND",    (0, 0), (-1, -1), WHITE),
         ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING",   (0, 0), (-1, -1), 8),
         ("RIGHTPADDING",  (0, 0), (-1, -1), 8),
         ("TOPPADDING",    (0, 0), (-1, -1), 6),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("LINEBELOW",     (0, 0), (-1, -1), 1.5, NAVY),
     ]))
     elements.append(header_tbl)
     elements.append(Spacer(1, 3*mm))
@@ -199,7 +200,7 @@ def build_payslip_pdf(record: dict, employee: dict) -> bytes:
     numb_s  = ParagraphStyle("numb", fontName=BOLD_FONT, fontSize=9,   alignment=TA_RIGHT, textColor=BLACK)
     itm_s   = ParagraphStyle("itm",  fontName=BODY_FONT, fontSize=8.5, alignment=TA_LEFT,  textColor=BLACK)
     itmb_s  = ParagraphStyle("itmb", fontName=BOLD_FONT, fontSize=9,   alignment=TA_LEFT,  textColor=BLACK)
-    hdr_s   = ParagraphStyle("hdr",  fontName=BOLD_FONT, fontSize=8,   textColor=WHITE, alignment=TA_CENTER)
+    hdr_s   = ParagraphStyle("hdr",  fontName=BOLD_FONT, fontSize=8,   textColor=NAVY, alignment=TA_CENTER)
 
     def N(v):  return Paragraph(_inr(v), num_s)
     def NB(v): return Paragraph(_inr(v), numb_s)
@@ -243,8 +244,8 @@ def build_payslip_pdf(record: dict, employee: dict) -> bytes:
 
     ed_tbl = Table(ed_rows, colWidths=["25%", "25%", "25%", "25%"])
     ed_tbl.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, 0), NAVY),
-        ("TEXTCOLOR",     (0, 0), (-1, 0), WHITE),
+        ("BACKGROUND",    (0, 0), (-1, 0), WHITE),
+        ("LINEBELOW",     (0, 0), (-1, 0), 1.5, NAVY),
         ("TOPPADDING",    (0, 0), (-1, 0), 5),
         ("BOTTOMPADDING", (0, 0), (-1, 0), 5),
         ("ROWBACKGROUNDS", (0, 1), (-1, total_row - 1), [WHITE, LGRAY]),
@@ -255,7 +256,7 @@ def build_payslip_pdf(record: dict, employee: dict) -> bytes:
         ("RIGHTPADDING",   (0, 1), (-1, -1), 6),
         ("TOPPADDING",     (0, 1), (-1, -1), 3),
         ("BOTTOMPADDING",  (0, 1), (-1, -1), 3),
-        ("BACKGROUND",     (0, total_row), (-1, total_row), colors.HexColor("#EFF6FF")),
+        ("BACKGROUND",     (0, total_row), (-1, total_row), WHITE),
         ("FONTNAME",       (0, total_row), (-1, total_row), BOLD_FONT),
         ("LINEABOVE",      (0, total_row), (-1, total_row), 1.0, NAVY),
         ("LINEBELOW",      (0, total_row), (-1, total_row), 1.0, NAVY),
@@ -268,13 +269,14 @@ def build_payslip_pdf(record: dict, employee: dict) -> bytes:
     # ══════════════════════════════════════════════════════════════════════════
     net_data = [[
         Paragraph("NET TAKE HOME SALARY",
-                  ParagraphStyle("netlbl", fontName=BOLD_FONT, fontSize=11, textColor=WHITE)),
+                  ParagraphStyle("netlbl", fontName=BOLD_FONT, fontSize=11, textColor=ORANGE)),
         Paragraph(_inr(net_salary),
-                  ParagraphStyle("netamt", fontName=BOLD_FONT, fontSize=14, textColor=WHITE, alignment=TA_RIGHT)),
+                  ParagraphStyle("netamt", fontName=BOLD_FONT, fontSize=14, textColor=ORANGE, alignment=TA_RIGHT)),
     ]]
     net_tbl = Table(net_data, colWidths=["60%", "40%"])
     net_tbl.setStyle(TableStyle([
-        ("BACKGROUND",    (0, 0), (-1, -1), ORANGE),
+        ("BACKGROUND",    (0, 0), (-1, -1), WHITE),
+        ("BOX",           (0, 0), (-1, -1), 1.5, ORANGE),
         ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING",   (0, 0), (-1, -1), 10),
         ("RIGHTPADDING",  (0, 0), (-1, -1), 10),
