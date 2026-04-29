@@ -262,7 +262,8 @@ async def my_attendance(
 ):
     emp_id = current_user.get("employee_id")
     if not emp_id:
-        raise HTTPException(status_code=400, detail="No employee linked")
+        # Admin / management have no linked employee — return empty history instead of erroring
+        return []
     now = datetime.now(timezone.utc)
     m = month or now.month
     y = year or now.year
@@ -387,3 +388,281 @@ async def list_attendance(
         query.setdefault("date", {})["$lte"] = date_to
     records = await db.attendance_records.find(query).sort("date", -1).to_list(500)
     return [att_to_dict(r) for r in records]
+
+
+# --------------------------------------------------------------------
+# Regularisation — admin can edit / create attendance; employees can request
+# --------------------------------------------------------------------
+
+HR_ROLES = ("hr_admin", "management")
+VALID_STATUSES = {"present", "absent", "half_day", "leave", "weekly_off", "holiday"}
+
+
+class RegulariseEditBody(BaseModel):
+    # All optional — only the fields the admin wants to change
+    punch_in_time: Optional[str] = None       # ISO timestamp or "HH:MM"
+    punch_out_time: Optional[str] = None
+    status: Optional[str] = None
+    hours_worked: Optional[float] = None
+    reason: str                                # required — why this change
+
+
+class RegulariseCreateBody(BaseModel):
+    employee_id: str
+    date: str                                  # YYYY-MM-DD
+    punch_in_time: Optional[str] = None
+    punch_out_time: Optional[str] = None
+    status: str = "present"
+    reason: str
+
+
+class RegulariseRequestBody(BaseModel):
+    # Employee-submitted request
+    date: str                                  # YYYY-MM-DD
+    requested_punch_in_time: Optional[str] = None
+    requested_punch_out_time: Optional[str] = None
+    requested_status: Optional[str] = None
+    reason: str
+
+
+class RegulariseActionBody(BaseModel):
+    action: str                                # "approve" or "reject"
+    admin_remark: Optional[str] = None
+
+
+def _reg_to_dict(r: dict) -> dict:
+    r["id"] = str(r.pop("_id"))
+    return r
+
+
+def _normalise_time(date_str: str, time_str: Optional[str]) -> Optional[str]:
+    """Accept 'HH:MM', 'HH:MM:SS' or full ISO; return ISO string anchored to date_str."""
+    if not time_str:
+        return None
+    time_str = time_str.strip()
+    # If already ISO-looking
+    try:
+        dt = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat()
+    except ValueError:
+        pass
+    # Otherwise treat as HH:MM[:SS]
+    try:
+        t = datetime.strptime(time_str, "%H:%M:%S") if time_str.count(":") == 2 else datetime.strptime(time_str, "%H:%M")
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+        combined = datetime(d.year, d.month, d.day, t.hour, t.minute, t.second, tzinfo=timezone.utc)
+        return combined.isoformat()
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Could not parse time '{time_str}'. Use HH:MM or full ISO.")
+
+
+async def _apply_regularisation(
+    record_id: Optional[str],
+    employee_id: str,
+    date_str: str,
+    changes: dict,
+    reason: str,
+    acted_by: dict,
+) -> dict:
+    """Apply an edit/create to attendance_records and write an audit entry. Returns the new/updated record."""
+    if changes.get("status") and changes["status"] not in VALID_STATUSES:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Allowed: {sorted(VALID_STATUSES)}")
+    # Normalise time strings
+    if "punch_in_time" in changes:
+        changes["punch_in_time"] = _normalise_time(date_str, changes.get("punch_in_time"))
+    if "punch_out_time" in changes:
+        changes["punch_out_time"] = _normalise_time(date_str, changes.get("punch_out_time"))
+
+    existing = None
+    if record_id:
+        from bson import ObjectId
+        existing = await db.attendance_records.find_one({"_id": ObjectId(record_id)})
+        if not existing:
+            raise HTTPException(status_code=404, detail="Attendance record not found")
+    else:
+        existing = await db.attendance_records.find_one({"employee_id": employee_id, "date": date_str})
+
+    # Compute hours_worked from in/out if both present and not explicitly set
+    if "hours_worked" not in changes:
+        new_in = changes.get("punch_in_time") or (existing or {}).get("punch_in_time")
+        new_out = changes.get("punch_out_time") or (existing or {}).get("punch_out_time")
+        if new_in and new_out:
+            try:
+                hours = (datetime.fromisoformat(new_out) - datetime.fromisoformat(new_in)).total_seconds() / 3600
+                changes["hours_worked"] = round(hours, 2)
+            except Exception:
+                pass
+
+    before = {k: (existing or {}).get(k) for k in ["punch_in_time", "punch_out_time", "status", "hours_worked"]}
+
+    if existing:
+        await db.attendance_records.update_one({"_id": existing["_id"]}, {"$set": changes})
+        result = await db.attendance_records.find_one({"_id": existing["_id"]})
+    else:
+        doc = {
+            "employee_id": employee_id,
+            "date": date_str,
+            "status": changes.get("status", "present"),
+            "punch_in_time": changes.get("punch_in_time"),
+            "punch_out_time": changes.get("punch_out_time"),
+            "hours_worked": changes.get("hours_worked"),
+            "regularised": True,
+        }
+        inserted = await db.attendance_records.insert_one(doc)
+        result = await db.attendance_records.find_one({"_id": inserted.inserted_id})
+
+    # Audit log
+    after = {k: result.get(k) for k in ["punch_in_time", "punch_out_time", "status", "hours_worked"]}
+    await db.attendance_regularisations.insert_one({
+        "employee_id": employee_id,
+        "date": date_str,
+        "before": before,
+        "after": after,
+        "reason": reason,
+        "acted_by_username": acted_by.get("username"),
+        "acted_by_name": acted_by.get("name"),
+        "acted_at": datetime.now(timezone.utc).isoformat(),
+        "type": "direct_edit",
+    })
+    return att_to_dict(result)
+
+
+@router.patch("/records/{record_id}")
+async def regularise_edit(record_id: str, body: RegulariseEditBody, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in HR_ROLES:
+        raise HTTPException(status_code=403, detail="Only HR / Management can regularise attendance")
+    from bson import ObjectId
+    rec = await db.attendance_records.find_one({"_id": ObjectId(record_id)})
+    if not rec:
+        raise HTTPException(status_code=404, detail="Attendance record not found")
+    changes = {k: v for k, v in body.model_dump().items() if v is not None and k != "reason"}
+    if not changes:
+        raise HTTPException(status_code=400, detail="No changes provided")
+    return await _apply_regularisation(
+        record_id=record_id, employee_id=rec["employee_id"], date_str=rec["date"],
+        changes=changes, reason=body.reason, acted_by=current_user,
+    )
+
+
+@router.post("/records")
+async def regularise_create(body: RegulariseCreateBody, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in HR_ROLES:
+        raise HTTPException(status_code=403, detail="Only HR / Management can regularise attendance")
+    # Reject if a record already exists for that day
+    existing = await db.attendance_records.find_one({"employee_id": body.employee_id, "date": body.date})
+    if existing:
+        raise HTTPException(status_code=400, detail=f"An attendance record already exists for {body.employee_id} on {body.date}. Edit it instead.")
+    changes = {"status": body.status}
+    if body.punch_in_time:
+        changes["punch_in_time"] = body.punch_in_time
+    if body.punch_out_time:
+        changes["punch_out_time"] = body.punch_out_time
+    return await _apply_regularisation(
+        record_id=None, employee_id=body.employee_id, date_str=body.date,
+        changes=changes, reason=body.reason, acted_by=current_user,
+    )
+
+
+@router.get("/regularisations")
+async def list_regularisations(
+    employee_id: Optional[str] = None,
+    limit: int = 100,
+    current_user: dict = Depends(get_current_user),
+):
+    query: dict = {}
+    if current_user.get("role") in ["employee", "field_agent"]:
+        query["employee_id"] = current_user.get("employee_id")
+    elif employee_id:
+        query["employee_id"] = employee_id
+    docs = await db.attendance_regularisations.find(query).sort("acted_at", -1).to_list(limit)
+    for d in docs:
+        d["id"] = str(d.pop("_id"))
+    return docs
+
+
+# -------------- Employee-submitted requests (approval workflow) --------------
+
+@router.post("/regularisation-requests")
+async def create_reg_request(body: RegulariseRequestBody, current_user: dict = Depends(get_current_user)):
+    emp_id = current_user.get("employee_id")
+    if not emp_id:
+        raise HTTPException(status_code=400, detail="Only employees can submit regularisation requests")
+    # Reject duplicate pending request for the same day
+    existing = await db.attendance_reg_requests.find_one(
+        {"employee_id": emp_id, "date": body.date, "status": "pending"}
+    )
+    if existing:
+        raise HTTPException(status_code=400, detail=f"You already have a pending regularisation request for {body.date}.")
+    doc = {
+        "employee_id": emp_id,
+        "employee_name": current_user.get("name"),
+        "date": body.date,
+        "requested_punch_in_time": body.requested_punch_in_time,
+        "requested_punch_out_time": body.requested_punch_out_time,
+        "requested_status": body.requested_status,
+        "reason": body.reason,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    inserted = await db.attendance_reg_requests.insert_one(doc)
+    return _reg_to_dict(await db.attendance_reg_requests.find_one({"_id": inserted.inserted_id}))
+
+
+@router.get("/regularisation-requests")
+async def list_reg_requests(
+    status: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    query: dict = {}
+    if current_user.get("role") in ["employee", "field_agent"]:
+        query["employee_id"] = current_user.get("employee_id")
+    if status:
+        query["status"] = status
+    docs = await db.attendance_reg_requests.find(query).sort("created_at", -1).to_list(500)
+    for d in docs:
+        d["id"] = str(d.pop("_id"))
+    return docs
+
+
+@router.put("/regularisation-requests/{req_id}/action")
+async def act_on_reg_request(req_id: str, body: RegulariseActionBody, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in HR_ROLES:
+        raise HTTPException(status_code=403, detail="Only HR / Management can approve or reject")
+    if body.action not in ("approve", "reject"):
+        raise HTTPException(status_code=400, detail="action must be 'approve' or 'reject'")
+    from bson import ObjectId
+    req = await db.attendance_reg_requests.find_one({"_id": ObjectId(req_id)})
+    if not req:
+        raise HTTPException(status_code=404, detail="Request not found")
+    if req.get("status") != "pending":
+        raise HTTPException(status_code=400, detail=f"Request already {req.get('status')}")
+
+    update = {
+        "status": "approved" if body.action == "approve" else "rejected",
+        "admin_remark": body.admin_remark,
+        "acted_by_username": current_user.get("username"),
+        "acted_by_name": current_user.get("name"),
+        "acted_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    if body.action == "approve":
+        # Apply the regularisation
+        changes: dict = {}
+        if req.get("requested_punch_in_time"):
+            changes["punch_in_time"] = req["requested_punch_in_time"]
+        if req.get("requested_punch_out_time"):
+            changes["punch_out_time"] = req["requested_punch_out_time"]
+        if req.get("requested_status"):
+            changes["status"] = req["requested_status"]
+        if not changes:
+            raise HTTPException(status_code=400, detail="Request has no fields to apply.")
+        reason = f"Approved employee request: {req.get('reason', '')}".strip()
+        await _apply_regularisation(
+            record_id=None, employee_id=req["employee_id"], date_str=req["date"],
+            changes=changes, reason=reason, acted_by=current_user,
+        )
+
+    await db.attendance_reg_requests.update_one({"_id": req["_id"]}, {"$set": update})
+    return _reg_to_dict(await db.attendance_reg_requests.find_one({"_id": req["_id"]}))

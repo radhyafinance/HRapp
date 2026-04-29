@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useRef } from "react";
 import API from "../utils/api";
-import { Camera, MapPin, CheckCircle, AlertCircle, Clock, LogIn, LogOut, RefreshCw } from "lucide-react";
+import { Camera, MapPin, CheckCircle, AlertCircle, Clock, LogIn, LogOut, RefreshCw, Edit3, Plus, FileEdit } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
+import { AdminRegulariseModal, EmployeeRegulariseRequestModal, PendingRequestsPanel, MyRequestsList } from "../components/attendance/Regularisation";
 
 function CameraCapture({ onCapture, onClose }) {
   const videoRef = useRef(null);
@@ -75,6 +76,13 @@ export default function Attendance() {
   const [trackingActive, setTrackingActive] = useState(false);
   const trackingTimerRef = useRef(null);
   const isManager = ["hr_admin", "management", "branch_manager"].includes(user?.role);
+  const canRegulariseAdmin = ["hr_admin", "management"].includes(user?.role);
+  // Regularisation state
+  const [regEditRecord, setRegEditRecord] = useState(null);   // record to edit
+  const [regCreateOpen, setRegCreateOpen] = useState(false);  // admin add
+  const [empReqOpen, setEmpReqOpen] = useState(false);        // employee request
+  const [pendingReload, setPendingReload] = useState(0);
+  const [employees, setEmployees] = useState([]);
   // Selfie+geofence required for everyone except management role per company policy
   const skipSelfieAndGeofence = user?.role === "management";
 
@@ -97,6 +105,13 @@ export default function Attendance() {
   };
 
   useEffect(() => { fetchData(); }, []);
+
+  // Load employee list once for admin's "Add attendance" modal dropdown
+  useEffect(() => {
+    if (canRegulariseAdmin) {
+      API.get("/employees?status=all").then(r => setEmployees(r.data || [])).catch(() => {});
+    }
+  }, [canRegulariseAdmin]);
 
   const getLocation = () => {
     setLocError("");
@@ -318,41 +333,105 @@ export default function Attendance() {
                   <span className={`px-2 py-0.5 rounded-full ${r.geofence_verified ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>
                     {r.geofence_verified ? "In Fence" : "Out Fence"}
                   </span>
+                  {canRegulariseAdmin && (
+                    <button onClick={() => setRegEditRecord(r)} data-testid={`edit-attendance-${r.id}`}
+                      title="Regularise this record"
+                      className="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-[#E85B1E]">
+                      <Edit3 size={12} />
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Regularisation panel (HR Admin + Management) */}
+        {canRegulariseAdmin && (
+          <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm" data-testid="reg-admin-panel">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-bold text-[#1E2A47] text-lg flex items-center gap-2" style={{ fontFamily: "'Outfit', sans-serif" }}>
+                <FileEdit size={18} /> Attendance Regularisation
+              </h3>
+              <button onClick={() => setRegCreateOpen(true)} data-testid="reg-add-btn"
+                className="flex items-center gap-1 px-3 py-1.5 bg-[#E85B1E] text-white rounded-lg text-xs font-semibold hover:bg-[#D04A15]">
+                <Plus size={14} /> Add Record
+              </button>
+            </div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Pending Employee Requests</p>
+            <PendingRequestsPanel key={pendingReload} onApproved={() => { setPendingReload(x => x + 1); fetchData(); }} />
           </div>
         )}
       </div>
 
       {/* Attendance History */}
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50">
+        <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
           <h3 className="font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Attendance History</h3>
+          {!isManager && user?.employee_id && (
+            <button onClick={() => setEmpReqOpen(true)} data-testid="request-regularisation-btn"
+              className="flex items-center gap-1 px-3 py-1.5 bg-[#1E2A47] text-white rounded-lg text-xs font-semibold hover:bg-[#2A3A5E]">
+              <FileEdit size={12} /> Request Regularisation
+            </button>
+          )}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="attendance-table">
             <thead><tr className="bg-slate-50 border-b">
-              {["Date", "Punch In", "Punch Out", "Hours", "Location", "Status"].map(h => (
+              {["Date", "Punch In", "Punch Out", "Hours", "Location", "Status", ""].map(h => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
               ))}
             </tr></thead>
             <tbody>
-              {loading ? <tr><td colSpan={6}><div className="h-8 bg-slate-100 animate-pulse m-4 rounded"></div></td></tr>
+              {loading ? <tr><td colSpan={7}><div className="h-8 bg-slate-100 animate-pulse m-4 rounded"></div></td></tr>
                 : history.slice(0, 20).map(r => (
                   <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
-                    <td className="px-4 py-3 text-sm font-medium text-slate-700">{r.date}</td>
+                    <td className="px-4 py-3 text-sm font-medium text-slate-700">
+                      {r.date}{r.regularised && <span className="ml-1 text-[10px] text-amber-600 font-semibold">• REG</span>}
+                    </td>
                     <td className="px-4 py-3 text-sm text-slate-600">{r.punch_in_time ? new Date(r.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{r.punch_out_time ? new Date(r.punch_out_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{r.hours_worked ? `${r.hours_worked}h` : "-"}</td>
                     <td className="px-4 py-3 text-xs text-slate-500">{r.location_name || "-"}</td>
-                    <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${r.geofence_verified ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>{r.punch_in_time ? (r.geofence_verified ? "Present" : "Outside Fence") : "Absent"}</span></td>
+                    <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${r.geofence_verified ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>{r.punch_in_time ? (r.geofence_verified ? "Present" : "Outside Fence") : (r.status || "Absent")}</span></td>
+                    <td className="px-4 py-3 text-right">
+                      {canRegulariseAdmin && (
+                        <button onClick={() => setRegEditRecord(r)} data-testid={`edit-history-${r.id}`}
+                          title="Regularise this record"
+                          className="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-[#E85B1E]">
+                          <Edit3 size={12} />
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
             </tbody>
           </table>
         </div>
+        {!isManager && user?.employee_id && (
+          <div className="p-4 border-t border-slate-100">
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Your recent regularisation requests</p>
+            <MyRequestsList refreshToken={pendingReload} />
+          </div>
+        )}
       </div>
+
+      {/* Regularisation modals */}
+      {regEditRecord && (
+        <AdminRegulariseModal mode="edit" record={regEditRecord}
+          onClose={() => setRegEditRecord(null)}
+          onSaved={() => { setPendingReload(x => x + 1); fetchData(); }} />
+      )}
+      {regCreateOpen && (
+        <AdminRegulariseModal mode="create" employees={employees}
+          onClose={() => setRegCreateOpen(false)}
+          onSaved={() => { setPendingReload(x => x + 1); fetchData(); }} />
+      )}
+      {empReqOpen && (
+        <EmployeeRegulariseRequestModal
+          onClose={() => setEmpReqOpen(false)}
+          onSaved={() => setPendingReload(x => x + 1)} />
+      )}
 
       {showCamera && <CameraCapture onCapture={handleCapture} onClose={() => setShowCamera(false)} />}
     </div>
