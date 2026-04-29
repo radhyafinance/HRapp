@@ -147,6 +147,7 @@ class EmployeeUpdate(BaseModel):
     status: Optional[str] = None
     uan_number: Optional[str] = None
     esi_number: Optional[str] = None
+    epf_employee: Optional[float] = None
 
 
 @router.get("/next-id")
@@ -217,6 +218,7 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
             "canteen_allowance": data.canteen_allowance,
             "conveyance_allowance": data.conveyance_allowance,
             "gross": gross,
+            "epf_employee": data.epf_employee,
         },
         "bank_details": {
             "bank_name": data.bank_name,
@@ -307,7 +309,7 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
             await db.users.update_one({"employee_id": employee_id}, {"$set": {"email": new_email}})
 
     # Salary recalculation (or auto-distribute from CTC)
-    salary_keys = ["basic", "hra", "special_allowance", "canteen_allowance", "conveyance_allowance"]
+    salary_keys = ["basic", "hra", "special_allowance", "canteen_allowance", "conveyance_allowance", "epf_employee"]
     salary_changed = any(k in update_data for k in salary_keys) or "ctc_monthly" in update_data
     if salary_changed:
         salary = emp.get("salary", {}) or {}
@@ -316,17 +318,12 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
                 salary[k] = update_data.pop(k)
         if "ctc_monthly" in update_data:
             ctc = update_data.pop("ctc_monthly") or 0
-            current_total = sum(salary.get(k, 0) or 0 for k in salary_keys)
-            # If user set CTC and didn't touch breakup, auto-distribute
-            if ctc > 0 and current_total == 0:
-                salary["basic"] = round(ctc * 0.50, 2)
-                salary["hra"] = round(ctc * 0.20, 2)
-                salary["special_allowance"] = round(ctc * 0.30, 2)
             salary["ctc_monthly"] = ctc
             salary["ctc_annual"] = round(ctc * 12, 2)
             update_data["ctc_monthly"] = ctc
             update_data["ctc_annual"] = round(ctc * 12, 2)
-        salary["gross"] = sum(salary.get(k, 0) or 0 for k in salary_keys)
+        gross_keys = ["basic", "hra", "special_allowance", "canteen_allowance", "conveyance_allowance"]
+        salary["gross"] = sum(salary.get(k, 0) or 0 for k in gross_keys)
         if not salary.get("ctc_monthly"):
             salary["ctc_monthly"] = salary["gross"]
             salary["ctc_annual"] = round(salary["gross"] * 12, 2)

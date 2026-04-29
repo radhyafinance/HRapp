@@ -417,6 +417,7 @@ class ConvertToEmployeeRequest(BaseModel):
     special_allowance: float = 0
     canteen_allowance: float = 0
     conveyance_allowance: float = 0
+    epf_employee: Optional[float] = None
     bank_name: Optional[str] = None
     account_number: Optional[str] = None
     ifsc_code: Optional[str] = None
@@ -501,11 +502,6 @@ async def convert_candidate_to_employee(
     special = body.special_allowance
     canteen = body.canteen_allowance
     conveyance = body.conveyance_allowance
-    if (basic + hra + special + canteen + conveyance) == 0 and body.ctc_monthly > 0:
-        # Standard Indian split: 50% Basic, 20% HRA, 30% Special
-        basic = round(body.ctc_monthly * 0.50, 2)
-        hra = round(body.ctc_monthly * 0.20, 2)
-        special = round(body.ctc_monthly * 0.30, 2)
     gross = basic + hra + special + canteen + conveyance
     ctc_monthly = body.ctc_monthly if body.ctc_monthly > 0 else gross
     ctc_annual = round(ctc_monthly * 12, 2)
@@ -532,6 +528,7 @@ async def convert_candidate_to_employee(
             "gross": gross,
             "ctc_monthly": ctc_monthly,
             "ctc_annual": ctc_annual,
+            "epf_employee": body.epf_employee,
         },
         "ctc_monthly": ctc_monthly,
         "ctc_annual": ctc_annual,

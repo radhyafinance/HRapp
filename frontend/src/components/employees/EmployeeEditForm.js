@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { AlertCircle } from "lucide-react";
 import API from "../../utils/api";
 import { ReportingManagerInput } from "./ReportingManagerInput";
+import { SalaryBreakupForm } from "../shared/SalaryBreakupForm";
 
 const ROLES = ["hr_admin", "management", "branch_manager", "employee", "field_agent"];
 const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", branch_manager: "Manager", employee: "HO Staff", field_agent: "Field Staff" };
@@ -29,6 +30,7 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
     ctc_monthly: emp.salary?.ctc_monthly || "", basic: emp.salary?.basic || "",
     hra: emp.salary?.hra || "", special_allowance: emp.salary?.special_allowance || "",
     canteen_allowance: emp.salary?.canteen_allowance || "", conveyance_allowance: emp.salary?.conveyance_allowance || "",
+    epf_employee: emp.salary?.epf_employee || "",
     bank_name: emp.bank_details?.bank_name || "", account_number: emp.bank_details?.account_number || "",
     ifsc_code: emp.bank_details?.ifsc_code || "",
     uan_number: emp.uan_number || "", esi_number: emp.esi_number || "",
@@ -116,14 +118,10 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
       </div>
 
       <h4 className="font-bold text-[#1E2A47] text-sm pt-2 border-t">Salary</h4>
-      <div className="grid grid-cols-3 gap-3">
-        {F("ctc_monthly", "Monthly CTC (₹)", "number")}
-        {F("basic", "Basic (₹)", "number")}
-        {F("hra", "HRA (₹)", "number")}
-        {F("special_allowance", "Special (₹)", "number")}
-        {F("canteen_allowance", "Canteen (₹)", "number")}
-        {F("conveyance_allowance", "Conveyance (₹)", "number")}
-      </div>
+      <SalaryBreakupForm
+        form={form}
+        onChange={(key, val) => setForm(prev => ({ ...prev, [key]: val }))}
+      />
 
       <h4 className="font-bold text-[#1E2A47] text-sm pt-2 border-t">Bank</h4>
       <div className="grid grid-cols-3 gap-3">

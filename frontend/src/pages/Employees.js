@@ -5,6 +5,7 @@ import { DocCompletenessRing } from "../components/employees/DocCompletenessRing
 import { EmployeeModal } from "../components/employees/EmployeeModal";
 import { ReportingManagerInput } from "../components/employees/ReportingManagerInput";
 import { Modal } from "../components/shared/Modal";
+import { SalaryBreakupForm } from "../components/shared/SalaryBreakupForm";
 
 const ROLES = ["hr_admin", "management", "branch_manager", "employee", "field_agent"];
 const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", branch_manager: "Manager", employee: "HO Staff", field_agent: "Field Staff" };
@@ -16,9 +17,9 @@ const DESIGNATION_GROUPS = {
   "Risk Team": ["Audit Manager", "Credit Officer"],
 };
 
-const INITIAL_FORM = { first_name: "", last_name: "", email: "", mobile: "", department: "", designation: "", role: "employee", reporting_to: "", joining_date: "", basic: "", hra: "", special_allowance: "", canteen_allowance: "", conveyance_allowance: "", bank_name: "", account_number: "", ifsc_code: "", password: "Welcome@123", create_user_account: true };
+const INITIAL_FORM = { first_name: "", last_name: "", email: "", mobile: "", department: "", designation: "", role: "employee", reporting_to: "", joining_date: "", ctc_monthly: "", basic: "", hra: "", special_allowance: "", canteen_allowance: "", conveyance_allowance: "", epf_employee: "", bank_name: "", account_number: "", ifsc_code: "", password: "Welcome@123", create_user_account: true };
 
-const gross = (f) => (parseFloat(f.basic) || 0) + (parseFloat(f.hra) || 0) + (parseFloat(f.special_allowance) || 0) + (parseFloat(f.canteen_allowance) || 0) + (parseFloat(f.conveyance_allowance) || 0);
+const gross = (f) => (parseFloat(f.basic) || 0) + (parseFloat(f.hra) || 0) + (parseFloat(f.special_allowance) || 0) + (parseFloat(f.canteen_allowance) || 0) + (parseFloat(f.conveyance_allowance) || 0); // kept for reference only
 
 export default function Employees() {
   const [employees, setEmployees] = useState([]);
@@ -68,7 +69,7 @@ export default function Employees() {
     setSaving(true);
     setError("");
     try {
-      const payload = { ...form, basic: parseFloat(form.basic) || 0, hra: parseFloat(form.hra) || 0, special_allowance: parseFloat(form.special_allowance) || 0, canteen_allowance: parseFloat(form.canteen_allowance) || 0, conveyance_allowance: parseFloat(form.conveyance_allowance) || 0 };
+      const payload = { ...form, basic: parseFloat(form.basic) || 0, hra: parseFloat(form.hra) || 0, special_allowance: parseFloat(form.special_allowance) || 0, canteen_allowance: parseFloat(form.canteen_allowance) || 0, conveyance_allowance: parseFloat(form.conveyance_allowance) || 0, ctc_monthly: parseFloat(form.ctc_monthly) || 0, epf_employee: parseFloat(form.epf_employee) || 0 };
       await API.post("/employees", payload);
       setShowAdd(false);
       setForm(INITIAL_FORM);
@@ -247,20 +248,11 @@ export default function Employees() {
               <ReportingManagerInput value={form.reporting_to} onChange={(val) => setForm({ ...form, reporting_to: val })} />
             </div>
             <div className="border-t pt-3">
-              <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">Salary Components (Monthly)</p>
-              <div className="grid grid-cols-2 gap-3">
-                {[["basic", "Basic"], ["hra", "HRA"], ["special_allowance", "Special Allowance"], ["canteen_allowance", "Canteen Allowance"], ["conveyance_allowance", "Conveyance"]].map(([key, label]) => (
-                  <div key={key}>
-                    <label className="block text-xs font-semibold text-slate-700 mb-1">{label} (₹)</label>
-                    <input type="number" value={form[key]} onChange={e => setForm({ ...form, [key]: e.target.value })} data-testid={`emp-${key}`}
-                      className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
-                  </div>
-                ))}
-                <div className="bg-slate-50 rounded-lg p-3 flex items-center justify-between">
-                  <span className="text-xs text-slate-500">Gross Salary</span>
-                  <span className="font-bold text-[#E85B1E]">₹{gross(form).toLocaleString("en-IN")}</span>
-                </div>
-              </div>
+              <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">Salary</p>
+              <SalaryBreakupForm
+                form={form}
+                onChange={(key, val) => setForm(prev => ({ ...prev, [key]: val }))}
+              />
             </div>
             <div className="border-t pt-3">
               <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3">Bank Details</p>

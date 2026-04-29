@@ -27,8 +27,12 @@ def calc_payroll_components(emp: dict, working_days: int = 26, present_days: int
         gross_payable = gross
         basic_payable = basic
 
-    # EPF: 12% of Basic (no cap as per company policy)
-    epf_employee = round(basic_payable * 0.12, 2)
+    # EPF: use stored employee EPF if set, else default to 12% of basic
+    stored_epf = salary.get("epf_employee")
+    if stored_epf is not None and stored_epf > 0:
+        epf_employee = round(float(stored_epf) * present_days / working_days, 2) if present_days < working_days else round(float(stored_epf), 2)
+    else:
+        epf_employee = round(basic_payable * 0.12, 2)
     epf_employer = round(basic_payable * 0.12, 2)
 
     # ESIC: applicable for gross <= 21000
@@ -39,8 +43,8 @@ def calc_payroll_components(emp: dict, working_days: int = 26, present_days: int
         esic_employee = 0
         esic_employer = 0
 
-    # Gratuity provision (monthly)
-    gratuity_monthly = round((basic * 15) / (26 * 12), 2)
+    # Gratuity provision (monthly): Basic × 15 / 26
+    gratuity_monthly = round((basic_payable * 15) / 26, 2)
 
     # CTC components
     ctc_monthly = gross + epf_employer + esic_employer + gratuity_monthly

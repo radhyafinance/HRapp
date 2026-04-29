@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { FileText, CheckCircle2, AlertCircle, UserCheck } from "lucide-react";
 import API from "../../utils/api";
+import { SalaryBreakupForm } from "../shared/SalaryBreakupForm";
 
 export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
   const [empId, setEmpId] = useState(candidate.employee_id || "");
@@ -14,21 +15,21 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
   const [converting, setConverting] = useState(false);
   const [convertedInfo, setConvertedInfo] = useState(null);
   const [convertForm, setConvertForm] = useState({
-    role: "field_agent", ctc_monthly: "",
-    basic: 0, hra: 0, special_allowance: 0,
-    canteen_allowance: 0, conveyance_allowance: 0,
+    role: "field_agent",
+    ctc_monthly: "", basic: "", hra: "", special_allowance: "",
+    canteen_allowance: "", conveyance_allowance: "", epf_employee: "",
     bank_name: "", account_number: "", account_number_confirm: "",
     ifsc_code: "", reporting_to: "", password: "",
   });
   const [reportingToInfo, setReportingToInfo] = useState(null);
   const [reportingToChecking, setReportingToChecking] = useState(false);
 
-  const ctcNum = parseFloat(convertForm.ctc_monthly) || 0;
-  const computedBasic = ctcNum > 0 ? Math.round(ctcNum * 0.5) : parseFloat(convertForm.basic) || 0;
-  const computedHra = ctcNum > 0 ? Math.round(ctcNum * 0.2) : parseFloat(convertForm.hra) || 0;
-  const computedSpecial = ctcNum > 0 ? Math.round(ctcNum * 0.3) : parseFloat(convertForm.special_allowance) || 0;
-  const grossDisplay = computedBasic + computedHra + computedSpecial +
-    (parseFloat(convertForm.canteen_allowance) || 0) + (parseFloat(convertForm.conveyance_allowance) || 0);
+  const basic      = parseFloat(convertForm.basic)              || 0;
+  const hra        = parseFloat(convertForm.hra)               || 0;
+  const special    = parseFloat(convertForm.special_allowance) || 0;
+  const canteen    = parseFloat(convertForm.canteen_allowance) || 0;
+  const conv       = parseFloat(convertForm.conveyance_allowance) || 0;
+  const grossDisplay = basic + hra + special + canteen + conv;
 
   const ifscValid = !convertForm.ifsc_code || /^[A-Z]{4}0[A-Z0-9]{6}$/.test(convertForm.ifsc_code.toUpperCase());
   const accNumMatch = !convertForm.account_number || convertForm.account_number === convertForm.account_number_confirm;
@@ -116,16 +117,18 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
     if (convertForm.ifsc_code && !ifscValid) { setErr("Invalid IFSC code. Must be 4 letters + 0 + 6 alphanumeric (e.g. HDFC0001234)."); return; }
     if (convertForm.account_number && !accNumMatch) { setErr("Account numbers do not match. Please re-enter to confirm."); return; }
     if (reportingToInfo?.error) { setErr(reportingToInfo.error); return; }
+    if (grossDisplay <= 0) { setErr("Please fill in Basic Salary (and other salary components) before converting."); return; }
     setConverting(true);
     try {
       const payload = {
         role: convertForm.role || "employee",
         ctc_monthly: parseFloat(convertForm.ctc_monthly) || 0,
-        basic: ctcNum > 0 ? 0 : parseFloat(convertForm.basic) || 0,
-        hra: ctcNum > 0 ? 0 : parseFloat(convertForm.hra) || 0,
-        special_allowance: ctcNum > 0 ? 0 : parseFloat(convertForm.special_allowance) || 0,
-        canteen_allowance: parseFloat(convertForm.canteen_allowance) || 0,
-        conveyance_allowance: parseFloat(convertForm.conveyance_allowance) || 0,
+        basic:               parseFloat(convertForm.basic)              || 0,
+        hra:                 parseFloat(convertForm.hra)               || 0,
+        special_allowance:   parseFloat(convertForm.special_allowance) || 0,
+        canteen_allowance:   parseFloat(convertForm.canteen_allowance) || 0,
+        conveyance_allowance:parseFloat(convertForm.conveyance_allowance) || 0,
+        epf_employee:        parseFloat(convertForm.epf_employee)      || 0,
       };
       if (convertForm.bank_name) payload.bank_name = convertForm.bank_name;
       if (convertForm.account_number) payload.account_number = convertForm.account_number;
@@ -214,57 +217,25 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
 
         {showConvert && (
           <div className="mt-3 bg-white border border-slate-200 rounded-lg p-3 space-y-3" data-testid="convert-form">
-            <p className="text-xs text-slate-500">Set CTC, role and bank details. KYC documents (Aadhaar / PAN) and personal data will be copied automatically.</p>
+            <p className="text-xs text-slate-500">Fill salary components, role and bank details. KYC documents (Aadhaar / PAN) and personal data will be copied automatically.</p>
 
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Monthly CTC (₹) <span className="text-red-500">*</span></label>
-                <input type="number" min="0" step="100" value={convertForm.ctc_monthly} onChange={e => setConvertForm({ ...convertForm, ctc_monthly: e.target.value })}
-                  data-testid="convert-ctc-monthly" placeholder="e.g. 20000" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
-                {ctcNum > 0 && <p className="text-[10px] text-slate-500 mt-1">Annual CTC: <span className="font-semibold">₹{(ctcNum * 12).toLocaleString("en-IN")}</span></p>}
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Role</label>
-                <select value={convertForm.role} onChange={e => setConvertForm({ ...convertForm, role: e.target.value })} data-testid="convert-role-select"
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-[#E85B1E] outline-none">
-                  <option value="field_agent">Field Staff</option>
-                  <option value="employee">HO Staff</option>
-                  <option value="branch_manager">Manager</option>
-                  <option value="hr_admin">HR Admin</option>
-                  <option value="management">Management</option>
-                </select>
-              </div>
-            </div>
+            {/* Salary breakup */}
+            <SalaryBreakupForm
+              form={convertForm}
+              onChange={(key, val) => setConvertForm(prev => ({ ...prev, [key]: val }))}
+            />
 
-            {ctcNum > 0 && (
-              <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 text-xs space-y-1" data-testid="ctc-breakup">
-                <p className="font-semibold text-slate-600 mb-1">Auto-distributed salary:</p>
-                <div className="grid grid-cols-3 gap-2">
-                  {[["Basic (50%)", computedBasic], ["HRA (20%)", computedHra], ["Special (30%)", computedSpecial]].map(([l, v]) => (
-                    <div key={l} className="bg-white border border-slate-100 rounded p-1.5">
-                      <p className="text-slate-500">{l}</p>
-                      <p className="font-bold text-[#1E2A47]">₹{v.toLocaleString("en-IN")}</p>
-                    </div>
-                  ))}
-                </div>
-                <div className="flex items-center justify-between text-slate-600 font-semibold pt-1 border-t border-slate-200">
-                  <span>Gross (before extras)</span>
-                  <span className="text-[#E85B1E]">₹{grossDisplay.toLocaleString("en-IN")}/mo</span>
-                </div>
-              </div>
-            )}
-
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Canteen Allowance (₹)</label>
-                <input type="number" min="0" value={convertForm.canteen_allowance} onChange={e => setConvertForm({ ...convertForm, canteen_allowance: e.target.value })}
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">Conveyance (₹)</label>
-                <input type="number" min="0" value={convertForm.conveyance_allowance} onChange={e => setConvertForm({ ...convertForm, conveyance_allowance: e.target.value })}
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
-              </div>
+            {/* Role */}
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Role</label>
+              <select value={convertForm.role} onChange={e => setConvertForm({ ...convertForm, role: e.target.value })} data-testid="convert-role-select"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-[#E85B1E] outline-none">
+                <option value="field_agent">Field Staff</option>
+                <option value="employee">HO Staff</option>
+                <option value="branch_manager">Manager</option>
+                <option value="hr_admin">HR Admin</option>
+                <option value="management">Management</option>
+              </select>
             </div>
 
             <div>
@@ -327,7 +298,7 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
             )}
 
             <button type="button" onClick={doConvert}
-              disabled={converting || ctcNum <= 0 || !ifscValid || !accNumMatch || reportingToInfo?.error}
+              disabled={converting || grossDisplay <= 0 || !ifscValid || !accNumMatch || reportingToInfo?.error}
               data-testid="confirm-convert-btn"
               className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 disabled:opacity-50">
               {converting ? (
@@ -336,7 +307,7 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
                 <><UserCheck size={14} /> Confirm — Create Employee</>
               )}
             </button>
-            {ctcNum <= 0 && <p className="text-[11px] text-amber-700">Set a Monthly CTC to enable conversion.</p>}
+            {grossDisplay <= 0 && <p className="text-[11px] text-amber-700">Fill in salary components (Basic, HRA etc.) to enable conversion.</p>}
           </div>
         )}
       </div>
