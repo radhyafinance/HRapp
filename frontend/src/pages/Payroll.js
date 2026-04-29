@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
-import { Play, Download, Eye, X, FileText } from "lucide-react";
+import { Play, Download, Eye, X, FileText, Save, CheckCircle2 } from "lucide-react";
 
 function Modal({ title, onClose, children }) {
   return (
@@ -36,7 +36,57 @@ export default function Payroll() {
   const [filterPeriod, setFilterPeriod] = useState("");
   const [showSlip, setShowSlip] = useState(null);
   const [downloadingId, setDownloadingId] = useState(null);
+  const [editTds, setEditTds] = useState("");
+  const [editOtherDed, setEditOtherDed] = useState("");
+  const [editOtherAdd, setEditOtherAdd] = useState("");
+  const [editRemarks, setEditRemarks] = useState("");
+  const [savingEdits, setSavingEdits] = useState(false);
+  const [finalizing, setFinalizing] = useState(false);
   const isManager = ["hr_admin", "management"].includes(user?.role);
+
+  // When opening the payslip modal, prime edit fields with stored values
+  const openSlip = (r) => {
+    setShowSlip(r);
+    setEditTds(r.tds || 0);
+    setEditOtherDed(r.other_deductions || 0);
+    setEditOtherAdd(r.other_additions || 0);
+    setEditRemarks(r.remarks || "");
+  };
+
+  const saveEdits = async () => {
+    if (!showSlip) return;
+    setSavingEdits(true);
+    try {
+      const res = await API.put(`/payroll/${showSlip.id}`, {
+        tds: parseFloat(editTds) || 0,
+        other_deductions: parseFloat(editOtherDed) || 0,
+        other_additions: parseFloat(editOtherAdd) || 0,
+        remarks: editRemarks || null,
+      });
+      setShowSlip(res.data);
+      setRecords(prev => prev.map(r => r.id === res.data.id ? res.data : r));
+    } catch (e) {
+      alert(e.response?.data?.detail || "Failed to save changes");
+    } finally {
+      setSavingEdits(false);
+    }
+  };
+
+  const markPaid = async () => {
+    if (!showSlip) return;
+    if (!window.confirm(`Mark payroll for ${showSlip.employee_name} (${showSlip.period}) as PAID?\n\nThis is final — the record will be locked.`)) return;
+    setFinalizing(true);
+    try {
+      await API.post(`/payroll/${showSlip.id}/finalize`);
+      const updated = { ...showSlip, status: "paid" };
+      setShowSlip(updated);
+      setRecords(prev => prev.map(r => r.id === updated.id ? updated : r));
+    } catch (e) {
+      alert(e.response?.data?.detail || "Failed to mark as paid");
+    } finally {
+      setFinalizing(false);
+    }
+  };
 
   const fetchRecords = async () => {
     setLoading(true);
@@ -166,7 +216,7 @@ export default function Payroll() {
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex gap-1.5">
-                        <button onClick={() => setShowSlip(r)} data-testid={`view-slip-${r.id}`}
+                        <button onClick={() => openSlip(r)} data-testid={`view-slip-${r.id}`}
                           className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" title="View payslip">
                           <Eye size={16} />
                         </button>
@@ -254,15 +304,72 @@ export default function Payroll() {
               {[
                 ["EPF (Employee 12%)", showSlip.epf_employee],
                 ["ESIC (Employee 0.75%)", showSlip.esic_employee],
-                ["TDS", showSlip.tds],
-                ["Other Deductions", showSlip.other_deductions],
               ].filter(([, v]) => v > 0).map(([label, val]) => (
                 <div key={label} className="flex justify-between text-sm border-b border-slate-100 pb-1">
                   <span className="text-slate-600">{label}</span>
                   <span className="text-red-600 font-medium">-₹{val?.toLocaleString("en-IN")}</span>
                 </div>
               ))}
+
+              {isManager && showSlip.status !== "paid" ? (
+                <>
+                  <div className="grid grid-cols-3 gap-2 pt-2">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">TDS (₹)</label>
+                      <input type="number" min="0" step="1" value={editTds} onChange={e => setEditTds(e.target.value)} data-testid="edit-tds"
+                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">Other Deductions (₹)</label>
+                      <input type="number" min="0" step="1" value={editOtherDed} onChange={e => setEditOtherDed(e.target.value)} data-testid="edit-other-deductions"
+                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">Other Additions (₹)</label>
+                      <input type="number" min="0" step="1" value={editOtherAdd} onChange={e => setEditOtherAdd(e.target.value)} data-testid="edit-other-additions"
+                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                    </div>
+                  </div>
+                  <div className="pt-1">
+                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Remarks</label>
+                    <input value={editRemarks} onChange={e => setEditRemarks(e.target.value)} placeholder="e.g. Bonus paid in March" data-testid="edit-remarks"
+                      className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                  </div>
+                  <p className="text-[11px] text-slate-500 italic">Saving these will recalculate Net Salary and move status to <span className="font-semibold">Processed</span>.</p>
+                </>
+              ) : (
+                [
+                  ["TDS", showSlip.tds],
+                  ["Other Deductions", showSlip.other_deductions],
+                ].filter(([, v]) => v > 0).map(([label, val]) => (
+                  <div key={label} className="flex justify-between text-sm border-b border-slate-100 pb-1">
+                    <span className="text-slate-600">{label}</span>
+                    <span className="text-red-600 font-medium">-₹{val?.toLocaleString("en-IN")}</span>
+                  </div>
+                ))
+              )}
             </div>
+
+            {/* HR action buttons */}
+            {isManager && showSlip.status !== "paid" && (
+              <div className="flex flex-col sm:flex-row gap-2">
+                <button onClick={saveEdits} disabled={savingEdits} data-testid="save-payroll-edits-btn"
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-[#1E2A47] text-white rounded-lg text-sm font-semibold hover:bg-[#2A3A5E] disabled:opacity-50">
+                  {savingEdits ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Saving...</> : <><Save size={14} /> Save Adjustments</>}
+                </button>
+                <button onClick={markPaid} disabled={finalizing || showSlip.status === "draft"} data-testid="mark-paid-btn"
+                  title={showSlip.status === "draft" ? "Save adjustments first to move record to Processed before marking as paid" : ""}
+                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed">
+                  {finalizing ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Marking...</> : <><CheckCircle2 size={14} /> Mark as Paid</>}
+                </button>
+              </div>
+            )}
+            {showSlip.status === "paid" && (
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm flex items-center gap-2 text-green-800">
+                <CheckCircle2 size={16} className="text-green-600" />
+                <span><strong>Paid.</strong> This payroll record is finalized and locked.</span>
+              </div>
+            )}
 
             {/* Net salary */}
             <div className="bg-[#E85B1E] text-white p-4 rounded-lg flex justify-between items-center">
