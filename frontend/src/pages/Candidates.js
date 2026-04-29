@@ -1,8 +1,69 @@
 import React, { useEffect, useState } from "react";
 import API from "../utils/api";
-import { UserPlus, Search, X, Camera, Sparkles, Image as ImageIcon, FileText, CheckCircle2, AlertCircle, Eye } from "lucide-react";
+import { UserPlus, Search, X, Camera, Sparkles, Image as ImageIcon, FileText, CheckCircle2, AlertCircle, Eye, Undo2 } from "lucide-react";
 
 const STATUS_COLORS = { pending: "bg-amber-100 text-amber-700", selected: "bg-green-100 text-green-700", rejected: "bg-red-100 text-red-700" };
+
+const DEPARTMENTS = ["Accounts", "Administration", "Compliance", "Human Resources", "IT", "Operations", "Risk and Credit"];
+
+// Compress image client-side so the resulting file is under TARGET_BYTES.
+// Tries decreasing JPEG quality and downscaling until size fits.
+async function compressImage(file, { maxBytes = 1024 * 1024, maxDimension = 1920, mime = "image/jpeg" } = {}) {
+  if (!file) return file;
+  // If already a small image and it's a jpeg/png, just return original
+  if (file.size <= maxBytes && /^image\/(jpe?g|png|webp)$/i.test(file.type)) {
+    return file;
+  }
+  const dataUrl = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = (e) => resolve(e.target.result);
+    r.onerror = reject;
+    r.readAsDataURL(file);
+  });
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image();
+    i.onload = () => resolve(i);
+    i.onerror = reject;
+    i.src = dataUrl;
+  });
+  let { width, height } = img;
+  const scale = Math.min(1, maxDimension / Math.max(width, height));
+  width = Math.round(width * scale);
+  height = Math.round(height * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, width, height);
+  ctx.drawImage(img, 0, 0, width, height);
+
+  const qualities = [0.85, 0.75, 0.65, 0.55, 0.45, 0.35];
+  let blob = null;
+  for (const q of qualities) {
+    blob = await new Promise((resolve) => canvas.toBlob(resolve, mime, q));
+    if (blob && blob.size <= maxBytes) break;
+  }
+  // Final fallback: shrink dimensions further
+  if (blob && blob.size > maxBytes) {
+    const shrinkScales = [0.75, 0.6, 0.5, 0.4];
+    for (const s of shrinkScales) {
+      const w2 = Math.round(width * s);
+      const h2 = Math.round(height * s);
+      const c2 = document.createElement("canvas");
+      c2.width = w2; c2.height = h2;
+      const cx = c2.getContext("2d");
+      cx.fillStyle = "#FFFFFF";
+      cx.fillRect(0, 0, w2, h2);
+      cx.drawImage(img, 0, 0, w2, h2);
+      blob = await new Promise((resolve) => c2.toBlob(resolve, mime, 0.7));
+      if (blob && blob.size <= maxBytes) break;
+    }
+  }
+  if (!blob) return file;
+  const renamed = file.name ? file.name.replace(/\.[^.]+$/, ".jpg") : "image.jpg";
+  return new File([blob], renamed, { type: mime, lastModified: Date.now() });
+}
 
 function Modal({ title, onClose, children, wide }) {
   return (
@@ -48,12 +109,14 @@ function DocUploadCard({ label, file, onChange, onClear, testid }) {
     setPreview(url);
     return () => URL.revokeObjectURL(url);
   }, [file]);
+  const sizeKb = file ? Math.round(file.size / 1024) : 0;
   return (
     <label className={`relative flex flex-col items-center justify-center border-2 border-dashed rounded-xl p-3 text-center cursor-pointer transition-colors ${file ? "border-[#E85B1E] bg-[#E85B1E]/5" : "border-slate-300 hover:border-slate-400 bg-slate-50/50"}`}>
       {preview ? (
         <>
           <img src={preview} alt={label} className="w-full h-28 object-cover rounded-lg mb-2" />
           <p className="text-xs font-semibold text-[#1E2A47] truncate w-full">{label}</p>
+          <p className="text-[10px] text-slate-500">{sizeKb} KB</p>
           <button type="button" onClick={(e) => { e.preventDefault(); onClear(); }} className="absolute top-1 right-1 bg-white/90 rounded-full p-1 text-red-500 hover:bg-white">
             <X size={12} />
           </button>
@@ -96,6 +159,20 @@ export default function Candidates() {
   const [panOcrLoading, setPanOcrLoading] = useState(false);
   const [aadhaarOcrDone, setAadhaarOcrDone] = useState(false);
   const [panOcrDone, setPanOcrDone] = useState(false);
+  const [compressing, setCompressing] = useState(false);
+
+  const handleFilePick = async (setter, file) => {
+    if (!file) { setter(null); return; }
+    setCompressing(true);
+    try {
+      const compressed = await compressImage(file, { maxBytes: 1024 * 1024 });
+      setter(compressed);
+    } catch (e) {
+      setter(file);
+    } finally {
+      setCompressing(false);
+    }
+  };
 
   const fetchCandidates = async () => {
     setLoading(true);
@@ -312,9 +389,19 @@ export default function Candidates() {
                         <button onClick={() => setShowDetail(c)} data-testid={`view-cand-${c.id}`} className="text-xs px-2 py-1 bg-[#1E2A47]/10 text-[#1E2A47] rounded-lg hover:bg-[#1E2A47]/20">View</button>
                         {c.status === "pending" && (
                           <>
-                            <button onClick={() => handleStatusUpdate(c.id, "selected")} className="text-xs px-2 py-1 bg-green-100 text-green-700 rounded-lg hover:bg-green-200">Select</button>
-                            <button onClick={() => handleStatusUpdate(c.id, "rejected", { rejection_reason: "Not suitable" })} className="text-xs px-2 py-1 bg-red-100 text-red-700 rounded-lg hover:bg-red-200">Reject</button>
+                            <button onClick={() => handleStatusUpdate(c.id, "selected")} data-testid={`select-cand-${c.id}`} className="text-xs px-2 py-1 bg-green-100 text-green-700 rounded-lg hover:bg-green-200">Select</button>
+                            <button onClick={() => handleStatusUpdate(c.id, "rejected", { rejection_reason: "Not suitable" })} data-testid={`reject-cand-${c.id}`} className="text-xs px-2 py-1 bg-red-100 text-red-700 rounded-lg hover:bg-red-200">Reject</button>
                           </>
+                        )}
+                        {(c.status === "selected" || c.status === "rejected") && (
+                          <button
+                            onClick={() => handleStatusUpdate(c.id, "pending", { rejection_reason: "" })}
+                            data-testid={`undo-cand-${c.id}`}
+                            className="flex items-center gap-1 text-xs px-2 py-1 bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200"
+                            title={`Undo ${c.status}`}
+                          >
+                            <Undo2 size={12} /> Undo
+                          </button>
                         )}
                       </div>
                     </td>
@@ -335,20 +422,22 @@ export default function Candidates() {
                   <h4 className="font-bold text-[#1E2A47] text-sm flex items-center gap-2">
                     <Sparkles size={16} className="text-[#E85B1E]" /> Aadhaar Auto-fill (Front + Back)
                   </h4>
-                  <p className="text-xs text-slate-500 mt-0.5">Upload both sides — Gemini AI extracts name, DOB, gender, father/husband, address, pincode, Aadhaar #.</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Upload both sides — Gemini AI extracts name, DOB, gender, father/husband, address, pincode, Aadhaar #. Images are auto-compressed to under 1 MB.</p>
                 </div>
                 {aadhaarOcrDone && (
                   <span className="flex items-center gap-1 text-green-600 text-xs font-medium"><CheckCircle2 size={14} /> Auto-filled</span>
                 )}
               </div>
               <div className="grid grid-cols-2 gap-3 mb-3">
-                <DocUploadCard label="Aadhaar Front" file={aadhaarFront} onChange={setAadhaarFront} onClear={() => setAadhaarFront(null)} testid="aadhaar-front-input" />
-                <DocUploadCard label="Aadhaar Back" file={aadhaarBack} onChange={setAadhaarBack} onClear={() => setAadhaarBack(null)} testid="aadhaar-back-input" />
+                <DocUploadCard label="Aadhaar Front" file={aadhaarFront} onChange={(f) => handleFilePick(setAadhaarFront, f)} onClear={() => setAadhaarFront(null)} testid="aadhaar-front-input" />
+                <DocUploadCard label="Aadhaar Back" file={aadhaarBack} onChange={(f) => handleFilePick(setAadhaarBack, f)} onClear={() => setAadhaarBack(null)} testid="aadhaar-back-input" />
               </div>
-              <button type="button" onClick={runAadhaarOCR} disabled={aadhaarOcrLoading || (!aadhaarFront && !aadhaarBack)} data-testid="run-aadhaar-ocr-btn"
+              <button type="button" onClick={runAadhaarOCR} disabled={aadhaarOcrLoading || compressing || (!aadhaarFront && !aadhaarBack)} data-testid="run-aadhaar-ocr-btn"
                 className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-[#1E2A47] text-white rounded-lg text-sm font-semibold hover:bg-[#2A3A5E] disabled:opacity-50 transition-colors">
                 {aadhaarOcrLoading ? (
                   <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />Extracting from Aadhaar...</>
+                ) : compressing ? (
+                  <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />Compressing image...</>
                 ) : (
                   <><Sparkles size={14} /> Extract Aadhaar Details</>
                 )}
@@ -362,18 +451,20 @@ export default function Candidates() {
                   <h4 className="font-bold text-[#1E2A47] text-sm flex items-center gap-2">
                     <FileText size={16} className="text-blue-600" /> PAN Auto-fill
                   </h4>
-                  <p className="text-xs text-slate-500 mt-0.5">Upload the PAN card — Gemini AI extracts the 10-character PAN number.</p>
+                  <p className="text-xs text-slate-500 mt-0.5">Upload the PAN card — Gemini AI extracts the 10-character PAN number. Image is auto-compressed to under 1 MB.</p>
                 </div>
                 {panOcrDone && (
                   <span className="flex items-center gap-1 text-green-600 text-xs font-medium"><CheckCircle2 size={14} /> Auto-filled</span>
                 )}
               </div>
               <div className="grid grid-cols-2 gap-3 mb-3">
-                <DocUploadCard label="PAN Card" file={panFile} onChange={setPanFile} onClear={() => setPanFile(null)} testid="pan-input" />
-                <button type="button" onClick={runPanOCR} disabled={panOcrLoading || !panFile} data-testid="run-pan-ocr-btn"
+                <DocUploadCard label="PAN Card" file={panFile} onChange={(f) => handleFilePick(setPanFile, f)} onClear={() => setPanFile(null)} testid="pan-input" />
+                <button type="button" onClick={runPanOCR} disabled={panOcrLoading || compressing || !panFile} data-testid="run-pan-ocr-btn"
                   className="flex items-center justify-center gap-2 px-4 py-3 bg-blue-600 text-white rounded-lg text-sm font-semibold hover:bg-blue-700 disabled:opacity-50 transition-colors">
                   {panOcrLoading ? (
                     <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />Extracting...</>
+                  ) : compressing ? (
+                    <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />Compressing...</>
                   ) : (
                     <><Sparkles size={14} /> Extract PAN</>
                   )}
@@ -451,8 +542,11 @@ export default function Candidates() {
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Department<span className="text-red-500">*</span></label>
-                  <input value={form.department} onChange={e => setForm({ ...form, department: e.target.value })} required
-                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="form-department" />
+                  <select value={form.department} onChange={e => setForm({ ...form, department: e.target.value })} required
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none bg-white" data-testid="form-department">
+                    <option value="">Select department</option>
+                    {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+                  </select>
                 </div>
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Interview Date</label>
