@@ -22,10 +22,11 @@ export function SalaryBreakupForm({ form, onChange }) {
   const esicApplicable = basic > 0 && basic <= 21000;
   const esicEmp        = esicApplicable ? Math.round(basic * 0.0075) : 0;
   const esicEr         = esicApplicable ? Math.round(basic * 0.0325) : 0;
+  const epfEr          = basic > 0 ? Math.round(basic * 0.12) : 0;
   const gratuity       = basic > 0 ? Math.round((basic * 15) / 26 / 12) : 0;
   const totalDeduction = epf + esicEmp;
   const netTakeHome    = gross - totalDeduction;
-  const totalCostToCompany = gross + esicEr + gratuity;
+  const totalCostToCompany = gross + epfEr + esicEr + gratuity;
 
   const F = (key, label) => (
     <div>
@@ -71,6 +72,12 @@ export function SalaryBreakupForm({ form, onChange }) {
           <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Auto-Computed</p>
 
           <div className="space-y-1.5">
+            <div className="flex justify-between">
+              <span className="text-slate-500">EPF — Employer (12% of Basic)</span>
+              <span className="font-medium text-orange-600">
+                {basic > 0 ? `₹${epfEr.toLocaleString("en-IN")}` : "—"}
+              </span>
+            </div>
             <div className="flex justify-between">
               <span className="text-slate-500">ESIC — Employee (0.75% of Basic)</span>
               <span className={`font-medium ${esicApplicable ? "text-red-600" : "text-slate-400 italic"}`}>
