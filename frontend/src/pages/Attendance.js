@@ -254,9 +254,21 @@ export default function Attendance() {
           )}
 
           {result && (
-            <div className={`flex items-start gap-2 p-3 rounded-lg mb-4 text-sm ${result.success ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`} data-testid="punch-result">
+            <div className={`flex items-start gap-2 p-3 rounded-lg mb-4 text-sm ${result.success ? (result.face_warning ? "bg-amber-50 text-amber-800 border border-amber-200" : "bg-green-50 text-green-700") : "bg-red-50 text-red-700"}`} data-testid="punch-result">
               {result.success ? <CheckCircle size={16} className="flex-shrink-0 mt-0.5" /> : <AlertCircle size={16} className="flex-shrink-0 mt-0.5" />}
-              <span>{result.message}</span>
+              <div className="flex-1">
+                <p>{result.message}</p>
+                {result.face_warning && (
+                  <p className="text-xs mt-1 font-medium" data-testid="face-warning">
+                    ⚠ Face check: {result.face_warning}
+                  </p>
+                )}
+                {result.success && result.face_matched === true && (
+                  <p className="text-xs mt-1 text-green-600" data-testid="face-matched">
+                    ✓ Face verified
+                  </p>
+                )}
+              </div>
             </div>
           )}
 

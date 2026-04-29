@@ -3,9 +3,13 @@ from pydantic import BaseModel
 from typing import Optional
 from database import db
 from auth_utils import get_current_user
+from services.face_match import compare_face_with_reference, DEFAULT_TOLERANCE
 from datetime import datetime, timezone, date
 import math
+import os
+import logging
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 OFFICE_LOCATIONS_CACHE = []
@@ -28,6 +32,73 @@ async def check_geofence(lat: float, lon: float):
         if dist <= radius:
             return True, loc["name"], dist
     return False, None, None
+
+
+async def _is_face_match_strict() -> bool:
+    """Read the global face-match strict flag from settings (default False = warn-but-allow)."""
+    settings = await db.app_settings.find_one({"key": "face_match"}) or {}
+    return bool(settings.get("strict", False))
+
+
+async def _verify_face(employee_id: str, selfie_b64: Optional[str]) -> dict:
+    """Compare selfie against the employee's passport_photo.
+
+    Returns a dict: {
+        ok: bool,             # True if the request can proceed
+        matched: bool|None,   # True / False / None (no reference)
+        distance: float|None,
+        reason: str|None,     # populated when ok=False or match failed
+        strict: bool,
+    }
+    """
+    strict = await _is_face_match_strict()
+    docs = await db.employee_documents.find_one({"employee_id": employee_id}) or {}
+    passport = docs.get("passport_photo")
+    # passport is stored as {"data": <base64>, "mime": ..., ...}
+    reference = passport.get("data") if isinstance(passport, dict) else passport
+
+    # Per requirement: block punch if no passport_photo on file.
+    if not reference:
+        return {
+            "ok": False,
+            "matched": None,
+            "distance": None,
+            "reason": "Face verification not possible — no passport-size photo on file. Ask HR to upload it under Employees → Documents.",
+            "strict": strict,
+        }
+    if not selfie_b64:
+        return {
+            "ok": False,
+            "matched": None,
+            "distance": None,
+            "reason": "Selfie required for punch.",
+            "strict": strict,
+        }
+
+    matched, distance, reason = compare_face_with_reference(selfie_b64, reference, tolerance=DEFAULT_TOLERANCE)
+    if reason and not matched:
+        # Couldn't run match (no face detected, decode error, etc.)
+        if strict:
+            return {"ok": False, "matched": False, "distance": distance, "reason": reason, "strict": strict}
+        # Warn-but-allow mode: still let punch through but flag it
+        return {"ok": True, "matched": False, "distance": distance, "reason": reason, "strict": strict}
+
+    if not matched and strict:
+        return {
+            "ok": False,
+            "matched": False,
+            "distance": distance,
+            "reason": f"Face does not match passport photo on file (distance {distance}). Contact HR.",
+            "strict": strict,
+        }
+
+    return {
+        "ok": True,
+        "matched": matched,
+        "distance": distance,
+        "reason": None if matched else f"Face match weak (distance {distance}); HR will review.",
+        "strict": strict,
+    }
 
 
 def att_to_dict(a):
@@ -59,13 +130,24 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
     if existing and existing.get("punch_in_time"):
         raise HTTPException(status_code=400, detail="Already punched in today")
     in_fence, location_name, distance = await check_geofence(data.latitude, data.longitude)
+
+    # Face match (skipped for management role)
+    face_result = {"ok": True, "matched": None, "distance": None, "reason": None, "strict": False}
+    if current_user.get("role") != "management":
+        face_result = await _verify_face(data.employee_id, data.photo_base64)
+        if not face_result["ok"]:
+            raise HTTPException(status_code=400, detail=face_result["reason"])
+
     now = datetime.now(timezone.utc)
     record = {
         "employee_id": data.employee_id,
         "date": today,
         "punch_in_time": now.isoformat(),
         "punch_in_location": {"lat": data.latitude, "lon": data.longitude, "name": location_name},
-        "punch_in_photo": data.photo_base64[:500] if data.photo_base64 else None,
+        "punch_in_photo": data.photo_base64 if data.photo_base64 else None,
+        "punch_in_face_matched": face_result.get("matched"),
+        "punch_in_face_distance": face_result.get("distance"),
+        "punch_in_face_warning": face_result.get("reason") if face_result.get("matched") is False else None,
         "geofence_verified": in_fence,
         "distance_from_office": round(distance, 2) if distance else None,
         "location_name": location_name,
@@ -82,6 +164,9 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
         "location_name": location_name,
         "distance_meters": round(distance, 2) if distance else None,
         "punch_in_time": now.isoformat(),
+        "face_matched": face_result.get("matched"),
+        "face_distance": face_result.get("distance"),
+        "face_warning": face_result.get("reason") if face_result.get("matched") is False else None,
         "message": f"Punched in {'within geofence' if in_fence else 'OUTSIDE geofence'}" + (f" at {location_name}" if location_name else ""),
     }
 
@@ -97,6 +182,14 @@ async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current
     if record.get("punch_out_time"):
         raise HTTPException(status_code=400, detail="Already punched out today")
     in_fence, location_name, distance = await check_geofence(data.latitude, data.longitude)
+
+    # Face match (skipped for management role)
+    face_result = {"ok": True, "matched": None, "distance": None, "reason": None, "strict": False}
+    if current_user.get("role") != "management":
+        face_result = await _verify_face(data.employee_id, data.photo_base64)
+        if not face_result["ok"]:
+            raise HTTPException(status_code=400, detail=face_result["reason"])
+
     now = datetime.now(timezone.utc)
     punch_in_time = datetime.fromisoformat(record["punch_in_time"])
     hours_worked = (now - punch_in_time).total_seconds() / 3600
@@ -105,7 +198,10 @@ async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current
         {"$set": {
             "punch_out_time": now.isoformat(),
             "punch_out_location": {"lat": data.latitude, "lon": data.longitude, "name": location_name},
-            "punch_out_photo": data.photo_base64[:500] if data.photo_base64 else None,
+            "punch_out_photo": data.photo_base64 if data.photo_base64 else None,
+            "punch_out_face_matched": face_result.get("matched"),
+            "punch_out_face_distance": face_result.get("distance"),
+            "punch_out_face_warning": face_result.get("reason") if face_result.get("matched") is False else None,
             "hours_worked": round(hours_worked, 2),
         }},
     )
@@ -114,6 +210,9 @@ async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current
         "hours_worked": round(hours_worked, 2),
         "punch_out_time": now.isoformat(),
         "message": f"Punched out. Total hours: {round(hours_worked, 2)}",
+        "face_matched": face_result.get("matched"),
+        "face_distance": face_result.get("distance"),
+        "face_warning": face_result.get("reason") if face_result.get("matched") is False else None,
     }
 
 

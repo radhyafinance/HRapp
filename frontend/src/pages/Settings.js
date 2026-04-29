@@ -46,20 +46,24 @@ export default function Settings() {
   const [company, setCompany] = useState(INIT_COMPANY);
   const [companyOriginal, setCompanyOriginal] = useState(INIT_COMPANY);
   const [savingCompany, setSavingCompany] = useState(false);
+  const [faceMatchStrict, setFaceMatchStrict] = useState(false);
+  const [savingFaceMatch, setSavingFaceMatch] = useState(false);
 
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [locRes, userRes, compRes] = await Promise.all([
+      const [locRes, userRes, compRes, faceRes] = await Promise.all([
         API.get("/locations"),
         API.get("/auth/users"),
         API.get("/settings/company"),
+        API.get("/settings/face-match"),
       ]);
       setLocations(locRes.data);
       setUsers(userRes.data);
       const c = { ...INIT_COMPANY, ...compRes.data };
       setCompany(c);
       setCompanyOriginal(c);
+      setFaceMatchStrict(!!faceRes.data?.strict);
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
   };
@@ -112,6 +116,15 @@ export default function Settings() {
     finally { setSavingCompany(false); }
   };
 
+  const saveFaceMatch = async (newStrict) => {
+    setSavingFaceMatch(true);
+    try {
+      await API.put("/settings/face-match", { strict: newStrict });
+      setFaceMatchStrict(newStrict);
+    } catch (err) { alert(err.response?.data?.detail || "Failed to save"); }
+    finally { setSavingFaceMatch(false); }
+  };
+
   const TYPE_BADGE = { head_office: "bg-[#1E2A47] text-white", branch: "bg-blue-100 text-blue-700", field: "bg-green-100 text-green-700" };
 
   return (
@@ -123,7 +136,7 @@ export default function Settings() {
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 border-b border-slate-200">
-        {[["locations", "Office Locations"], ["company", "Company / Bank"], ["users", "User Management"]].map(([val, label]) => (
+        {[["locations", "Office Locations"], ["company", "Company / Bank"], ["attendance", "Attendance"], ["users", "User Management"]].map(([val, label]) => (
           <button key={val} onClick={() => setActiveTab(val)} data-testid={`settings-tab-${val}`}
             className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${activeTab === val ? "border-[#E85B1E] text-[#E85B1E]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             {label}
@@ -256,6 +269,43 @@ export default function Settings() {
               </button>
             </div>
           </form>
+        </div>
+      )}
+
+      {activeTab === "attendance" && (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-5" data-testid="attendance-settings">
+          <div>
+            <h3 className="font-bold text-[#1E2A47] text-lg" style={{ fontFamily: "'Outfit', sans-serif" }}>Face Match Verification</h3>
+            <p className="text-slate-500 text-sm">When employees punch in / out, their selfie is compared against the passport-size photo on file.</p>
+          </div>
+
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+            <p className="text-sm text-amber-900">
+              <strong>Important:</strong> If an employee has no <em>passport_photo</em> uploaded under Employees → Documents, they cannot punch in until HR uploads one.
+            </p>
+          </div>
+
+          <div className="border border-slate-200 rounded-lg p-4">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-sm font-semibold text-[#0F172A]">Strict mode</p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  {faceMatchStrict
+                    ? "ON — punches are blocked if the face does not match the passport photo."
+                    : "OFF — punches are allowed even if face mismatch, but flagged for HR review."}
+                </p>
+              </div>
+              <button onClick={() => saveFaceMatch(!faceMatchStrict)} disabled={savingFaceMatch}
+                data-testid="toggle-face-match-strict"
+                className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${faceMatchStrict ? "bg-[#E85B1E]" : "bg-slate-300"}`}>
+                <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${faceMatchStrict ? "translate-x-6" : "translate-x-1"}`} />
+              </button>
+            </div>
+          </div>
+
+          <p className="text-xs text-slate-500">
+            Match threshold: <strong>0.40</strong> (balanced). Powered by face_recognition (dlib).
+          </p>
         </div>
       )}
 

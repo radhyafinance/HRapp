@@ -53,3 +53,34 @@ async def update_company(data: CompanySettings, current_user: dict = Depends(get
     doc = await db.app_settings.find_one({"key": COMPANY_KEY})
     doc.pop("_id", None)
     return doc
+
+
+# ---------------- Face match settings ----------------
+
+FACE_KEY = "face_match"
+
+
+class FaceMatchSettings(BaseModel):
+    strict: bool = False  # False = warn-but-allow (default); True = block punch on mismatch
+
+
+@router.get("/face-match")
+async def get_face_match(current_user: dict = Depends(get_current_user)):
+    doc = await db.app_settings.find_one({"key": FACE_KEY}) or {"key": FACE_KEY, "strict": False}
+    doc.pop("_id", None)
+    return doc
+
+
+@router.put("/face-match")
+async def update_face_match(data: FaceMatchSettings, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    update = {**data.model_dump(), "updated_at": datetime.now(timezone.utc).isoformat()}
+    await db.app_settings.update_one(
+        {"key": FACE_KEY},
+        {"$set": update, "$setOnInsert": {"key": FACE_KEY}},
+        upsert=True,
+    )
+    doc = await db.app_settings.find_one({"key": FACE_KEY})
+    doc.pop("_id", None)
+    return doc
