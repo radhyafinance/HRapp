@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, Response
 from pydantic import BaseModel
 from typing import Optional
 from database import db
@@ -34,6 +34,18 @@ class CandidateCreate(BaseModel):
     expected_joining_date: Optional[str] = None
     offered_ctc: Optional[float] = None
     notes: Optional[str] = None
+    # New fields populated via OCR / manual entry
+    dob: Optional[str] = None  # DD/MM/YYYY
+    gender: Optional[str] = None
+    father_or_husband_name: Optional[str] = None
+    aadhaar_number: Optional[str] = None
+    pan_number: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
+    aadhaar_data: Optional[dict] = None
+    pan_data: Optional[dict] = None
 
 
 class CandidateUpdate(BaseModel):
@@ -48,11 +60,36 @@ class CandidateUpdate(BaseModel):
     expected_joining_date: Optional[str] = None
     offered_ctc: Optional[float] = None
     notes: Optional[str] = None
+    dob: Optional[str] = None
+    gender: Optional[str] = None
+    father_or_husband_name: Optional[str] = None
+    aadhaar_number: Optional[str] = None
+    pan_number: Optional[str] = None
+    address: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    pincode: Optional[str] = None
 
 
 class AadhaarOCRRequest(BaseModel):
+    front_image_base64: Optional[str] = None
+    back_image_base64: Optional[str] = None
+    front_mime_type: str = "image/jpeg"
+    back_mime_type: str = "image/jpeg"
+
+
+class PANOCRRequest(BaseModel):
     image_base64: str
     mime_type: str = "image/jpeg"
+
+
+class CandidateDocumentsRequest(BaseModel):
+    aadhaar_front_base64: Optional[str] = None
+    aadhaar_front_mime: Optional[str] = "image/jpeg"
+    aadhaar_back_base64: Optional[str] = None
+    aadhaar_back_mime: Optional[str] = "image/jpeg"
+    pan_card_base64: Optional[str] = None
+    pan_card_mime: Optional[str] = "image/jpeg"
 
 
 @router.get("")
@@ -83,11 +120,14 @@ async def create_candidate(data: CandidateCreate, current_user: dict = Depends(g
     doc = {
         **data.model_dump(),
         "documents_checklist": {
-            "aadhaar": False, "pan": False, "photo": False,
-            "educational_certificates": False, "previous_exp_letter": False,
-            "bank_details": False, "address_proof": False
+            "aadhaar": bool(data.aadhaar_number),
+            "pan": bool(data.pan_number),
+            "photo": False,
+            "educational_certificates": False,
+            "previous_exp_letter": False,
+            "bank_details": False,
+            "address_proof": False,
         },
-        "aadhaar_data": None,
         "created_by": current_user.get("employee_id"),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -118,43 +158,239 @@ async def update_candidate(cand_id: str, data: CandidateUpdate, current_user: di
     return cand_to_dict(cand)
 
 
-@router.post("/{cand_id}/aadhaar-ocr")
-async def aadhaar_ocr(cand_id: str, data: AadhaarOCRRequest, current_user: dict = Depends(get_current_user)):
+# ----------- OCR helpers -----------
+
+
+async def _gemini_vision_extract(prompt: str, files: list) -> dict:
+    """Run Gemini OCR via emergentintegrations and parse JSON output."""
+    from emergentintegrations.llm.chat import LlmChat, UserMessage, FileContentWithMimeType
+    chat = LlmChat(
+        api_key=os.environ.get("EMERGENT_LLM_KEY"),
+        session_id=f"ocr-{uuid.uuid4()}",
+        system_message="You are an OCR assistant for Indian KYC documents. Extract information precisely and return only valid JSON.",
+    ).with_model("gemini", "gemini-2.5-flash")
+    file_contents = []
+    temp_paths = []
+    try:
+        for b64, mime in files:
+            suffix = ".jpg" if "jpeg" in mime else (".png" if "png" in mime else ".jpg")
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
+                f.write(base64.b64decode(b64))
+                temp_paths.append(f.name)
+                file_contents.append(FileContentWithMimeType(file_path=f.name, mime_type=mime))
+        response = await chat.send_message(UserMessage(text=prompt, file_contents=file_contents))
+    finally:
+        for p in temp_paths:
+            try:
+                os.unlink(p)
+            except Exception:
+                pass
+    json_match = re.search(r'\{.*\}', response, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group())
+        except Exception:
+            return {"raw_response": response}
+    return {"raw_response": response}
+
+
+# ----------- Pre-save OCR (during Add Candidate flow) -----------
+
+
+@router.post("/ocr/aadhaar")
+async def ocr_aadhaar_preview(data: AadhaarOCRRequest, current_user: dict = Depends(get_current_user)):
+    """Extract Aadhaar details from front and/or back images. Used during Add Candidate flow."""
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
+    if not data.front_image_base64 and not data.back_image_base64:
+        raise HTTPException(status_code=400, detail="Provide at least one Aadhaar image (front or back).")
+    files = []
+    if data.front_image_base64:
+        files.append((data.front_image_base64, data.front_mime_type))
+    if data.back_image_base64:
+        files.append((data.back_image_base64, data.back_mime_type))
+    prompt = (
+        "I am providing one or two images of an Indian Aadhaar card "
+        f"({'front and back' if len(files) == 2 else 'one side only'}). "
+        "Carefully read all visible text on every image and combine the information. "
+        "Return ONLY a single valid JSON object (no markdown fences, no commentary) with these exact keys:\n"
+        '{"name":"full name as printed",'
+        '"dob":"date of birth in DD/MM/YYYY (or YOB if only year is printed)",'
+        '"gender":"Male/Female/Other",'
+        '"father_or_husband_name":"S/O or D/O or W/O name (parent or husband as printed; empty string if absent)",'
+        '"aadhaar_number":"full 12-digit Aadhaar number with no spaces",'
+        '"address":"complete address as printed (single line, comma separated, do not include pincode)",'
+        '"city":"city / district / village name only",'
+        '"state":"state name only",'
+        '"pincode":"6-digit pincode only"'
+        "}\n"
+        "Rules: If a field is absent, use an empty string. Never invent values. "
+        "The Aadhaar number is 12 digits, often shown as 'XXXX XXXX XXXX' on the front. "
+        "Address, S/O & pincode are usually on the back side."
+    )
     try:
-        from emergentintegrations.llm.chat import LlmChat, UserMessage, FileContentWithMimeType
-        image_bytes = base64.b64decode(data.image_base64)
-        suffix = ".jpg" if "jpeg" in data.mime_type else ".png"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
-            f.write(image_bytes)
-            temp_path = f.name
-        try:
-            chat = LlmChat(
-                api_key=os.environ.get("EMERGENT_LLM_KEY"),
-                session_id=f"aadhaar-{uuid.uuid4()}",
-                system_message="You are an OCR assistant for Indian Aadhaar cards. Extract information precisely.",
-            ).with_model("gemini", "gemini-2.5-flash")
-            image_file = FileContentWithMimeType(file_path=temp_path, mime_type=data.mime_type)
-            response = await chat.send_message(UserMessage(
-                text="""Extract the following from this Aadhaar card image and return ONLY valid JSON (no markdown):
-{"name": "full name", "dob": "date of birth DD/MM/YYYY", "gender": "Male/Female", "address": "full address", "aadhaar_last4": "last 4 digits only"}""",
-                file_contents=[image_file],
-            ))
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
-            if json_match:
-                aadhaar_data = json.loads(json_match.group())
-            else:
-                aadhaar_data = {"raw_response": response}
-        finally:
-            os.unlink(temp_path)
-        await db.candidates.update_one(
-            {"_id": ObjectId(cand_id)},
-            {"$set": {"aadhaar_data": aadhaar_data, "updated_at": datetime.now(timezone.utc).isoformat()}},
-        )
-        return {"success": True, "data": aadhaar_data}
+        extracted = await _gemini_vision_extract(prompt, files)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OCR failed: {str(e)}")
+
+    # Normalize fields
+    def _clean(v):
+        if not isinstance(v, str):
+            return v
+        return v.strip()
+    for k in list(extracted.keys()):
+        extracted[k] = _clean(extracted[k])
+    aadhaar_no = (extracted.get("aadhaar_number") or "")
+    aadhaar_no = re.sub(r"\D", "", aadhaar_no)
+    if len(aadhaar_no) == 12:
+        extracted["aadhaar_number"] = aadhaar_no
+    pincode = re.sub(r"\D", "", extracted.get("pincode") or "")
+    if len(pincode) == 6:
+        extracted["pincode"] = pincode
+    return {"success": True, "data": extracted}
+
+
+@router.post("/ocr/pan")
+async def ocr_pan_preview(data: PANOCRRequest, current_user: dict = Depends(get_current_user)):
+    """Extract PAN details from PAN card image."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not data.image_base64:
+        raise HTTPException(status_code=400, detail="PAN image is required.")
+    prompt = (
+        "I am providing an image of an Indian PAN card. "
+        "Return ONLY a single valid JSON object (no markdown, no commentary) with these exact keys:\n"
+        '{"pan_number":"10-character alphanumeric PAN (e.g. ABCDE1234F)",'
+        '"name":"name of the cardholder as printed",'
+        '"father_name":"father\'s name as printed",'
+        '"dob":"date of birth in DD/MM/YYYY"}\n'
+        "Rules: PAN format is 5 letters + 4 digits + 1 letter. "
+        "If a field is absent or unreadable, use empty string. Do not invent values."
+    )
+    try:
+        extracted = await _gemini_vision_extract(prompt, [(data.image_base64, data.mime_type)])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OCR failed: {str(e)}")
+    pan_no = (extracted.get("pan_number") or "").upper().strip()
+    pan_no = re.sub(r"[^A-Z0-9]", "", pan_no)
+    if re.match(r"^[A-Z]{5}[0-9]{4}[A-Z]$", pan_no):
+        extracted["pan_number"] = pan_no
+    return {"success": True, "data": extracted}
+
+
+# ----------- Document storage (after candidate creation) -----------
+
+
+@router.post("/{cand_id}/documents")
+async def upload_documents(
+    cand_id: str,
+    data: CandidateDocumentsRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Save Aadhaar front, Aadhaar back, and PAN card images for a candidate."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    cand = await db.candidates.find_one({"_id": ObjectId(cand_id)})
+    if not cand:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    update = {"candidate_id": cand_id, "updated_at": datetime.now(timezone.utc).isoformat()}
+    saved_keys = []
+    if data.aadhaar_front_base64:
+        update["aadhaar_front"] = {"data": data.aadhaar_front_base64, "mime": data.aadhaar_front_mime}
+        saved_keys.append("aadhaar_front")
+    if data.aadhaar_back_base64:
+        update["aadhaar_back"] = {"data": data.aadhaar_back_base64, "mime": data.aadhaar_back_mime}
+        saved_keys.append("aadhaar_back")
+    if data.pan_card_base64:
+        update["pan_card"] = {"data": data.pan_card_base64, "mime": data.pan_card_mime}
+        saved_keys.append("pan_card")
+    if not saved_keys:
+        raise HTTPException(status_code=400, detail="No documents provided.")
+
+    await db.candidate_documents.update_one(
+        {"candidate_id": cand_id},
+        {"$set": update, "$setOnInsert": {"created_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+
+    # Mirror checklist flags onto candidate
+    checklist = cand.get("documents_checklist", {}) or {}
+    if "aadhaar_front" in saved_keys or "aadhaar_back" in saved_keys:
+        checklist["aadhaar"] = True
+    if "pan_card" in saved_keys:
+        checklist["pan"] = True
+    await db.candidates.update_one(
+        {"_id": ObjectId(cand_id)},
+        {"$set": {"documents_checklist": checklist, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"success": True, "saved": saved_keys}
+
+
+@router.get("/{cand_id}/documents")
+async def get_documents_meta(cand_id: str, current_user: dict = Depends(get_current_user)):
+    """Get info about which documents exist (without binary)."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    doc = await db.candidate_documents.find_one({"candidate_id": cand_id})
+    if not doc:
+        return {"candidate_id": cand_id, "aadhaar_front": False, "aadhaar_back": False, "pan_card": False}
+    return {
+        "candidate_id": cand_id,
+        "aadhaar_front": bool(doc.get("aadhaar_front")),
+        "aadhaar_back": bool(doc.get("aadhaar_back")),
+        "pan_card": bool(doc.get("pan_card")),
+    }
+
+
+@router.get("/{cand_id}/documents/{doc_type}")
+async def get_document_binary(
+    cand_id: str,
+    doc_type: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Stream a document image. doc_type: aadhaar_front | aadhaar_back | pan_card."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if doc_type not in {"aadhaar_front", "aadhaar_back", "pan_card"}:
+        raise HTTPException(status_code=400, detail="Invalid document type")
+    doc = await db.candidate_documents.find_one({"candidate_id": cand_id})
+    if not doc or not doc.get(doc_type):
+        raise HTTPException(status_code=404, detail="Document not found")
+    asset = doc[doc_type]
+    try:
+        binary = base64.b64decode(asset["data"])
+    except Exception:
+        raise HTTPException(status_code=500, detail="Unable to decode document.")
+    return Response(
+        content=binary,
+        media_type=asset.get("mime", "image/jpeg"),
+        headers={"Cache-Control": "private, max-age=300"},
+    )
+
+
+# ----------- Legacy endpoint kept for compatibility (single-image OCR after creation) -----------
+
+
+@router.post("/{cand_id}/aadhaar-ocr")
+async def aadhaar_ocr_for_candidate(cand_id: str, data: AadhaarOCRRequest, current_user: dict = Depends(get_current_user)):
+    """Run Aadhaar OCR for an existing candidate and persist extracted data on the candidate document."""
+    result = await ocr_aadhaar_preview(data, current_user)
+    extracted = result.get("data", {})
+    update = {
+        "aadhaar_data": extracted,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # Auto-fill known top-level fields if blank
+    pass_through = ["dob", "gender", "father_or_husband_name", "aadhaar_number", "address", "city", "state", "pincode"]
+    cand = await db.candidates.find_one({"_id": ObjectId(cand_id)})
+    if not cand:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    for key in pass_through:
+        if extracted.get(key) and not cand.get(key):
+            update[key] = extracted[key]
+    await db.candidates.update_one({"_id": ObjectId(cand_id)}, {"$set": update})
+    return {"success": True, "data": extracted}
 
 
 @router.put("/{cand_id}/documents-checklist")

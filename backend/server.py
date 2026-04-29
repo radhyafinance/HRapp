@@ -67,6 +67,10 @@ async def startup():
     await db.attendance_records.create_index([("employee_id", 1), ("date", -1)])
     await db.leave_applications.create_index([("employee_id", 1), ("status", 1)])
     await db.payroll_records.create_index([("employee_id", 1), ("period", -1)])
+    try:
+        await db.candidate_documents.create_index("candidate_id", unique=True)
+    except Exception:
+        pass
 
     # Seed admin user
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@radhyamfi.com")

@@ -1,0 +1,26 @@
+{
+  "summary": "Tested KYC OCR + candidate documents (Aadhaar/PAN) feature end-to-end. Backend: 15/15 new pytest tests pass (/app/backend/tests/test_kyc_ocr.py) covering OCR preview endpoints, candidate creation with KYC fields, document upload/get, role enforcement and _id exclusion. Frontend: Add Candidate modal renders Aadhaar Front+Back upload cards, PAN upload card, both Extract buttons with all data-testid; the candidates table shows new Aadhaar (masked) and PAN columns; Candidate Detail (View) modal renders all KYC fields and the KYC Documents section with 3 lazy 'Load image' tiles that successfully fetch the document binaries via authenticated blob URLs (3/3 blob: URLs created), and click-to-zoom overlay works.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_kyc_ocr.py",
+    "/app/test_reports/pytest/pytest_iter3.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "candidates.py POST /ocr/aadhaar and /ocr/pan: Gemini rejects fully blank images with 400 INVALID_ARGUMENT and the wrapper surfaces it as a 500 'OCR failed: ... Unable to process input image'. Consider catching this specific Gemini BadRequest and returning 422 with a friendly 'Could not read the image — please retry with a clearer photo' so the UI can show a useful toast instead of a generic 500.",
+    "candidates.py upload_documents stores base64 strings directly inside MongoDB candidate_documents collection. Each Aadhaar/PAN photo can be 2-5 MB; storing base64 in a single Mongo doc grows unbounded per upsert and exceeds the 16 MB BSON limit if a candidate later uploads HD photos. Recommend GridFS or per-doc separate documents (already keyed by candidate_id but currently a single upserted doc with three fields).",
+    "candidates.py /ocr/pan request body uses Pydantic field image_base64: str (required) — supplying empty string is caught by an explicit 400, but a missing key returns a 422 validation error rather than the documented 400. Consider making it Optional with an explicit 400.",
+    "candidates.py cand_to_dict mutates the original document (pops _id) — fine here, but be aware in case the dict is reused.",
+    "Frontend Candidates.js (~600 lines) is approaching the 700-line guideline. Add Modal + Detail Modal + table rendering could be split for maintainability.",
+    "fetchDoc in CandidateDetailModal creates blob URLs but doesn't URL.revokeObjectURL on unmount — minor memory leak after viewing many candidates."
+  ],
+  "updated_files": ["/app/backend/tests/test_kyc_ocr.py"],
+  "success_rate": {"backend": "100% (15/15 KYC tests pass)", "frontend": "100% (Add modal + Detail modal + blob image fetch + zoom verified)"},
+  "test_credentials": "admin@radhyamfi.com / Admin@123",
+  "seed_data_creation": "TEST_KYC_<hex> candidate created with Aadhaar/PAN dummy 640x400 JPGs (white card with sample text). Uploaded into candidate_documents collection. Visible as first row in candidates list during testing.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Backend regression file at /app/backend/tests/test_kyc_ocr.py — important: dummy images for OCR must contain non-trivial visual content; Gemini returns 400 INVALID_ARGUMENT for plain solid-color JPGs. The test uses PIL.ImageDraw to draw shapes/text. Use REACT_APP_BACKEND_URL env (already in /app/frontend/.env) to run. EMERGENT_LLM_KEY is present in /app/backend/.env. The previous full suite (test_hr_api.py + test_new_features.py) was not re-run in this iteration but has no related changes.",
+  "rca_of_issues": "No bugs identified — all features implemented and working as specified."
+}
