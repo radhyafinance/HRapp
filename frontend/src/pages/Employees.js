@@ -400,8 +400,10 @@ const DOC_GROUPS = [
       ["aadhaar_front", "Aadhaar — Front"],
       ["aadhaar_back", "Aadhaar — Back"],
       ["pan_card", "PAN Card"],
-      ["voter_id", "Voter ID"],
-      ["driving_license", "Driving License"],
+      ["voter_id_front", "Voter ID — Front"],
+      ["voter_id_back", "Voter ID — Back"],
+      ["driving_license_front", "Driving License — Front"],
+      ["driving_license_back", "Driving License — Back"],
       ["passport_photo", "Passport-size Photo"],
     ],
   },
@@ -506,6 +508,49 @@ function EmployeeDocumentsTab({ employeeId }) {
     } catch (e) { setErr("Could not open document"); }
   };
 
+  const download = async (docType, fallbackName) => {
+    try {
+      const res = await API.get(`/employees/${employeeId}/documents/${docType}/file`, {
+        responseType: "blob",
+        params: { as_attachment: true },
+      });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fallbackName || `${docType}.bin`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) { setErr("Could not download document"); }
+  };
+
+  const generateJoiningKit = async () => {
+    setErr("");
+    setBusyKey("joining_kit_pdf");
+    try {
+      const res = await API.get(`/employees/${employeeId}/joining-kit`, { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `JoiningKit_${employeeId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      try {
+        const text = await e.response.data.text();
+        const parsed = JSON.parse(text);
+        setErr(parsed.detail || "Failed to generate kit");
+      } catch (_) {
+        setErr("Failed to generate kit");
+      }
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
   if (loading) return <p className="text-center text-slate-400 py-8">Loading...</p>;
 
   return (
@@ -541,16 +586,27 @@ function EmployeeDocumentsTab({ employeeId }) {
                   <div className="flex gap-1.5 flex-wrap">
                     <label className="inline-flex items-center gap-1 px-2 py-1 text-[11px] bg-[#E85B1E] text-white rounded cursor-pointer hover:bg-[#D04A15]">
                       <Upload size={11} /> {meta.uploaded ? "Replace" : "Upload"}
-                      <input type="file" accept="image/*,application/pdf" hidden
+                      <input type="file" accept="image/*,application/pdf" capture="environment" hidden
                         onChange={e => upload(key, e.target.files?.[0])}
                         data-testid={`upload-${key}`}
                         disabled={busy} />
                     </label>
+                    {key === "joining_kit_pdf" && (
+                      <button type="button" onClick={generateJoiningKit} disabled={busyKey === "joining_kit_pdf"}
+                        data-testid="generate-joining-kit-btn"
+                        className="inline-flex items-center gap-1 px-2 py-1 text-[11px] bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50">
+                        <FileText size={11} /> {busyKey === "joining_kit_pdf" ? "Generating..." : "Generate Now"}
+                      </button>
+                    )}
                     {meta.uploaded && (
                       <>
                         <button type="button" onClick={() => view(key)} disabled={busy} data-testid={`view-doc-${key}`}
                           className="inline-flex items-center gap-1 px-2 py-1 text-[11px] bg-[#1E2A47]/10 text-[#1E2A47] rounded hover:bg-[#1E2A47]/20">
                           <Eye size={11} /> View
+                        </button>
+                        <button type="button" onClick={() => download(key, meta.file_name)} disabled={busy} data-testid={`download-doc-${key}`}
+                          className="inline-flex items-center gap-1 px-2 py-1 text-[11px] bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
+                          <Download size={11} /> Download
                         </button>
                         <button type="button" onClick={() => remove(key)} disabled={busy} data-testid={`delete-doc-${key}`}
                           className="inline-flex items-center gap-1 px-2 py-1 text-[11px] bg-red-100 text-red-700 rounded hover:bg-red-200">

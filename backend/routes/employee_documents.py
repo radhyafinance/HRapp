@@ -19,7 +19,8 @@ ALLOWED_DOC_TYPES = {
     "aadhaar_front", "aadhaar_back", "pan_card",
     # Joining Kit checklist items
     "cancelled_cheque", "passport_photo",
-    "voter_id", "driving_license",
+    "voter_id_front", "voter_id_back",
+    "driving_license_front", "driving_license_back",
     "edu_10th", "edu_12th", "edu_graduation", "edu_post_graduation",
     "edu_phd", "edu_other",
     "bike_rc", "bike_puc_insurance",
@@ -37,8 +38,10 @@ DOC_LABELS = {
     "pan_card": "PAN Card",
     "cancelled_cheque": "Cancelled Cheque / Passbook",
     "passport_photo": "Passport-size Photograph",
-    "voter_id": "Voter ID",
-    "driving_license": "Driving License",
+    "voter_id_front": "Voter ID — Front",
+    "voter_id_back": "Voter ID — Back",
+    "driving_license_front": "Driving License — Front",
+    "driving_license_back": "Driving License — Back",
     "edu_10th": "10th Standard Certificate",
     "edu_12th": "12th Standard Certificate",
     "edu_graduation": "Graduation Certificate",
@@ -130,6 +133,57 @@ async def upload_document(
     return {"success": True, "doc_type": body.doc_type, "size": size_bytes}
 
 
+@router.get("/{employee_id}/joining-kit")
+async def generate_employee_joining_kit(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Build the bilingual joining kit PDF on-demand from the employee's current data."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    emp = await db.employees.find_one({"employee_id": employee_id})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    docs = await db.employee_documents.find_one({"employee_id": employee_id}) or {}
+    company = await db.app_settings.find_one({"key": "company"}) or {}
+
+    # Map employee fields to the candidate-shaped dict the PDF builder expects.
+    addr_obj = emp.get("address", {}) if isinstance(emp.get("address"), dict) else {}
+    cand_like = {
+        "first_name": emp.get("first_name", ""),
+        "last_name": emp.get("last_name", ""),
+        "email": emp.get("email", ""),
+        "mobile": emp.get("mobile", ""),
+        "position": emp.get("designation", ""),
+        "department": emp.get("department", ""),
+        "expected_joining_date": emp.get("joining_date") or "",
+        "joining_location": emp.get("joining_location") or "Head Office, Moradabad",
+        "employee_id": emp.get("employee_id", ""),
+        "dob": emp.get("date_of_birth", ""),
+        "gender": emp.get("gender", ""),
+        "father_or_husband_name": emp.get("father_or_husband_name", ""),
+        "aadhaar_number": emp.get("aadhaar_number", ""),
+        "pan_number": emp.get("pan_number", ""),
+        "address": addr_obj.get("permanent") or addr_obj.get("current") or "",
+        "city": emp.get("city", ""),
+        "state": emp.get("state", ""),
+        "pincode": emp.get("pincode", ""),
+    }
+    company_safe = {k: v for k, v in company.items() if k not in ("_id", "key")}
+
+    from services.joining_kit_pdf import build_joining_kit_pdf
+    pdf_bytes = build_joining_kit_pdf(
+        cand_like,
+        company=company_safe,
+        has_aadhaar_doc=bool(docs.get("aadhaar_front") or docs.get("aadhaar_back")),
+        has_pan_doc=bool(docs.get("pan_card")),
+    )
+    safe_name = f"{(emp.get('first_name') or '').replace(' ', '_')}_{(emp.get('last_name') or '').replace(' ', '_')}".strip("_") or "employee"
+    filename = f"JoiningKit_{employee_id}_{safe_name}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.delete("/{employee_id}/documents/{doc_type}")
 async def delete_document(employee_id: str, doc_type: str, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management"]:
@@ -147,6 +201,7 @@ async def delete_document(employee_id: str, doc_type: str, current_user: dict = 
 async def download_document(
     employee_id: str,
     doc_type: str,
+    as_attachment: bool = False,
     current_user: dict = Depends(get_current_user),
 ):
     if current_user.get("role") not in ["hr_admin", "management", "branch_manager"]:
@@ -163,11 +218,12 @@ async def download_document(
     except Exception:
         raise HTTPException(status_code=500, detail="Failed to decode document.")
     file_name = asset.get("file_name") or f"{doc_type}.bin"
+    disposition = "attachment" if as_attachment else "inline"
     return Response(
         content=binary,
         media_type=asset.get("mime", "application/octet-stream"),
         headers={
-            "Content-Disposition": f'inline; filename="{file_name}"',
+            "Content-Disposition": f'{disposition}; filename="{file_name}"',
             "Cache-Control": "private, max-age=300",
         },
     )
