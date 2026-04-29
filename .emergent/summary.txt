@@ -1,0 +1,144 @@
+<analysis>### Handover Summary
+
+**original_problem_statement**: Create a comprehensive HR system for an NBFC-MFI named Radhya Micro Finance (40+ employees). The app must include: Candidate/Employee Onboarding, Selfie & Geofenced Attendance tracking (with continuous location tracking for field agents), Leaves, Payroll (EPF, ESIC, NEFT sheet format), Performance Management (half-yearly CTC calculation), Exit formalities, Gratuity, and Letters generation (Offer, Rejection, Warning, etc.). Hierarchy includes Management, HR, Head Office staff, and Field/Risk Team staff.
+
+PRODUCT REQUIREMENTS:
+- Full-stack web application (FastAPI backend + React frontend).
+- Role-based access control with reporting manager hierarchy.
+- Integration for Aadhaar/PAN OCR (Google Gemini).
+- 5 preset geofenced locations with a 10-meter attendance punch-in radius.
+- Detailed Joining Kit PDF generation mirroring company's bilingual docx format.
+
+**User's preferred language**: English (INSTRUCT NEXT AGENT: You MUST respond in English only)
+
+**what currently exists?**: A mature, stable HR web application featuring 11 core modules (Dashboard, Employees, Attendance, Leaves, Payroll, Performance, Exit, Letters, Candidates, Settings, Gratuity). It includes advanced frontend/backend flows such as Aadhaar/PAN OCR for candidate onboarding, a bilingual (Hindi/English) 16-page Joining Kit PDF generator, a dedicated Candidate-to-Employee conversion wizard with hard validations, live field staff tracking via GPS maps, bank-format NEFT exports, and an automated document management tracking system with a visual completeness ring.
+
+**Last working item**:
+- Last item agent was working: Implemented a Document-Completeness Ring on each row of the Employees list (shows an SVG circle with uploaded vs. total docs, e.g., 4/23, color-coded red/amber/green).
+- Status: USER VERIFICATION PENDING
+- Agent Testing Done: Y (Manually tested using bash & screenshot tool).
+- Which testing method agent to use?: NA (Feature completed and tested).
+- User Testing Done: N
+
+**All Pending/In progress Issue list**:
+*No active bugs. The last reported bug (Employees page not showing employees) was resolved by changing the default status filter from active to all (since newly converted employees are on probation).*
+
+**In progress Task List**:
+*None. The agent successfully wrapped up all active feature requests.*
+
+**Upcoming and Future Tasks**:
+- **Task 1: Letter Generation PDFs** (P0) - Implement actual PDF generation and download for Offer Letters, Appointment Letters, and Warning Letters (with company letterhead).
+- **Task 2: Payslip PDF Download** (P1) - Allow employees to download their monthly payslips in PDF format.
+- **Task 3: Monthly Salary Register Export** (P1) - Create a CSV/Excel export for the master payroll register.
+- **Task 4: Leave Encashment Calculation** (P2) - Logic to compute and disburse EL/PL encashment during payroll or exit.
+- **Task 5: Employee Self-Portal for Document Upload** (P2) - Allow employees to login and upload their own documents to fulfill the checklist.
+
+**Completed work in this session**:
+- Implemented NEFT Sheet Export matching the exact RMF0001 8-column bank format (DONE)
+- Company/Bank Settings backend + frontend (DONE)
+- Selfie & Geofence Attendance Bypass for management (DONE)
+- Continuous GPS Tracking + Map View with >15m stop detection for field staff (DONE)
+- Aadhaar (Front+Back) and PAN OCR via Gemini 2.5 Flash for Candidates (DONE)
+- Client-side image auto-compression (< 1MB) for uploads (DONE)
+- Candidate list: Department dropdown and Undo Select/Reject options (DONE)
+- Interview Scheduling UI with date/time, Meet link, and Email/WhatsApp share (DONE)
+- 16-page Bilingual Joining Kit PDF Generation (using bundled Devanagari font) (DONE)
+- Candidate to Employee Conversion flow with CTC auto-split (50/20/30), IFSC validation, Reporting-To checks, and Bank A/c mismatch validation (DONE)
+- Resolved Employees page status filter bug (DONE)
+- Employee Tabbed Modal (View, Edit, Documents - 23 total slots) (DONE)
+- Camera Support () for document uploads (DONE)
+- Document Completeness Ring (Red/Amber/Green) on Employees list (DONE)
+
+**Earlier issues found/mentioned but not fixed**:
+*None. All known backend and frontend issues (such as default filters hiding employees and OCR error handling) were fixed.*
+
+**Known issue recurrence from previous fork**:
+- Recurrence count: 0
+- Status: RESOLVED
+
+**Code Architecture**:
+
+
+**Key Technical Concepts**:
+- Frontend: React, Tailwind CSS, Shadcn UI, Leaflet Maps (for field tracking).
+- Backend: FastAPI, Python, PyPDF/FPDF (for document generation).
+- Database: MongoDB.
+- Fonts:  is bundled in the container to allow Hindi rendering in PDFs.
+- Integrations: Google Gemini Flash 2.5 (Emergent LLM Key) for OCR. 
+
+**key DB schema**:
+- : 
+- : 
+-  & : Collections to store image binary references securely.
+- : Stores NEFT sender rules (debit account, IFSC, name).
+
+**changes in tech stack**:
+- Devanagari TrueType font added globally for Python PDF libraries to render Hindi correctly.
+
+**All files of reference**:
+- : PDF builder matching company Word template exactly.
+- : Vastly expanded with OCR, Candidate Conversion, and Interview modals.
+- : Refactored to include Tabbed Modals and Document completeness SVG rings.
+- : New utility handling local image downscaling (<1MB).
+- : Handles Candidate-to-Employee conversion + strict payload validations.
+
+**Areas that need refactoring**:
+-  and  are massive (approaching 1,000 lines). Future changes should extract modals (like  and ) into standalone component files in .
+
+**key api endpoints**:
+-  & 
+-  & 
+- 
+- 
+-  (For the Field Tracking Map)
+- 
+
+**Critical Info for New Agent**:
+- **Conversion Flow Rules:** Converting a candidate to an employee auto-generates an ID (), requires CTC input (auto-split: 50% Basic, 20% HRA, 30% Special), requires verified IFSC format (4 letters + 0 + 6 alphanumeric), and defaults the employee's status to .
+- **Default Password:** Converted employees receive a default password of .
+- **Image Compression:**  is set on frontend document uploads to allow mobile camera use, paired with  before reaching the backend.
+- **Status Defaults:** The  endpoint MUST have  as the default filter so newly converted probation employees show up out of the box. Do not revert this.
+
+**documents and test reports created in this job**:
+-  (Updated with Phase 2, 3, 4 completion statuses)
+-  (Updated with new testing employee IDs)
+- 
+- 
+
+**Last 10 User Messages and any pending HUMAN messages**:
+1. *User*: Add joining kit generation PDF mirroring the docx file + ask for Tentative joining date. (Completed)
+2. *User*: Format the joining kit PDF exactly like the word file. Ask for employee ID to be set before generating PDF. (Completed - Included bilingual Hindi support).
+3. *User*: Now have an option to convert candidate to employee. (Completed)
+4. *User*: When converting: Ask for CTC, IFSC code validation, Bank account number filled twice, Reporting to check. (Completed)
+5. *User*: summerise (Completed)
+6. *User*: Employees page has a bug. No employees showing up there. (Completed - fixed default search filter).
+7. *User*: Employees page: Provision to edit employee details, view all details, upload joining kit in PDF format (reduce file size), and all documents from checklist. (Completed - Built Tabbed modal for View/Edit/Docs).
+8. *User*: Documents- allow photos to be taken from phone also. Voter ID and DL should have front and back. Joining kit (Generated) should have download button. (Completed - added ).
+9. *User*: add a document-completeness ring on each Employee row. (Completed).
+10. *User*: [No pending human message]
+
+**Project Health Check**:
+Healthy. Core functionalities are running flawlessly. Extensive unit testing and manual bash curl tests were conducted on new routes.
+
+**3rd Party Integrations**:
+- Emergent Object Storage (File Uploads) — uses internal Emergent playbook.
+- Google Gemini 2.5 Flash (Aadhaar & PAN OCR) — uses Emergent LLM Key.
+
+**Testing status**:
+- Testing agent used after significant changes: YES (iteration 2 & 3).
+- Troubleshoot agent used after agent stuck in loop: NO
+- Test files created: , 
+- Known regressions: None.
+
+**Credentials to test flow**:
+- HR Admin:  / 
+- Newly Converted Employee Test:  /  / 
+Check  for full list.
+
+**What agent forgot to execute**:
+Nothing. Every feature requested by the user during this session was fully addressed, tested, and shipped.
+
+<TESTING METHOD>
+Frontend UI changes / Small Bug Fixes:  /  via bash.
+Major feature implementations (e.g. Letter PDFs): Use .
+</TESTING METHOD></analysis>

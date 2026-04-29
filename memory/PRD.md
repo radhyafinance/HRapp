@@ -67,6 +67,13 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 - Monthly CTC = Gross + EPF Employer + ESIC Employer + Monthly Gratuity
 - Net = Gross - EPF Employee - ESIC Employee - TDS - Other Deductions
 
+## Refactoring (Apr 2026)
+- Extracted `Candidates.js` (1430 lines) into 5 standalone components in `/src/components/candidates/`: `AddCandidateModal`, `CandidateDetailModal`, `JoiningKitPanel`, `ScheduleInterviewModal`, `DocUploadCard`
+- Extracted `Employees.js` (1014 lines) into 5 standalone components in `/src/components/employees/`: `EmployeeModal`, `EmployeeDetailView`, `EmployeeEditForm`, `EmployeeDocumentsTab`, `DocCompletenessRing`, `ReportingManagerInput`
+- Created `/src/components/shared/Modal.js` — reusable base modal
+- Created `/src/utils/imageCompression.js` — canonical `compressImage`, `fileToBase64`, `fileToBase64String`
+- Result: Candidates.js → 150 lines, Employees.js → 309 lines
+
 ## P0 Backlog (Next Phase)
 - [x] NEFT sheet custom format (RMF0001 8-column bank format) ✅ Apr 2026
 - [ ] Payslip PDF download
