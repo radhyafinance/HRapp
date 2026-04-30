@@ -121,7 +121,7 @@ def build_payslip_pdf(record: dict, employee: dict) -> bytes:
     emp_code    = _fmt(employee.get("employee_id"))
     department  = _fmt(employee.get("department"))
     designation = _fmt(employee.get("designation"))
-    joining_dt  = _fmt(employee.get("joining_date"))
+    joining_dt  = _fmt(employee.get("joining_date", "")[:10] or None)  # date only, no time
     pan         = _fmt(employee.get("pan_number"))
     uan         = _fmt(employee.get("uan_number"))
     esi_no      = _fmt(employee.get("esi_number"))
@@ -312,7 +312,7 @@ def build_payslip_pdf(record: dict, employee: dict) -> bytes:
             ParagraphStyle("disc", fontName=BODY_FONT, fontSize=7.5, textColor=DGRAY)
         ),
         Paragraph(
-            "Authorized Signatory<br/><br/>"
+            "<br/><br/>"
             "<font size='7' color='#94A3B8'>Radhya Micro Finance Pvt. Ltd.</font>",
             ParagraphStyle("sig", fontName=BOLD_FONT, fontSize=8.5, textColor=NAVY, alignment=TA_RIGHT)
         ),

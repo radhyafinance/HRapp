@@ -230,11 +230,11 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
     try:
         y, m = period.split("-")
         month_short = _MONTHS[int(m) - 1]
-        period_label = f"{month_short}{y[-2:]}"
+        period_label = f"{month_short}{y}"  # e.g. "Apr2026" (full 4-digit year)
     except Exception:
         period_label = period
 
-    remark_full = f"{short_code} Salary {period_label}"  # e.g. "RMF0001 Salary Apr26"
+    remark_full = f"{short_code} Salary {period_label}"  # e.g. "RMF0001 Salary Apr2026"
     remark_client = remark_full[:21]
     remark_beneficiary = remark_full[:30]
 
