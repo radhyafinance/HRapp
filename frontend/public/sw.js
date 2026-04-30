@@ -29,14 +29,10 @@ self.addEventListener("activate", (event) => {
 // Fetch — network first for API calls, cache first for static assets
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
-
-  // Always go to network for API calls
   if (url.pathname.startsWith("/api")) {
     event.respondWith(fetch(event.request));
     return;
   }
-
-  // Cache-first for static assets, falling back to network
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;
@@ -49,4 +45,15 @@ self.addEventListener("fetch", (event) => {
       });
     })
   );
+});
+
+// Background Sync — notify the app to replay queued location pings
+self.addEventListener("sync", (event) => {
+  if (event.tag === "location-ping") {
+    event.waitUntil(
+      self.clients.matchAll().then((clients) => {
+        clients.forEach((client) => client.postMessage({ type: "REPLAY_LOCATION_PING" }));
+      })
+    );
+  }
 });

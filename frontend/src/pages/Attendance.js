@@ -190,11 +190,62 @@ export default function Attendance() {
   const alreadyOut = !!todayRecord?.punch_out_time;
 
   // Continuous GPS tracking (every 2 min) between punch-in and punch-out
+  // PWA strategy:
+  //   1. Wake Lock API — keeps screen on so JS timers keep running
+  //   2. Page Visibility API — immediate ping when user returns to app
+  //   3. localStorage queue — stores missed pings; replayed on return
+  const wakeLockRef = useRef(null);
+
+  const sendLocationPing = (empId) => {
+    if (!navigator.geolocation) return;
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          await API.post("/attendance/location-update", {
+            employee_id: empId,
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+          });
+          // Clear any queued pings since we just sent a fresh one
+          localStorage.removeItem("rmf_pending_ping");
+        } catch (_) {
+          // Queue the ping to retry when back online / visible
+          localStorage.setItem("rmf_pending_ping", JSON.stringify({
+            employee_id: empId,
+            latitude: pos.coords.latitude,
+            longitude: pos.coords.longitude,
+            accuracy: pos.coords.accuracy,
+            queued_at: new Date().toISOString(),
+          }));
+        }
+      },
+      () => {},
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 }
+    );
+  };
+
+  // Replay any queued ping from when the app was in background
+  const replayQueuedPing = async () => {
+    const queued = localStorage.getItem("rmf_pending_ping");
+    if (!queued) return;
+    try {
+      const data = JSON.parse(queued);
+      await API.post("/attendance/location-update", data);
+      localStorage.removeItem("rmf_pending_ping");
+    } catch (_) {}
+  };
+
   useEffect(() => {
-    const stopTracking = () => {
+    const stopTracking = async () => {
       if (trackingTimerRef.current) {
         clearInterval(trackingTimerRef.current);
         trackingTimerRef.current = null;
+      }
+      // Release wake lock
+      if (wakeLockRef.current) {
+        try { await wakeLockRef.current.release(); } catch (_) {}
+        wakeLockRef.current = null;
       }
       setTrackingActive(false);
     };
@@ -204,35 +255,57 @@ export default function Attendance() {
       return;
     }
     if (skipSelfieAndGeofence) {
-      // Management role: no continuous tracking required
       stopTracking();
       return;
     }
     if (trackingTimerRef.current) return; // already running
 
-    const sendPing = () => {
-      if (!navigator.geolocation) return;
-      navigator.geolocation.getCurrentPosition(
-        async (pos) => {
-          try {
-            await API.post("/attendance/location-update", {
-              employee_id: user.employee_id,
-              latitude: pos.coords.latitude,
-              longitude: pos.coords.longitude,
-              accuracy: pos.coords.accuracy,
-            });
-          } catch (_) {}
-        },
-        () => {},
-        { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 }
-      );
-    };
+    const empId = user.employee_id;
 
-    sendPing(); // immediate
-    trackingTimerRef.current = setInterval(sendPing, 2 * 60 * 1000);
+    // 1. Request Wake Lock to keep screen on during tracking
+    const acquireWakeLock = async () => {
+      if ("wakeLock" in navigator && !wakeLockRef.current) {
+        try {
+          wakeLockRef.current = await navigator.wakeLock.request("screen");
+          wakeLockRef.current.addEventListener("release", () => {
+            // Re-acquire if still tracking (e.g. after tab switch)
+            if (trackingTimerRef.current) acquireWakeLock();
+          });
+        } catch (_) {} // Wake lock not granted (low battery, etc.)
+      }
+    };
+    acquireWakeLock();
+
+    // 2. Page Visibility API — ping immediately when employee returns to app
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        replayQueuedPing();  // send any queued ping first
+        sendLocationPing(empId);  // then send fresh ping
+        // Re-acquire wake lock if it was released
+        acquireWakeLock();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    // 3. Regular interval (every 2 min) while app is visible
+    sendLocationPing(empId); // immediate ping on start
+    trackingTimerRef.current = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        sendLocationPing(empId);
+      } else {
+        // App is hidden — queue a placeholder so we know a ping was missed
+        localStorage.setItem("rmf_pending_ping", JSON.stringify({
+          employee_id: empId, queued_at: new Date().toISOString()
+        }));
+      }
+    }, 2 * 60 * 1000);
     setTrackingActive(true);
-    return stopTracking;
-  }, [alreadyIn, alreadyOut, user?.employee_id, skipSelfieAndGeofence]);
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      stopTracking();
+    };
+  }, [alreadyIn, alreadyOut, user?.employee_id, skipSelfieAndGeofence]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div style={{ fontFamily: "'Work Sans', sans-serif" }}>
@@ -267,9 +340,12 @@ export default function Attendance() {
           )}
 
           {trackingActive && !alreadyOut && (
-            <div className="flex items-center gap-2 p-3 rounded-lg mb-4 text-xs bg-[#1E2A47] text-white" data-testid="tracking-active-indicator">
-              <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse"></span>
-              <span>Live tracking active — sending GPS ping every 2 minutes</span>
+            <div className="p-3 rounded-lg mb-4 text-xs bg-[#1E2A47] text-white" data-testid="tracking-active-indicator">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="w-2 h-2 rounded-full bg-green-400 animate-pulse flex-shrink-0"></span>
+                <span className="font-semibold">Live location tracking active</span>
+              </div>
+              <p className="text-slate-300 text-xs mt-0.5">GPS ping every 2 min. Keep app open for continuous tracking. Location is sent instantly when you return to this screen.</p>
             </div>
           )}
 
