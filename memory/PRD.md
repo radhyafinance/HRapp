@@ -79,6 +79,12 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
     - **Employee request workflow**: Employees click "Request Regularisation" on their Attendance page → fill date + requested punch times/status + reason → HR sees them in the "Pending Employee Requests" panel and can Approve (applies the regularisation) or Reject (with remark). `POST /api/attendance/regularisation-requests`, `GET /api/attendance/regularisation-requests`, `PUT /api/attendance/regularisation-requests/{id}/action`.
     - **Audit trail**: Every change writes an entry in `attendance_regularisations` with before/after values, acted-by user, timestamp, and reason. `GET /api/attendance/regularisations` returns the log. Regularised records are flagged with `regularised: true` and marked "• REG" badge in the UI.
 
+33. **Admin Leave Balance Management (Apr 2026)** - On Leaves page → "All Employees" tab, HR Admin / Management get four new controls:
+    - **Initialize Missing** (`POST /api/leaves/admin/initialize-balances`) — creates default FY balances (CL 7 / SL 15 / EL 0 / Marriage 5) for any active/probation/notice-period employee who doesn't yet have one; idempotent.
+    - **Per-row Edit** (`PUT /api/leaves/admin/balance/{employee_id}`) — modal with CL/SL/EL/Marriage Total + Used inputs; Remaining auto-calculated; **mandatory Reason**; validation (non-negative, used ≤ total); writes audit entry with before/after snapshot.
+    - **Download Template** (`GET /api/leaves/admin/balances-template`) — Excel `.xlsx` pre-filled with all active employees' current balances + Instructions sheet.
+    - **Bulk Upload** (`POST /api/leaves/admin/balances-upload`) — accepts the filled template; rows with blank Reason are skipped; unknown Employee IDs reported; each applied row writes an audit entry.
+    - **Audit Log** (`GET /api/leaves/admin/balance-audit`) — modal listing all changes with source badge (manual / bulk_upload / initialize), before→after values per leave type, reason, changed_by, timestamp. Collection: `leave_balance_audit`.
 ## Refactoring (Apr 2026)
 - Extracted `Candidates.js` (1430 lines) into 5 standalone components in `/src/components/candidates/`: `AddCandidateModal`, `CandidateDetailModal`, `JoiningKitPanel`, `ScheduleInterviewModal`, `DocUploadCard`
 - Extracted `Employees.js` (1014 lines) into 5 standalone components in `/src/components/employees/`: `EmployeeModal`, `EmployeeDetailView`, `EmployeeEditForm`, `EmployeeDocumentsTab`, `DocCompletenessRing`, `ReportingManagerInput`
@@ -94,6 +100,7 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 - [x] NEFT sheet custom format (RMF0001 8-column bank format) ✅ Apr 2026
 - [x] Payslip PDF download ✅ Apr 2026
 - [x] UAN Number and ESI Number fields on employees ✅ Apr 2026
+- [x] Admin Leave Balance Management — Initialize, Manual Edit, Bulk Excel Upload, Audit Log ✅ Apr 2026
 - [ ] Letter PDFs (Offer / Appointment / Warning etc.) with company letterhead
 - [ ] Employee confirmation letter after probation
 - [ ] Monthly salary register export
