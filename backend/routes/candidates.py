@@ -558,9 +558,10 @@ async def convert_candidate_to_employee(
     await db.leave_balances.insert_one({
         "employee_id": employee_id,
         "year": datetime.now(timezone.utc).year,
-        "CL": {"total": 7, "used": 0, "remaining": 7},
-        "SL": {"total": 15, "used": 0, "remaining": 15},
-        "EL": {"total": 12, "used": 0, "remaining": 12},
+        "CL":       {"total": 7,  "used": 0, "remaining": 7},
+        "SL":       {"total": 15, "used": 0, "remaining": 15},
+        "EL":       {"total": 0,  "used": 0, "remaining": 0},
+        "Marriage": {"total": 5,  "used": 0, "remaining": 5},
     })
 
     # User account — login username = employee_id

@@ -256,9 +256,10 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
     await db.leave_balances.insert_one({
         "employee_id": employee_id,
         "year": datetime.now(timezone.utc).year,
-        "CL": {"total": 7, "used": 0, "remaining": 7},
-        "SL": {"total": 15, "used": 0, "remaining": 15},
-        "EL": {"total": 12, "used": 0, "remaining": 12},
+        "CL":       {"total": 7,  "used": 0, "remaining": 7},
+        "SL":       {"total": 15, "used": 0, "remaining": 15},
+        "EL":       {"total": 0,  "used": 0, "remaining": 0},
+        "Marriage": {"total": 5,  "used": 0, "remaining": 5},
     })
     if data.create_user_account:
         password = data.password or "Welcome@123"
@@ -644,9 +645,10 @@ async def bulk_upload(file: UploadFile = File(...), current_user: dict = Depends
             await db.leave_balances.insert_one({
                 "employee_id": employee_id,
                 "year": datetime.now(timezone.utc).year,
-                "CL": {"total": 7, "used": 0, "remaining": 7},
-                "SL": {"total": 15, "used": 0, "remaining": 15},
-                "EL": {"total": 12, "used": 0, "remaining": 12},
+                "CL":       {"total": 7,  "used": 0, "remaining": 7},
+                "SL":       {"total": 15, "used": 0, "remaining": 15},
+                "EL":       {"total": 0,  "used": 0, "remaining": 0},
+                "Marriage": {"total": 5,  "used": 0, "remaining": 5},
             })
             password = str(row.get("password") or "Welcome@123").strip() or "Welcome@123"
             await db.users.update_one(
