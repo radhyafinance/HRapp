@@ -128,6 +128,19 @@ export default function Payroll() {
     }
   };
 
+  const downloadSalaryRegister = async () => {
+    const period = `${selectedYear}-${String(selectedMonth).padStart(2, "0")}`;
+    try {
+      const res = await API.get("/payroll/export/salary-register", { params: { period }, responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a"); a.href = url; a.download = `Salary_Register_${period}.xlsx`;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      alert(e.response?.status === 404 ? `No payroll records for ${period}. Process payroll first.` : "Salary Register export failed");
+    }
+  };
+
   const downloadPayslipPdf = async (record) => {
     setDownloadingId(record.id);
     try {
@@ -173,6 +186,10 @@ export default function Payroll() {
             <button onClick={downloadNEFT} data-testid="download-neft-btn"
               className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 transition-colors">
               <Download size={14} /> NEFT Sheet
+            </button>
+            <button onClick={downloadSalaryRegister} data-testid="download-register-btn"
+              className="flex items-center gap-2 px-4 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] transition-colors">
+              <Download size={14} /> Salary Register
             </button>
           </div>
         )}

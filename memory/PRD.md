@@ -88,6 +88,13 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 ## Refactoring (Apr 2026)
 - Extracted `Candidates.js` (1430 lines) into 5 standalone components in `/src/components/candidates/`: `AddCandidateModal`, `CandidateDetailModal`, `JoiningKitPanel`, `ScheduleInterviewModal`, `DocUploadCard`
 - Extracted `Employees.js` (1014 lines) into 5 standalone components in `/src/components/employees/`: `EmployeeModal`, `EmployeeDetailView`, `EmployeeEditForm`, `EmployeeDocumentsTab`, `DocCompletenessRing`, `ReportingManagerInput`
+34. **Monthly Salary Register Export (Apr 2026)** - New button "Salary Register" on Payroll page (next to NEFT Sheet). Endpoint `GET /api/payroll/export/salary-register?period=YYYY-MM` returns a production-grade Excel workbook with:
+    - Company header + period + generation timestamp
+    - 10 grouped section headers (Identity / Attendance / Earnings / Gross / Deductions / Net Pay / Employer Cost / CTC / Statutory IDs / Bank Details) styled in navy & orange
+    - 33 detail columns per employee: Sr, Employee ID, Name, Designation, Department, Joining Date, Status, Working/Paid/LOP days, Basic, HRA, Special, Canteen, Conveyance, Other Additions, Gross, EPF (Emp), ESIC (Emp), TDS, Other Deductions, Total Deductions, Net Salary, EPF (Empr), ESIC (Empr), Gratuity, Monthly CTC, PAN, UAN, ESI No., Bank Name, Account No., IFSC
+    - Thousand-separator number formatting, frozen header panes (freeze at C5), auto-widths
+    - **Totals row** at bottom summing all money columns
+    - Filename `Salary_Register_YYYY-MM.xlsx`. Returns 404 if no payroll records exist for the period.
 - Created `/src/components/shared/Modal.js` — reusable base modal
 - Created `/src/utils/imageCompression.js` — canonical `compressImage`, `fileToBase64`, `fileToBase64String`
 - Result: Candidates.js → 150 lines, Employees.js → 309 lines (1430 lines) into 5 standalone components in `/src/components/candidates/`: `AddCandidateModal`, `CandidateDetailModal`, `JoiningKitPanel`, `ScheduleInterviewModal`, `DocUploadCard`
@@ -101,9 +108,9 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 - [x] Payslip PDF download ✅ Apr 2026
 - [x] UAN Number and ESI Number fields on employees ✅ Apr 2026
 - [x] Admin Leave Balance Management — Initialize, Manual Edit, Bulk Excel Upload, Audit Log ✅ Apr 2026
+- [x] Monthly Salary Register export ✅ Apr 2026
 - [ ] Letter PDFs (Offer / Appointment / Warning etc.) with company letterhead
 - [ ] Employee confirmation letter after probation
-- [ ] Monthly salary register export
 - [ ] Leave encashment calculation
 
 ## P1 Backlog

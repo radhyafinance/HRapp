@@ -314,6 +314,234 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/export/salary-register")
+async def export_salary_register(period: str, current_user: dict = Depends(get_current_user)):
+    """Master Monthly Salary Register — comprehensive multi-column Excel summary
+    of every processed payroll record for the period (YYYY-MM).
+    Includes: Employee details, Paid/Leave days, Earnings breakup, Gross,
+    Deductions breakup, Net Salary, Employer Contributions, Monthly CTC,
+    and Bank details. A totals row is appended at the bottom."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    records = await db.payroll_records.find({"period": period}).sort("employee_id", 1).to_list(2000)
+    if not records:
+        raise HTTPException(status_code=404, detail=f"No payroll records found for period {period}.")
+
+    # Enrich with employee master data (joining date, PAN, UAN, ESI)
+    emp_ids = [r.get("employee_id") for r in records if r.get("employee_id")]
+    employees = await db.employees.find(
+        {"employee_id": {"$in": emp_ids}},
+        {"_id": 0}
+    ).to_list(2000)
+    emp_map = {e["employee_id"]: e for e in employees}
+
+    _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    try:
+        y, m = period.split("-")
+        period_label = f"{_MONTHS[int(m)-1]} {y}"
+    except Exception:
+        period_label = period
+
+    import openpyxl
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from openpyxl.utils import get_column_letter
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"Salary Register {period}"
+
+    # Styling helpers
+    navy_fill = PatternFill("solid", fgColor="1E2A47")
+    orange_fill = PatternFill("solid", fgColor="E85B1E")
+    grey_fill = PatternFill("solid", fgColor="F1F5F9")
+    header_font = Font(bold=True, color="FFFFFF", size=10)
+    section_font = Font(bold=True, color="FFFFFF", size=11)
+    title_font = Font(bold=True, color="1E2A47", size=14)
+    subtitle_font = Font(italic=True, color="64748B", size=9)
+    total_font = Font(bold=True, color="1E2A47", size=10)
+    total_fill = PatternFill("solid", fgColor="FEF3E2")
+    thin = Side(border_style="thin", color="CCCCCC")
+    medium = Side(border_style="medium", color="1E2A47")
+    border = Border(top=thin, bottom=thin, left=thin, right=thin)
+
+    # Column layout (grouped):
+    # Identity (1-7): Sr, Emp ID, Name, Designation, Department, DOJ, Status
+    # Attendance (8-10): Working Days, Paid Days, LOP
+    # Earnings (11-16): Basic, HRA, Special, Canteen, Conveyance, Other Add
+    # Gross (17): Gross Salary
+    # Deductions (18-22): EPF Emp, ESIC Emp, TDS, Other Ded, Total Ded
+    # Net (23): Net Salary
+    # Employer (24-26): EPF Empr, ESIC Empr, Gratuity
+    # CTC (27): Monthly CTC
+    # Statutory (28-30): PAN, UAN, ESI No
+    # Bank (31-33): Bank Name, A/c No, IFSC
+    group_headers = [
+        ("Identity", 1, 7, navy_fill),
+        ("Attendance", 8, 10, orange_fill),
+        ("Earnings (₹)", 11, 16, navy_fill),
+        ("Gross", 17, 17, orange_fill),
+        ("Deductions (₹)", 18, 22, navy_fill),
+        ("Net Pay", 23, 23, orange_fill),
+        ("Employer Cost (₹)", 24, 26, navy_fill),
+        ("CTC", 27, 27, orange_fill),
+        ("Statutory IDs", 28, 30, navy_fill),
+        ("Bank Details", 31, 33, orange_fill),
+    ]
+    col_headers = [
+        "Sr", "Employee ID", "Name", "Designation", "Department", "Joining Date", "Status",
+        "Working Days", "Paid Days", "LOP",
+        "Basic", "HRA", "Special Allow.", "Canteen", "Conveyance", "Other Add.",
+        "Gross Salary",
+        "EPF (Emp)", "ESIC (Emp)", "TDS", "Other Ded.", "Total Ded.",
+        "Net Salary",
+        "EPF (Empr)", "ESIC (Empr)", "Gratuity",
+        "Monthly CTC",
+        "PAN", "UAN", "ESI No.",
+        "Bank Name", "Account No.", "IFSC",
+    ]
+    n_cols = len(col_headers)  # 33
+
+    # Title rows
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=n_cols)
+    ws.cell(row=1, column=1, value=f"RADHYA MICRO FINANCE PRIVATE LIMITED — Monthly Salary Register").font = title_font
+    ws.cell(row=1, column=1).alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[1].height = 22
+
+    ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=n_cols)
+    ws.cell(row=2, column=1, value=f"Period: {period_label}  |  Generated: {datetime.now(timezone.utc).strftime('%d %b %Y %H:%M UTC')}  |  {len(records)} employees").font = subtitle_font
+    ws.cell(row=2, column=1).alignment = Alignment(horizontal="center", vertical="center")
+
+    # Group header row (row 3)
+    for label, start, end, fill in group_headers:
+        if start == end:
+            cell = ws.cell(row=3, column=start, value=label)
+        else:
+            ws.merge_cells(start_row=3, start_column=start, end_row=3, end_column=end)
+            cell = ws.cell(row=3, column=start, value=label)
+        cell.fill = fill
+        cell.font = section_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = border
+    ws.row_dimensions[3].height = 20
+
+    # Column header row (row 4)
+    for i, h in enumerate(col_headers, 1):
+        c = ws.cell(row=4, column=i, value=h)
+        c.fill = grey_fill
+        c.font = Font(bold=True, color="1E2A47", size=9)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = border
+    ws.row_dimensions[4].height = 30
+
+    # Totals accumulator (money columns only)
+    money_cols = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
+    totals = {c: 0.0 for c in money_cols}
+
+    # Data rows start at row 5
+    r_idx = 5
+    for sr, rec in enumerate(records, 1):
+        emp = emp_map.get(rec.get("employee_id"), {})
+        working = rec.get("working_days", 26) or 26
+        paid = rec.get("present_days", working) or working
+        lop = max(0, working - paid)
+        gross = float(rec.get("gross_payable") or rec.get("gross_salary") or 0)
+        epf_e = float(rec.get("epf_employee") or 0)
+        esic_e = float(rec.get("esic_employee") or 0)
+        tds = float(rec.get("tds") or 0)
+        other_d = float(rec.get("other_deductions") or 0)
+        other_a = float(rec.get("other_additions") or 0)
+        total_ded = round(epf_e + esic_e + tds + other_d, 2)
+        net = float(rec.get("net_salary") or 0)
+        epf_r = float(rec.get("epf_employer") or 0)
+        esic_r = float(rec.get("esic_employer") or 0)
+        grat = float(rec.get("gratuity_monthly") or 0)
+        ctc = float(rec.get("ctc_monthly") or 0)
+
+        bank = emp.get("bank_details", {}) or {}
+        row_values = [
+            sr,
+            rec.get("employee_id", ""),
+            rec.get("employee_name", "").strip() or f"{emp.get('first_name','')} {emp.get('last_name','')}".strip(),
+            rec.get("designation", "") or emp.get("designation", ""),
+            rec.get("department", "") or emp.get("department", ""),
+            emp.get("joining_date", ""),
+            (emp.get("status", "") or "").replace("_", " ").title(),
+            working, paid, lop,
+            float(rec.get("basic") or 0),
+            float(rec.get("hra") or 0),
+            float(rec.get("special_allowance") or 0),
+            float(rec.get("canteen_allowance") or 0),
+            float(rec.get("conveyance_allowance") or 0),
+            other_a,
+            gross,
+            epf_e, esic_e, tds, other_d, total_ded,
+            net,
+            epf_r, esic_r, grat,
+            ctc,
+            emp.get("pan_number", "") or "",
+            emp.get("uan_number", "") or "",
+            emp.get("esi_number", "") or "",
+            bank.get("bank_name", "") or rec.get("bank_name", ""),
+            bank.get("account_number", "") or rec.get("bank_account", ""),
+            bank.get("ifsc_code", "") or rec.get("ifsc_code", ""),
+        ]
+
+        for col_idx, val in enumerate(row_values, 1):
+            c = ws.cell(row=r_idx, column=col_idx, value=val)
+            c.border = border
+            c.alignment = Alignment(vertical="center", horizontal="right" if col_idx in money_cols else "left")
+            if col_idx in money_cols:
+                c.number_format = '#,##0'
+                totals[col_idx] = round(totals.get(col_idx, 0) + float(val or 0), 2)
+        r_idx += 1
+
+    # Totals row
+    totals_row = r_idx
+    for col_idx in range(1, n_cols + 1):
+        c = ws.cell(row=totals_row, column=col_idx)
+        c.fill = total_fill
+        c.border = Border(top=medium, bottom=medium, left=thin, right=thin)
+        c.font = total_font
+        if col_idx == 1:
+            c.value = "TOTAL"
+            c.alignment = Alignment(horizontal="center", vertical="center")
+        elif col_idx in totals:
+            c.value = round(totals[col_idx], 2)
+            c.number_format = '#,##0'
+            c.alignment = Alignment(horizontal="right", vertical="center")
+    ws.row_dimensions[totals_row].height = 22
+
+    # Column widths
+    widths = [
+        4, 12, 26, 20, 18, 12, 14,         # Identity
+        9, 9, 7,                            # Attendance
+        11, 10, 13, 11, 12, 11,             # Earnings
+        12,                                 # Gross
+        11, 11, 10, 11, 11,                 # Deductions
+        12,                                 # Net
+        11, 11, 10,                         # Employer
+        13,                                 # CTC
+        13, 14, 14,                         # Statutory IDs
+        18, 18, 13,                         # Bank
+    ]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    # Freeze panes at data start
+    ws.freeze_panes = "C5"
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    filename = f"Salary_Register_{period}.xlsx"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/{record_id}/payslip/pdf")
 async def download_payslip_pdf(record_id: str, current_user: dict = Depends(get_current_user)):
     record = await db.payroll_records.find_one({"_id": ObjectId(record_id)})
