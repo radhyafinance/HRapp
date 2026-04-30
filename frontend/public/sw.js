@@ -1,7 +1,5 @@
-const CACHE_NAME = "radhya-hr-v1";
+const CACHE_NAME = "radhya-hr-v2";
 const STATIC_ASSETS = [
-  "/",
-  "/index.html",
   "/manifest.json",
   "/logo192.png",
   "/logo512.png",
@@ -26,13 +24,44 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Fetch — network first for API calls, cache first for static assets
+// Fetch strategy:
+//  - /api/*           → network only (no cache)
+//  - JS/CSS/HTML      → network first, fallback to cache (so updates always reach users)
+//  - Images/icons etc → cache first (long-lived assets)
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
+
+  // API: never cache
   if (url.pathname.startsWith("/api")) {
     event.respondWith(fetch(event.request));
     return;
   }
+
+  // App shell / code: network first so new deploys are picked up immediately
+  const isCode =
+    url.pathname === "/" ||
+    url.pathname.endsWith(".html") ||
+    url.pathname.endsWith(".js") ||
+    url.pathname.endsWith(".css") ||
+    url.pathname.includes("/static/js/") ||
+    url.pathname.includes("/static/css/");
+
+  if (isCode) {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response && response.status === 200 && event.request.method === "GET") {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(event.request))
+    );
+    return;
+  }
+
+  // Everything else: cache first (images, fonts, manifest)
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;
