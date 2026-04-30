@@ -215,7 +215,8 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
         raise HTTPException(status_code=403, detail="Access denied")
     records = await db.payroll_records.find({"period": period}).to_list(1000)
     settings_doc = await db.app_settings.find_one({"key": "company"}) or {}
-    debit_account = (settings_doc.get("debit_account_no") or "").strip()
+    # NEFT debit account is fixed by company policy — always use 019005008108
+    debit_account = "019005008108"
     txn_type = (settings_doc.get("transaction_type") or "NFT").strip()
     short_code = (settings_doc.get("company_short_code") or "RMF0001").strip()
 
