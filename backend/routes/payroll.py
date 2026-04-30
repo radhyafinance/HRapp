@@ -27,20 +27,15 @@ def calc_payroll_components(emp: dict, working_days: int = 26, present_days: int
         gross_payable = gross
         basic_payable = basic
 
-    # EPF: if stored epf_employee is explicitly 0, the employee is EPF-exempt — no deduction at all.
-    # If not set (None), default to 12% of basic.
+    # EPF: only deduct if epf_employee is explicitly set to a value > 0.
+    # If null/not set or 0 — employee is EPF-exempt.
     stored_epf = salary.get("epf_employee")
-    if stored_epf is not None and float(stored_epf) == 0:
-        # EPF exempt
-        epf_employee = 0
-        epf_employer = 0
-    elif stored_epf is not None and float(stored_epf) > 0:
+    if stored_epf is not None and float(stored_epf) > 0:
         epf_employee = round(float(stored_epf) * present_days / working_days, 2) if present_days < working_days else round(float(stored_epf), 2)
         epf_employer = round(basic_payable * 0.12, 2)
     else:
-        # Default: 12% of basic
-        epf_employee = round(basic_payable * 0.12, 2)
-        epf_employer = round(basic_payable * 0.12, 2)
+        epf_employee = 0
+        epf_employer = 0
 
     # ESIC: applicable when basic <= 21000, calculated on basic salary
     if basic <= 21000:
