@@ -29,6 +29,14 @@ def calc_days(start_str: str, end_str: str) -> int:
     return max(1, (end - start).days + 1)
 
 
+def get_financial_year(dt: datetime = None) -> int:
+    """Return the starting year of the current financial year (April–March).
+    e.g. Apr 2026–Mar 2027 → 2026; Jan–Mar 2026 → 2025.
+    """
+    d = dt or datetime.now(timezone.utc)
+    return d.year if d.month >= 4 else d.year - 1
+
+
 async def validate_leave_application(data, employee: dict):
     """Enforce all 10 company leave policy rules."""
     days = calc_days(data.start_date, data.end_date)
@@ -188,7 +196,7 @@ async def apply_leave(data: LeaveApplyRequest, current_user: dict = Depends(get_
     # Balance check for quota-tracked types
     if data.leave_type not in ["Maternity", "Paternity", "LWP", "Comp-Off"]:
         balance = await db.leave_balances.find_one(
-            {"employee_id": emp_id, "year": datetime.now(timezone.utc).year}
+            {"employee_id": emp_id, "year": get_financial_year()}
         )
         if balance and data.leave_type in balance:
             remaining = balance[data.leave_type].get("remaining", 0)
@@ -251,7 +259,7 @@ async def my_leave_balance(current_user: dict = Depends(get_current_user)):
     if not emp_id:
         return LEAVE_BALANCE_TEMPLATE
     balance = await db.leave_balances.find_one(
-        {"employee_id": emp_id, "year": datetime.now(timezone.utc).year}
+        {"employee_id": emp_id, "year": get_financial_year()}
     )
     if not balance:
         return LEAVE_BALANCE_TEMPLATE
@@ -262,7 +270,7 @@ async def my_leave_balance(current_user: dict = Depends(get_current_user)):
 @router.get("/balance/{employee_id}")
 async def get_leave_balance(employee_id: str, current_user: dict = Depends(get_current_user)):
     balance = await db.leave_balances.find_one(
-        {"employee_id": employee_id, "year": datetime.now(timezone.utc).year}
+        {"employee_id": employee_id, "year": get_financial_year()}
     )
     if not balance:
         return {"employee_id": employee_id, **LEAVE_BALANCE_TEMPLATE}
@@ -340,7 +348,7 @@ async def approve_leave(leave_id: str, data: LeaveApproveRequest, current_user: 
             if data.approval_type == "el":
                 # Check EL balance
                 balance = await db.leave_balances.find_one(
-                    {"employee_id": leave["employee_id"], "year": datetime.now(timezone.utc).year}
+                    {"employee_id": leave["employee_id"], "year": get_financial_year()}
                 )
                 el_remaining = (balance or {}).get("EL", {}).get("remaining", 0)
                 if el_remaining < leave["days"]:
@@ -377,7 +385,7 @@ async def approve_leave(leave_id: str, data: LeaveApproveRequest, current_user: 
     BALANCE_TRACKED = ["CL", "SL", "EL", "Marriage"]
     if new_status == "approved" and deduct_type in BALANCE_TRACKED:
         await db.leave_balances.update_one(
-            {"employee_id": leave["employee_id"], "year": datetime.now(timezone.utc).year},
+            {"employee_id": leave["employee_id"], "year": get_financial_year()},
             {"$inc": {
                 f"{deduct_type}.used": leave["days"],
                 f"{deduct_type}.remaining": -leave["days"],
@@ -407,9 +415,10 @@ async def credit_halfyear_leaves(current_user: dict = Depends(get_current_user))
         raise HTTPException(status_code=403, detail="HR Admin only")
 
     today = datetime.now(timezone.utc)
-    year = today.year
-    half = "H1" if today.month <= 6 else "H2"
-    flag_key = f"credited_{half}_{year}"
+    fy = get_financial_year(today)
+    # Financial year half-years: H1 = Apr–Sep, H2 = Oct–Mar
+    half = "H1" if 4 <= today.month <= 9 else "H2"
+    flag_key = f"credited_{half}_{fy}"
 
     employees = await db.employees.find(
         {"status": {"$in": ["active", "probation"]}},
@@ -421,7 +430,7 @@ async def credit_halfyear_leaves(current_user: dict = Depends(get_current_user))
     for emp in employees:
         emp_id = emp["employee_id"]
         balance = await db.leave_balances.find_one(
-            {"employee_id": emp_id, "year": year}
+            {"employee_id": emp_id, "year": fy}
         )
         if not balance:
             continue
@@ -429,7 +438,7 @@ async def credit_halfyear_leaves(current_user: dict = Depends(get_current_user))
             skipped += 1
             continue
         await db.leave_balances.update_one(
-            {"employee_id": emp_id, "year": year},
+            {"employee_id": emp_id, "year": fy},
             {"$inc": {
                 "CL.total": 3,   # 3 CL per half (total 6 + 1 carry = 7 approx)
                 "CL.remaining": 3,
@@ -440,7 +449,7 @@ async def credit_halfyear_leaves(current_user: dict = Depends(get_current_user))
         credited += 1
 
     return {
-        "message": f"{half} {year} leave credit completed.",
+        "message": f"{half} FY{fy}-{str(fy+1)[-2:]} leave credit completed.",
         "credited": credited,
         "skipped_already_credited": skipped,
     }
@@ -474,7 +483,7 @@ async def request_el_encashment(data: EncashmentRequest, current_user: dict = De
 
     # Check minimum 30 EL balance
     balance = await db.leave_balances.find_one(
-        {"employee_id": data.employee_id, "year": datetime.now(timezone.utc).year}
+        {"employee_id": data.employee_id, "year": get_financial_year()}
     )
     el_remaining = (balance or {}).get("EL", {}).get("remaining", 0)
     if el_remaining < 30:

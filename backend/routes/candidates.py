@@ -4,6 +4,10 @@ from typing import Optional
 from database import db
 from auth_utils import get_current_user
 from datetime import datetime, timezone
+
+def get_financial_year() -> int:
+    d = datetime.now(timezone.utc)
+    return d.year if d.month >= 4 else d.year - 1
 from bson import ObjectId
 import os
 import uuid
@@ -557,7 +561,7 @@ async def convert_candidate_to_employee(
     # Leave balance
     await db.leave_balances.insert_one({
         "employee_id": employee_id,
-        "year": datetime.now(timezone.utc).year,
+        "year": get_financial_year(),
         "CL":       {"total": 7,  "used": 0, "remaining": 7},
         "SL":       {"total": 15, "used": 0, "remaining": 15},
         "EL":       {"total": 0,  "used": 0, "remaining": 0},

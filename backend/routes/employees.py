@@ -5,6 +5,10 @@ from typing import Optional, List
 from database import db
 from auth_utils import get_current_user, hash_password
 from datetime import datetime, timezone
+
+def get_financial_year() -> int:
+    d = datetime.now(timezone.utc)
+    return d.year if d.month >= 4 else d.year - 1
 from bson import ObjectId
 import csv
 import io
@@ -255,7 +259,7 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
     # Initialize leave balance
     await db.leave_balances.insert_one({
         "employee_id": employee_id,
-        "year": datetime.now(timezone.utc).year,
+        "year": get_financial_year(),
         "CL":       {"total": 7,  "used": 0, "remaining": 7},
         "SL":       {"total": 15, "used": 0, "remaining": 15},
         "EL":       {"total": 0,  "used": 0, "remaining": 0},
@@ -644,7 +648,7 @@ async def bulk_upload(file: UploadFile = File(...), current_user: dict = Depends
             await db.employees.insert_one(emp_doc)
             await db.leave_balances.insert_one({
                 "employee_id": employee_id,
-                "year": datetime.now(timezone.utc).year,
+                "year": get_financial_year(),
                 "CL":       {"total": 7,  "used": 0, "remaining": 7},
                 "SL":       {"total": 15, "used": 0, "remaining": 15},
                 "EL":       {"total": 0,  "used": 0, "remaining": 0},
