@@ -12,7 +12,7 @@ export default function FieldTracking() {
   const [trackData, setTrackData] = useState(null);
   const [trackLoading, setTrackLoading] = useState(false);
   const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
-  const isManager = ["hr_admin", "management", "branch_manager"].includes(user?.role);
+  const isManager = ["hr_admin", "management", "managers"].includes(user?.role);
 
   const fetchActive = async () => {
     setLoading(true);

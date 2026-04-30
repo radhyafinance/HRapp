@@ -473,7 +473,7 @@ async def convert_candidate_to_employee(
     elif designation in RISK_DESIGNATIONS:
         role = "employee"
     elif designation in {"Branch Manager", "Senior Branch Manager"}:
-        role = "branch_manager"
+        role = "managers"
     else:
         role = "employee"
 

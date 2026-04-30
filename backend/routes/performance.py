@@ -123,7 +123,7 @@ async def submit_self_assessment(review_id: str, data: SelfAssessmentRequest, cu
 
 @router.put("/{review_id}/manager-assessment")
 async def submit_manager_assessment(review_id: str, data: ManagerAssessmentRequest, current_user: dict = Depends(get_current_user)):
-    if current_user.get("role") not in ["hr_admin", "management", "branch_manager"]:
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
     await db.performance_reviews.update_one(
         {"_id": ObjectId(review_id)},

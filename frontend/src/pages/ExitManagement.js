@@ -47,7 +47,7 @@ export default function ExitManagement() {
   const [ffsData, setFFSData] = useState(null);
   const [form, setForm] = useState({ employee_id: user?.employee_id || "", resignation_date: "", reason: "", notice_period_waiver: false });
   const [saving, setSaving] = useState(false);
-  const isManager = ["hr_admin", "management", "branch_manager"].includes(user?.role);
+  const isManager = ["hr_admin", "management", "managers"].includes(user?.role);
 
   const fetchData = async () => {
     setLoading(true);

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { UserCheck } from "lucide-react";
 import API from "../../utils/api";
 
-const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", branch_manager: "Manager", employee: "HO Staff", field_agent: "Field Staff" };
+const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", managers: "Managers", employee: "HO Staff", field_agent: "Field Staff" };
 
 export function EmployeeDetailView({ emp }) {
   const [managerInfo, setManagerInfo] = useState(null);

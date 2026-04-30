@@ -15,8 +15,8 @@ from openpyxl.utils import get_column_letter
 
 router = APIRouter()
 
-ROLES = ["hr_admin", "management", "branch_manager", "employee", "field_agent"]
-STATUSES = ["active", "probation", "exited"]
+ROLES = ["hr_admin", "management", "managers", "employee", "field_agent"]
+STATUSES = ["active", "probation", "notice_period", "exited"]
 
 DEPARTMENTS = [
     "Accounts",

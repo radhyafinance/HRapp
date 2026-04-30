@@ -95,7 +95,7 @@ export default function Attendance() {
   const [todaySummary, setTodaySummary] = useState(null);
   const [trackingActive, setTrackingActive] = useState(false);
   const trackingTimerRef = useRef(null);
-  const isManager = ["hr_admin", "management", "branch_manager"].includes(user?.role);
+  const isManager = ["hr_admin", "management", "managers"].includes(user?.role);
   const canRegulariseAdmin = ["hr_admin", "management"].includes(user?.role);
   // Regularisation state
   const [regEditRecord, setRegEditRecord] = useState(null);   // record to edit

@@ -232,7 +232,7 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-[#E85B1E] outline-none">
                 <option value="field_agent">Field Staff</option>
                 <option value="employee">HO Staff</option>
-                <option value="branch_manager">Manager</option>
+                <option value="managers">Managers</option>
                 <option value="hr_admin">HR Admin</option>
                 <option value="management">Management</option>
               </select>

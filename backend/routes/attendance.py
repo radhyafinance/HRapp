@@ -276,7 +276,7 @@ async def my_attendance(
 
 @router.get("/location-track/{employee_id}")
 async def location_track(employee_id: str, date_str: str = None, current_user: dict = Depends(get_current_user)):
-    if current_user.get("role") not in ["hr_admin", "management", "branch_manager"]:
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
     today = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     logs = await db.location_logs.find(
@@ -340,7 +340,7 @@ async def location_track(employee_id: str, date_str: str = None, current_user: d
 @router.get("/field-staff/active")
 async def list_active_field_staff(current_user: dict = Depends(get_current_user)):
     """List employees who have punched in today and have location updates."""
-    if current_user.get("role") not in ["hr_admin", "management", "branch_manager"]:
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     records = await db.attendance_records.find({"date": today, "punch_in_time": {"$exists": True}}).to_list(1000)

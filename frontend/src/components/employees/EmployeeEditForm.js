@@ -4,8 +4,8 @@ import API from "../../utils/api";
 import { ReportingManagerInput } from "./ReportingManagerInput";
 import { SalaryBreakupForm } from "../shared/SalaryBreakupForm";
 
-const ROLES = ["hr_admin", "management", "branch_manager", "employee", "field_agent"];
-const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", branch_manager: "Manager", employee: "HO Staff", field_agent: "Field Staff" };
+const ROLES = ["hr_admin", "management", "managers", "employee", "field_agent"];
+const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", managers: "Managers", employee: "HO Staff", field_agent: "Field Staff" };
 const DEPARTMENTS = ["Accounts", "Administration", "Compliance", "Human Resources", "IT", "Operations", "Risk and Credit"];
 const DESIGNATION_GROUPS = {
   "Management": ["Director"],
@@ -106,7 +106,13 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
         {F("department", "Department", "text", { options: [{ value: "", label: "Select" }, ...DEPARTMENTS] })}
         {F("designation", "Designation")}
         {F("role", "Role", "text", { options: ROLES.map(r => ({ value: r, label: ROLE_LABELS[r] })) })}
-        {F("status", "Status", "text", { options: ["active", "probation", "resigned", "terminated"] })}
+        {F("status", "Status", "text", { options: [
+          { value: "active", label: "Active" },
+          { value: "probation", label: "Probation" },
+          { value: "notice_period", label: "Serving Notice Period" },
+          { value: "resigned", label: "Resigned" },
+          { value: "terminated", label: "Terminated" },
+        ] })}
         {F("joining_date", "Joining Date", "date")}
         {F("joining_location", "Joining Location")}
       </div>

@@ -88,7 +88,7 @@ async def list_leaves(
 
 @router.get("/pending")
 async def pending_leaves(current_user: dict = Depends(get_current_user)):
-    if current_user.get("role") not in ["hr_admin", "management", "branch_manager"]:
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
     leaves = await db.leave_applications.find({"status": "pending"}).sort("applied_at", -1).to_list(500)
     return [leave_to_dict(l) for l in leaves]
@@ -128,7 +128,7 @@ async def get_leave_balance(employee_id: str, current_user: dict = Depends(get_c
 
 @router.put("/{leave_id}/approve")
 async def approve_leave(leave_id: str, data: LeaveApproveRequest, current_user: dict = Depends(get_current_user)):
-    if current_user.get("role") not in ["hr_admin", "management", "branch_manager"]:
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
     leave = await db.leave_applications.find_one({"_id": ObjectId(leave_id)})
     if not leave:

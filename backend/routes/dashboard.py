@@ -64,7 +64,7 @@ async def recent_activity(current_user: dict = Depends(get_current_user)):
 
 @router.get("/field-agents-live")
 async def field_agents_live(current_user: dict = Depends(get_current_user)):
-    if current_user.get("role") not in ["hr_admin", "management", "branch_manager"]:
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     active_sessions = await db.attendance_records.find(
@@ -74,7 +74,7 @@ async def field_agents_live(current_user: dict = Depends(get_current_user)):
     for session in active_sessions:
         emp_id = session.get("employee_id")
         emp = await db.employees.find_one({"employee_id": emp_id})
-        if emp and emp.get("role") in ["field_agent", "branch_manager"]:
+        if emp and emp.get("role") in ["field_agent", "managers"]:
             last_loc = await db.location_logs.find_one(
                 {"employee_id": emp_id, "date": today},
                 sort=[("timestamp", -1)]

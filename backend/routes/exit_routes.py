@@ -115,14 +115,14 @@ async def list_exits(
 
 @router.put("/{exit_id}/approve")
 async def approve_exit(exit_id: str, data: ApproveExitRequest, current_user: dict = Depends(get_current_user)):
-    if current_user.get("role") not in ["hr_admin", "management", "branch_manager"]:
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
     exit_req = await db.exit_requests.find_one({"_id": ObjectId(exit_id)})
     if not exit_req:
         raise HTTPException(status_code=404, detail="Exit request not found")
     role = current_user.get("role")
     chain = exit_req.get("approval_chain", [])
-    level_map = {"branch_manager": "Branch Manager", "hr_admin": "HR Admin", "management": "Management"}
+    level_map = {"managers": "Branch Manager", "hr_admin": "HR Admin", "management": "Management"}
     level = level_map.get(role)
     updated = False
     for item in chain:

@@ -135,7 +135,7 @@ export default function Performance() {
                         {r.status === "pending_self_assessment" && r.employee_id === user?.employee_id && (
                           <button onClick={() => setShowReview({ ...r, mode: "self" })} className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200">Self Assessment</button>
                         )}
-                        {r.status === "pending_manager_review" && ["hr_admin", "management", "branch_manager"].includes(user?.role) && (
+                        {r.status === "pending_manager_review" && ["hr_admin", "management", "managers"].includes(user?.role) && (
                           <button onClick={() => setShowReview({ ...r, mode: "manager" })} className="text-xs px-2 py-1 bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200">Manager Review</button>
                         )}
                         {r.status === "pending_approval" && isManager && (

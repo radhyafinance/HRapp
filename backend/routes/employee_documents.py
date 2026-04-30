@@ -68,7 +68,7 @@ class UploadDocumentRequest(BaseModel):
 
 @router.get("/{employee_id}/documents")
 async def list_documents(employee_id: str, current_user: dict = Depends(get_current_user)):
-    if current_user.get("role") not in ["hr_admin", "management", "branch_manager"]:
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         # Employees can see their own
         if current_user.get("employee_id") != employee_id:
             raise HTTPException(status_code=403, detail="Access denied")
@@ -136,7 +136,7 @@ async def upload_document(
 @router.get("/document-completeness/all")
 async def document_completeness_all(current_user: dict = Depends(get_current_user)):
     """Return a map of employee_id -> {uploaded, total, percent} for all employees."""
-    if current_user.get("role") not in ["hr_admin", "management", "branch_manager"]:
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
     total = len(ALLOWED_DOC_TYPES)
     out = {}
@@ -220,7 +220,7 @@ async def download_document(
     as_attachment: bool = False,
     current_user: dict = Depends(get_current_user),
 ):
-    if current_user.get("role") not in ["hr_admin", "management", "branch_manager"]:
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         if current_user.get("employee_id") != employee_id:
             raise HTTPException(status_code=403, detail="Access denied")
     if doc_type not in ALLOWED_DOC_TYPES:

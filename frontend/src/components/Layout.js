@@ -8,15 +8,15 @@ import {
 } from "lucide-react";
 
 const NAV_ITEMS = [
-  { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["hr_admin", "management", "branch_manager", "employee", "field_agent"] },
+  { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
   { path: "/candidates", label: "Candidates", icon: UserPlus, roles: ["hr_admin", "management"] },
-  { path: "/employees", label: "Employees", icon: Users, roles: ["hr_admin", "management", "branch_manager"] },
-  { path: "/attendance", label: "Attendance", icon: CalendarCheck, roles: ["hr_admin", "management", "branch_manager", "employee", "field_agent"] },
-  { path: "/field-tracking", label: "Field Tracking", icon: MapPin, roles: ["hr_admin", "management", "branch_manager"] },
-  { path: "/leaves", label: "Leaves", icon: FileText, roles: ["hr_admin", "management", "branch_manager", "employee", "field_agent"] },
-  { path: "/payroll", label: "Payroll", icon: CreditCard, roles: ["hr_admin", "management", "branch_manager", "employee", "field_agent"] },
-  { path: "/performance", label: "Performance", icon: TrendingUp, roles: ["hr_admin", "management", "branch_manager", "employee", "field_agent"] },
-  { path: "/exit", label: "Exit", icon: DoorOpen, roles: ["hr_admin", "management", "branch_manager", "employee", "field_agent"] },
+  { path: "/employees", label: "Employees", icon: Users, roles: ["hr_admin", "management", "managers"] },
+  { path: "/attendance", label: "Attendance", icon: CalendarCheck, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
+  { path: "/field-tracking", label: "Field Tracking", icon: MapPin, roles: ["hr_admin", "management", "managers"] },
+  { path: "/leaves", label: "Leaves", icon: FileText, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
+  { path: "/payroll", label: "Payroll", icon: CreditCard, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
+  { path: "/performance", label: "Performance", icon: TrendingUp, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
+  { path: "/exit", label: "Exit", icon: DoorOpen, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
   { path: "/letters", label: "Letters", icon: Award, roles: ["hr_admin", "management"] },
   { path: "/gratuity", label: "Gratuity", icon: Award, roles: ["hr_admin", "management"] },
   { path: "/settings", label: "Settings", icon: Settings, roles: ["hr_admin"] },
@@ -25,7 +25,7 @@ const NAV_ITEMS = [
 const ROLE_LABELS = {
   hr_admin: "HR Admin",
   management: "Management",
-  branch_manager: "Manager",
+  managers: "Managers",
   employee: "HO Staff",
   field_agent: "Field Staff",
 };

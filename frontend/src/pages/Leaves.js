@@ -54,7 +54,7 @@ export default function Leaves() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("my");
-  const isManager = ["hr_admin", "management", "branch_manager"].includes(user?.role);
+  const isManager = ["hr_admin", "management", "managers"].includes(user?.role);
 
   const fetchData = async () => {
     setLoading(true);

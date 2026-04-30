@@ -7,9 +7,10 @@ import { ReportingManagerInput } from "../components/employees/ReportingManagerI
 import { Modal } from "../components/shared/Modal";
 import { SalaryBreakupForm } from "../components/shared/SalaryBreakupForm";
 
-const ROLES = ["hr_admin", "management", "branch_manager", "employee", "field_agent"];
-const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", branch_manager: "Manager", employee: "HO Staff", field_agent: "Field Staff" };
-const STATUS_COLORS = { active: "bg-green-100 text-green-700", probation: "bg-yellow-100 text-yellow-700", resigned: "bg-red-100 text-red-700", terminated: "bg-gray-100 text-gray-700" };
+const ROLES = ["hr_admin", "management", "managers", "employee", "field_agent"];
+const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", managers: "Managers", employee: "HO Staff", field_agent: "Field Staff" };
+const STATUS_COLORS = { active: "bg-green-100 text-green-700", probation: "bg-yellow-100 text-yellow-700", notice_period: "bg-orange-100 text-orange-700", resigned: "bg-red-100 text-red-700", terminated: "bg-gray-100 text-gray-700", exited: "bg-gray-100 text-gray-500" };
+const STATUS_LABELS = { active: "Active", probation: "Probation", notice_period: "Serving Notice Period", resigned: "Resigned", terminated: "Terminated", exited: "Exited" };
 const DEPARTMENTS = ["Accounts", "Administration", "Compliance", "Human Resources", "IT", "Operations", "Risk and Credit"];
 const DESIGNATION_GROUPS = {
   "Management": ["Director"],
@@ -143,6 +144,7 @@ export default function Employees() {
           <option value="all">All Status</option>
           <option value="active">Active</option>
           <option value="probation">Probation</option>
+          <option value="notice_period">Serving Notice Period</option>
           <option value="resigned">Resigned</option>
         </select>
         <select onChange={e => setSearch(e.target.value === "all" ? "" : e.target.value)} data-testid="dept-filter"
@@ -190,7 +192,7 @@ export default function Employees() {
                       ? <span className="font-mono text-xs px-2 py-1 bg-[#E85B1E]/10 text-[#E85B1E] rounded-full">{emp.reporting_to}</span>
                       : <span className="text-xs text-slate-400">—</span>}
                   </td>
-                  <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[emp.status] || "bg-slate-100"}`}>{emp.status}</span></td>
+                  <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${STATUS_COLORS[emp.status] || "bg-slate-100"}`}>{STATUS_LABELS[emp.status] || emp.status}</span></td>
                   <td className="px-4 py-3">
                     <button onClick={() => setShowView({ ...emp, _initialTab: "docs" })} className="cursor-pointer" title="View documents" data-testid={`docs-ring-${emp.employee_id}`}>
                       <DocCompletenessRing uploaded={completeness[emp.employee_id]?.uploaded || 0} total={completeness[emp.employee_id]?.total || 23} />
