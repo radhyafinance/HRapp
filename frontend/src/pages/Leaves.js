@@ -93,7 +93,11 @@ export default function Leaves() {
   const [certError, setCertError] = useState("");
   const certFile = useFileUpload();
 
-  // Admin approval modal for SL > 2 days without cert
+  const [allBalances, setAllBalances] = useState([]);
+  const [balSearch, setBalSearch] = useState("");
+  const [selectedEmp, setSelectedEmp] = useState(null); // { employee_id, name } for drill-down
+  const [empLeaves, setEmpLeaves] = useState([]);
+  const [empLeavesLoading, setEmpLeavesLoading] = useState(false);
   const [approvalLeave, setApprovalLeave] = useState(null);
   const [approvalType, setApprovalType] = useState("el");
   const [approvalRemarks, setApprovalRemarks] = useState("");
@@ -112,8 +116,12 @@ export default function Leaves() {
       setLeaves(leavesRes.data);
       setBalance(balRes.data);
       if (isManager) {
-        const pendRes = await API.get("/leaves/pending");
+        const [pendRes, allBalRes] = await Promise.all([
+          API.get("/leaves/pending"),
+          API.get("/leaves/balances/all"),
+        ]);
         setPending(pendRes.data);
+        setAllBalances(allBalRes.data);
       }
     } catch (e) {
       console.error("fetchData failed:", e);
@@ -155,6 +163,19 @@ export default function Leaves() {
       setCertError(e.response?.data?.detail || "Upload failed");
     } finally {
       setCertUploading(false);
+    }
+  };
+
+  const openEmpLeaves = async (emp) => {
+    setSelectedEmp(emp);
+    setEmpLeavesLoading(true);
+    try {
+      const res = await API.get(`/leaves?employee_id=${emp.employee_id}`);
+      setEmpLeaves(res.data);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setEmpLeavesLoading(false);
     }
   };
 
@@ -250,7 +271,7 @@ export default function Leaves() {
       {/* Tabs */}
       {isManager && (
         <div className="flex gap-2 mb-4 border-b border-slate-200">
-          {[["my", "My Leaves"], ["pending", `Pending Approvals (${pending.length})`]].map(([val, label]) => (
+          {[["my", "My Leaves"], ["pending", `Pending Approvals (${pending.length})`], ["all", "All Employees"]].map(([val, label]) => (
             <button key={val} onClick={() => setActiveTab(val)} data-testid={`tab-${val}`}
               className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${activeTab === val ? "border-[#E85B1E] text-[#E85B1E]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
               {label}
@@ -259,7 +280,104 @@ export default function Leaves() {
         </div>
       )}
 
-      {/* Leaves Table */}
+      {/* All Employees Balances Tab */}
+      {activeTab === "all" && !selectedEmp && (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div className="p-4 border-b border-slate-100 flex items-center gap-3">
+            <input
+              value={balSearch} onChange={e => setBalSearch(e.target.value)}
+              placeholder="Search by name or employee ID..."
+              className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
+              data-testid="bal-search"
+            />
+            <span className="text-xs text-slate-400">{allBalances.length} employees</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full" data-testid="all-balances-table">
+              <thead><tr className="bg-slate-50 border-b">
+                {["Employee", "Department", "CL", "SL", "EL", "Marriage", ""].map(h => (
+                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {loading
+                  ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                  : allBalances
+                      .filter(e => !balSearch || e.employee_id.toLowerCase().includes(balSearch.toLowerCase()) || e.name.toLowerCase().includes(balSearch.toLowerCase()))
+                      .map(e => (
+                    <tr key={e.employee_id} className="border-b border-slate-100 hover:bg-slate-50">
+                      <td className="px-4 py-3">
+                        <p className="text-sm font-semibold text-[#E85B1E] font-mono">{e.employee_id}</p>
+                        <p className="text-xs text-slate-500">{e.name}</p>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-500">{e.department}</td>
+                      {["CL","SL","EL","Marriage"].map(k => (
+                        <td key={k} className="px-4 py-3">
+                          <span className="text-sm font-bold text-slate-700">{e[k]?.remaining ?? 0}</span>
+                          <span className="text-xs text-slate-400"> / {e[k]?.total ?? 0}</span>
+                        </td>
+                      ))}
+                      <td className="px-4 py-3">
+                        <button onClick={() => openEmpLeaves(e)}
+                          data-testid={`view-leaves-${e.employee_id}`}
+                          className="px-3 py-1 bg-slate-100 text-slate-600 rounded-lg text-xs font-medium hover:bg-slate-200">
+                          View Leaves
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                }
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Drill-down: individual employee leave history */}
+      {activeTab === "all" && selectedEmp && (
+        <div className="space-y-4">
+          <button onClick={() => setSelectedEmp(null)}
+            className="flex items-center gap-2 text-sm text-[#E85B1E] font-medium hover:underline">
+            ← Back to All Employees
+          </button>
+          <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100">
+              <p className="font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>{selectedEmp.name}</p>
+              <p className="text-xs text-slate-400 font-mono">{selectedEmp.employee_id} · {selectedEmp.department}</p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead><tr className="bg-slate-50 border-b">
+                  {["Type","From","To","Days","Status","Certificate","Applied"].map(h => (
+                    <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
+                  ))}
+                </tr></thead>
+                <tbody>
+                  {empLeavesLoading
+                    ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                    : empLeaves.length === 0
+                      ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No leave applications found.</td></tr>
+                      : empLeaves.map(l => (
+                        <tr key={l.id} className="border-b border-slate-100 hover:bg-slate-50">
+                          <td className="px-4 py-3"><span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">{l.leave_type}</span></td>
+                          <td className="px-4 py-3 text-sm text-slate-600">{l.start_date}</td>
+                          <td className="px-4 py-3 text-sm text-slate-600">{l.end_date}</td>
+                          <td className="px-4 py-3 text-sm font-medium">{l.days}d</td>
+                          <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[l.status]}`}>{l.status}</span></td>
+                          <td className="px-4 py-3">{l.medical_certificate ? <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full text-xs">Uploaded</span> : <span className="text-xs text-slate-400">—</span>}</td>
+                          <td className="px-4 py-3 text-xs text-slate-400">{l.applied_at ? new Date(l.applied_at).toLocaleDateString("en-IN") : "—"}</td>
+                        </tr>
+                      ))
+                  }
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Leaves Table (My + Pending tabs) */}
+      {activeTab !== "all" && (
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="leaves-table">
@@ -370,6 +488,7 @@ export default function Leaves() {
           </table>
         </div>
       </div>
+      )}
 
       {/* Apply Leave Modal */}
       {showApply && (

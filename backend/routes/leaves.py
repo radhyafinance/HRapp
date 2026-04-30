@@ -253,7 +253,44 @@ async def pending_leaves(current_user: dict = Depends(get_current_user)):
     return [leave_to_dict(l) for l in leaves]
 
 
-@router.get("/balance/my")
+@router.get("/balances/all")
+async def all_leave_balances(current_user: dict = Depends(get_current_user)):
+    """Return leave balances for all employees — HR Admin, Management, Managers only."""
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    fy = get_financial_year()
+    # Fetch all employees (name + id)
+    employees = await db.employees.find(
+        {"status": {"$in": ["active", "probation", "notice_period"]}},
+        {"employee_id": 1, "first_name": 1, "last_name": 1, "department": 1, "designation": 1, "_id": 0}
+    ).sort("employee_id", 1).to_list(1000)
+
+    emp_ids = [e["employee_id"] for e in employees]
+    emp_map = {e["employee_id"]: e for e in employees}
+
+    balances = await db.leave_balances.find(
+        {"employee_id": {"$in": emp_ids}, "year": fy}
+    ).to_list(1000)
+    bal_map = {b["employee_id"]: b for b in balances}
+
+    result = []
+    for emp_id in emp_ids:
+        emp = emp_map[emp_id]
+        bal = bal_map.get(emp_id, LEAVE_BALANCE_TEMPLATE)
+        result.append({
+            "employee_id": emp_id,
+            "name": f"{emp.get('first_name','')} {emp.get('last_name','')}".strip(),
+            "department": emp.get("department", ""),
+            "designation": emp.get("designation", ""),
+            "CL": bal.get("CL", {"total": 7, "used": 0, "remaining": 7}),
+            "SL": bal.get("SL", {"total": 15, "used": 0, "remaining": 15}),
+            "EL": bal.get("EL", {"total": 0, "used": 0, "remaining": 0}),
+            "Marriage": bal.get("Marriage", {"total": 5, "used": 0, "remaining": 5}),
+        })
+    return result
+
+
+
 async def my_leave_balance(current_user: dict = Depends(get_current_user)):
     emp_id = current_user.get("employee_id")
     if not emp_id:
