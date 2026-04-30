@@ -28,7 +28,7 @@ export function SalaryBreakupForm({ form, onChange }) {
   const epfEr          = epfExempt ? 0 : Math.min(basic > 0 ? Math.round(basic * 0.12) : 0, EPF_CAP);
   const gratuity       = basic > 0 ? Math.round((basic * 15) / 26 / 12) : 0;
   const totalDeduction = epf + esicEmp;
-  const netTakeHome    = gross - totalDeduction;
+  const netTakeHome    = Math.round(gross - totalDeduction);
   const totalCostToCompany = gross + epfEr + esicEr + gratuity;
 
   const F = (key, label) => (

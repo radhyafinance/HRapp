@@ -50,12 +50,12 @@ def calc_payroll_components(emp: dict, working_days: int = 26, present_days: int
 
     # Gratuity provision (monthly): (Basic × 15 / 26) / 12
     # 15/26 of basic = annual gratuity per year of service; divide by 12 for monthly accrual
-    gratuity_monthly = round((basic_payable * 15) / 26 / 12, 2)
+    gratuity_monthly = round((basic_payable * 15) / 26 / 12)  # rounded to nearest rupee
 
     # CTC components
     ctc_monthly = gross + epf_employer + esic_employer + gratuity_monthly
 
-    net_salary = round(gross_payable - epf_employee - esic_employee, 2)
+    net_salary = round(gross_payable - epf_employee - esic_employee)  # rounded to nearest rupee
 
     return {
         "basic": basic_payable,
