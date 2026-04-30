@@ -230,13 +230,12 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
     try:
         y, m = period.split("-")
         month_short = _MONTHS[int(m) - 1]
-        period_label = f"{month_short}{y}"  # e.g. "Apr2026" (full 4-digit year)
+        period_label = f"{month_short.upper()}{y[-2:]}"  # e.g. "APR26" (uppercase, 2-digit year)
     except Exception:
         period_label = period
 
-    remark_full = f"{short_code} Salary {period_label}"  # e.g. "RMF0001 Salary Apr2026"
-    remark_client = remark_full[:21]
-    remark_beneficiary = remark_full[:30]
+    remark_full = f"Salary {period_label}"  # per-employee ID prepended inside the loop
+    remark_suffix = remark_full
 
     def clean_name(name: str) -> str:
         if not name:
@@ -282,6 +281,10 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
             beneficiary_acct = (r.get("bank_account") or "").strip()
             ifsc = (r.get("ifsc_code") or "").strip().upper()
             name = clean_name(r.get("employee_name", ""))
+            emp_id = (r.get("employee_id") or "").strip()
+            row_remark = f"{emp_id} {remark_suffix}"   # e.g. "RMF0001 Salary APR26"
+            row_remark_client = row_remark[:21]
+            row_remark_beneficiary = row_remark[:30]
             ws.append([
                 txn_type,
                 net_amount,
@@ -289,8 +292,8 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
                 ifsc,
                 beneficiary_acct,
                 name,
-                remark_client,
-                remark_beneficiary,
+                row_remark_client,
+                row_remark_beneficiary,
             ])
         # Body styling
         for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=8):
