@@ -16,13 +16,15 @@ export function SalaryBreakupForm({ form, onChange }) {
   const special  = parseFloat(form.special_allowance) || 0;
   const canteen  = parseFloat(form.canteen_allowance) || 0;
   const conv     = parseFloat(form.conveyance_allowance) || 0;
-  const epf      = parseFloat(form.epf_employee)      || 0;
+  const epfRaw  = form.epf_employee;
+  const epfExempt = epfRaw === null || epfRaw === undefined || epfRaw === "" || parseFloat(epfRaw) === 0;
+  const epf      = epfExempt ? 0 : (parseFloat(epfRaw) || 0);
 
   const gross          = basic + hra + special + canteen + conv;
   const esicApplicable = basic > 0 && basic <= 21000;
   const esicEmp        = esicApplicable ? Math.round(basic * 0.0075) : 0;
   const esicEr         = esicApplicable ? Math.round(basic * 0.0325) : 0;
-  const epfEr          = basic > 0 ? Math.round(basic * 0.12) : 0;
+  const epfEr          = epfExempt ? 0 : (basic > 0 ? Math.round(basic * 0.12) : 0);
   const gratuity       = basic > 0 ? Math.round((basic * 15) / 26 / 12) : 0;
   const totalDeduction = epf + esicEmp;
   const netTakeHome    = gross - totalDeduction;
@@ -74,8 +76,8 @@ export function SalaryBreakupForm({ form, onChange }) {
           <div className="space-y-1.5">
             <div className="flex justify-between">
               <span className="text-slate-500">EPF — Employer (12% of Basic)</span>
-              <span className="font-medium text-orange-600">
-                {basic > 0 ? `₹${epfEr.toLocaleString("en-IN")}` : "—"}
+              <span className={`font-medium ${epfExempt ? "text-slate-400 italic" : "text-orange-600"}`}>
+                {epfExempt ? "Exempt" : `₹${epfEr.toLocaleString("en-IN")}`}
               </span>
             </div>
             <div className="flex justify-between">
