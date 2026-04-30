@@ -11,6 +11,10 @@ L.Icon.Default.mergeOptions({
   shadowUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png",
 });
 
+// Stable pathOptions constants — avoids inline object re-renders
+const ROUTE_PATH_OPTIONS = { color: "#1E2A47", weight: 4, opacity: 0.85 };
+const DOT_PATH_OPTIONS = { color: "#1E2A47", fillColor: "#1E2A47", fillOpacity: 0.8 };
+
 const startIcon = new L.DivIcon({
   className: "custom-pin",
   html: '<div style="background:#10B981;width:18px;height:18px;border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.3)"></div>',
@@ -61,7 +65,7 @@ export default function RouteMap({ locations = [], stops = [], attendance }) {
         />
 
         {points.length > 1 && (
-          <Polyline positions={points} pathOptions={{ color: "#1E2A47", weight: 4, opacity: 0.85 }} />
+          <Polyline positions={points} pathOptions={ROUTE_PATH_OPTIONS} />
         )}
 
         {/* Intermediate point dots */}
@@ -70,7 +74,7 @@ export default function RouteMap({ locations = [], stops = [], attendance }) {
             key={l.id}
             center={[l.latitude, l.longitude]}
             radius={3}
-            pathOptions={{ color: "#1E2A47", fillColor: "#1E2A47", fillOpacity: 0.8 }}
+            pathOptions={DOT_PATH_OPTIONS}
           />
         ))}
 
@@ -100,7 +104,7 @@ export default function RouteMap({ locations = [], stops = [], attendance }) {
 
         {/* Stop markers */}
         {stops.map((s, i) => (
-          <Marker key={i} position={[s.latitude, s.longitude]} icon={stopIcon}>
+          <Marker key={`stop-${s.latitude}-${s.longitude}-${i}`} position={[s.latitude, s.longitude]} icon={stopIcon}>
             <Popup>
               <strong>Stop #{i + 1}</strong>
               <br />

@@ -53,14 +53,14 @@ export default function Employees() {
     try {
       const res = await API.get("/employees/document-completeness/all");
       setCompleteness(res.data.completeness || {});
-    } catch (e) { /* non-critical */ }
+    } catch (e) { console.error("fetchCompleteness failed:", e); }
   };
 
   const fetchNextId = async () => {
     try {
       const res = await API.get("/employees/next-id");
       setNextId(res.data.next_id);
-    } catch (e) {}
+    } catch (e) { console.error("fetchNextId failed:", e); }
   };
 
   useEffect(() => { fetchEmployees(); }, [search, statusFilter]);

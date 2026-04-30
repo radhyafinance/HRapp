@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import bcrypt
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -125,7 +126,7 @@ async def startup():
     else:
         # Refresh password if .env value changed
         try:
-            if not __import__('bcrypt').checkpw(admin_password.encode(), existing_admin["password_hash"].encode()):
+            if not bcrypt.checkpw(admin_password.encode(), existing_admin["password_hash"].encode()):
                 await db.users.update_one(
                     {"_id": existing_admin["_id"]},
                     {"$set": {"password_hash": hash_password(admin_password)}},

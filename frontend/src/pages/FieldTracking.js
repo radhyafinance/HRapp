@@ -207,7 +207,7 @@ export default function FieldTracking() {
                 </thead>
                 <tbody>
                   {stops.map((s, i) => (
-                    <tr key={i} className="border-b border-slate-100 hover:bg-slate-50">
+                    <tr key={`stop-${s.latitude}-${s.longitude}-${i}`} className="border-b border-slate-100 hover:bg-slate-50">
                       <td className="px-4 py-3 text-sm font-medium text-[#1E2A47]">{i + 1}</td>
                       <td className="px-4 py-3 text-sm text-slate-600">{new Date(s.start).toLocaleTimeString("en-IN")}</td>
                       <td className="px-4 py-3 text-sm text-slate-600">{new Date(s.end).toLocaleTimeString("en-IN")}</td>

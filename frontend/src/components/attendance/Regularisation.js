@@ -239,7 +239,7 @@ export function PendingRequestsPanel({ onApproved }) {
     try {
       const res = await API.get("/attendance/regularisation-requests?status=pending");
       setRows(res.data);
-    } catch { /* ignore */ }
+    } catch { console.error("fetchPending regularisation requests failed"); }
     finally { setLoading(false); }
   };
   useEffect(() => { fetchPending(); }, []);

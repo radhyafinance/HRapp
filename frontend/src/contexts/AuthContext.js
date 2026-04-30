@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from "react";
+import React, { createContext, useContext, useState, useEffect, useMemo } from "react";
 import API from "../utils/api";
 
 const AuthContext = createContext(null);
@@ -44,8 +44,14 @@ export function AuthProvider({ children }) {
     setUser(updated);
   };
 
+  const contextValue = useMemo(
+    () => ({ user, login, loginWithToken, logout, loading, updateUser }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [user, loading]
+  );
+
   return (
-    <AuthContext.Provider value={{ user, login, loginWithToken, logout, loading, updateUser }}>
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   );

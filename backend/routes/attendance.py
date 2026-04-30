@@ -140,7 +140,7 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
 
     now = datetime.now(timezone.utc)
     # Only persist the selfie if face match failed/flagged — saves DB space when matched
-    keep_photo = data.photo_base64 if face_result.get("matched") is False else None
+    keep_photo = data.photo_base64 if face_result.get("matched") == False else None
     record = {
         "employee_id": data.employee_id,
         "date": today,
@@ -149,7 +149,7 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
         "punch_in_photo": keep_photo,
         "punch_in_face_matched": face_result.get("matched"),
         "punch_in_face_distance": face_result.get("distance"),
-        "punch_in_face_warning": face_result.get("reason") if face_result.get("matched") is False else None,
+        "punch_in_face_warning": face_result.get("reason") if face_result.get("matched") == False else None,
         "geofence_verified": in_fence,
         "distance_from_office": round(distance, 2) if distance else None,
         "location_name": location_name,
@@ -168,7 +168,7 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
         "punch_in_time": now.isoformat(),
         "face_matched": face_result.get("matched"),
         "face_distance": face_result.get("distance"),
-        "face_warning": face_result.get("reason") if face_result.get("matched") is False else None,
+        "face_warning": face_result.get("reason") if face_result.get("matched") == False else None,
         "message": f"Punched in {'within geofence' if in_fence else 'OUTSIDE geofence'}" + (f" at {location_name}" if location_name else ""),
     }
 
@@ -195,7 +195,7 @@ async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current
     now = datetime.now(timezone.utc)
     punch_in_time = datetime.fromisoformat(record["punch_in_time"])
     hours_worked = (now - punch_in_time).total_seconds() / 3600
-    keep_photo = data.photo_base64 if face_result.get("matched") is False else None
+    keep_photo = data.photo_base64 if face_result.get("matched") == False else None
     await db.attendance_records.update_one(
         {"_id": record["_id"]},
         {"$set": {
@@ -204,7 +204,7 @@ async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current
             "punch_out_photo": keep_photo,
             "punch_out_face_matched": face_result.get("matched"),
             "punch_out_face_distance": face_result.get("distance"),
-            "punch_out_face_warning": face_result.get("reason") if face_result.get("matched") is False else None,
+            "punch_out_face_warning": face_result.get("reason") if face_result.get("matched") == False else None,
             "hours_worked": round(hours_worked, 2),
         }},
     )
@@ -215,7 +215,7 @@ async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current
         "message": f"Punched out. Total hours: {round(hours_worked, 2)}",
         "face_matched": face_result.get("matched"),
         "face_distance": face_result.get("distance"),
-        "face_warning": face_result.get("reason") if face_result.get("matched") is False else None,
+        "face_warning": face_result.get("reason") if face_result.get("matched") == False else None,
     }
 
 
