@@ -473,13 +473,32 @@ async def download_template(current_user: dict = Depends(get_current_user)):
     for col_idx, (key, _) in enumerate(EMPLOYEE_TEMPLATE_COLUMNS, start=1):
         ws.cell(row=2, column=col_idx, value=sample_values.get(key, "")).alignment = Alignment(horizontal="left")
 
-    # Data validation dropdowns
+    # Hidden lookup sheet — avoids the 255-char Excel inline formula limit
+    ws_lkp = wb.create_sheet("_Lookups")
+    ws_lkp.sheet_state = "hidden"
+
+    LOOKUP_LISTS = {
+        "department": DEPARTMENTS,
+        "designation": DESIGNATIONS,
+        "role": ROLES,
+        "status": STATUSES,
+    }
+    lkp_col_map = {}  # key -> column letter in _Lookups
+    for lkp_col_idx, (lkp_key, lkp_vals) in enumerate(LOOKUP_LISTS.items(), start=1):
+        lkp_letter = get_column_letter(lkp_col_idx)
+        lkp_col_map[lkp_key] = lkp_letter
+        for row_i, val in enumerate(lkp_vals, start=1):
+            ws_lkp.cell(row=row_i, column=lkp_col_idx, value=val)
+
+    # Data validation dropdowns referencing the hidden sheet
     def _add_dv(col_key: str, values: list):
         col_idx = next(i for i, (k, _) in enumerate(EMPLOYEE_TEMPLATE_COLUMNS, start=1) if k == col_key)
         col_letter = get_column_letter(col_idx)
-        formula = '"' + ",".join(values) + '"'
+        lkp_letter = lkp_col_map[col_key]
+        n = len(values)
+        formula = f"_Lookups!${lkp_letter}$1:${lkp_letter}${n}"
         dv = DataValidation(type="list", formula1=formula, allow_blank=True, showDropDown=False)
-        dv.error = f"Pick one of: {', '.join(values)}"
+        dv.error = f"Pick one of the allowed values"
         dv.errorTitle = "Invalid value"
         ws.add_data_validation(dv)
         dv.add(f"{col_letter}2:{col_letter}1001")
