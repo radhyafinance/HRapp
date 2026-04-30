@@ -5,7 +5,7 @@ import { DocUploadCard } from "./DocUploadCard";
 import API from "../../utils/api";
 import { compressImage, fileToBase64 } from "../../utils/imageCompression";
 
-const DEPARTMENTS = ["Accounts", "Administration", "Compliance", "Human Resources", "IT", "Operations", "Risk and Credit"];
+const DEPARTMENTS = ["Accounts", "Administration", "Compliance", "Human Resources", "IT", "Management", "Operations", "Risk and Credit"];
 
 const INITIAL_FORM = {
   first_name: "", last_name: "", mobile: "", email: "",

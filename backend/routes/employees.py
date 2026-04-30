@@ -24,6 +24,7 @@ DEPARTMENTS = [
     "Compliance",
     "Human Resources",
     "IT",
+    "Management",
     "Operations",
     "Risk and Credit",
 ]
@@ -41,6 +42,8 @@ FIELD_DESIGNATIONS = [
 # Management
 MANAGEMENT_DESIGNATIONS = [
     "Director",
+    "Chief Executive Officer",
+    "Chief Operating Officer",
 ]
 
 # Risk Team (reports to management)
@@ -51,13 +54,12 @@ RISK_DESIGNATIONS = [
 
 # Head Office
 HO_DESIGNATIONS = [
-    "Chief Executive Officer",
-    "Chief Operating Officer",
     "Company Secretary",
     "HR Manager",
     "Accounts Manager",
     "Senior Manager",
     "Manager",
+    "Assistant Manager",
     "Senior Executive",
     "Executive",
     "Assistant",

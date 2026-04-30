@@ -6,10 +6,10 @@ import { SalaryBreakupForm } from "../shared/SalaryBreakupForm";
 
 const ROLES = ["hr_admin", "management", "managers", "employee", "field_agent"];
 const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", managers: "Managers", employee: "HO Staff", field_agent: "Field Staff" };
-const DEPARTMENTS = ["Accounts", "Administration", "Compliance", "Human Resources", "IT", "Operations", "Risk and Credit"];
+const DEPARTMENTS = ["Accounts", "Administration", "Compliance", "Human Resources", "IT", "Management", "Operations", "Risk and Credit"];
 const DESIGNATION_GROUPS = {
-  "Management": ["Director"],
-  "Head Office": ["Chief Executive Officer", "Chief Operating Officer", "Company Secretary", "HR Manager", "Accounts Manager", "Senior Manager", "Manager", "Senior Executive", "Executive", "Assistant"],
+  "Management": ["Director", "Chief Executive Officer", "Chief Operating Officer"],
+  "Head Office": ["Company Secretary", "HR Manager", "Accounts Manager", "Senior Manager", "Manager", "Assistant Manager", "Senior Executive", "Executive", "Assistant"],
   "Field Team": ["Divisional Manager", "Area Manager", "Senior Branch Manager", "Branch Manager", "Senior Field Officer", "Field Officer"],
   "Risk Team": ["Audit Manager", "Credit Officer"],
 };
