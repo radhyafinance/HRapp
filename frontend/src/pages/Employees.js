@@ -96,12 +96,18 @@ export default function Employees() {
     e.target.value = "";
   };
 
-  const downloadTemplate = () => {
-    const headers = "employee_id,first_name,last_name,email,mobile,department,designation,role,reporting_to,joining_date,status,basic,hra,special_allowance,canteen_allowance,conveyance_allowance,bank_name,account_number,ifsc_code\n";
-    const sample = "RMF0001,John,Doe,john.doe@radhyamfi.com,9876543210,Operations,Field Officer,field_agent,RMF0005,2024-01-15,active,15000,6000,3000,1500,1500,SBI,1234567890,SBIN0001234\n";
-    const blob = new Blob([headers + sample], { type: "text/csv" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a"); a.href = url; a.download = "employee_template.csv"; a.click();
+  const downloadTemplate = async () => {
+    try {
+      const res = await API.get("/employees/bulk-upload/template", { responseType: "blob" });
+      const url = URL.createObjectURL(new Blob([res.data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "employee_bulk_upload_template.xlsx";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert("Failed to download template: " + (e.response?.data?.detail || e.message));
+    }
   };
 
   return (
@@ -122,7 +128,7 @@ export default function Employees() {
             <UserPlus size={16} /> Add Employee
           </button>
         </div>
-        <input ref={fileRef} type="file" accept=".csv" className="hidden" onChange={handleBulkUpload} />
+        <input ref={fileRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={handleBulkUpload} />
       </div>
 
       <div className="flex flex-col sm:flex-row gap-3 mb-4">

@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional, List
 from database import db
@@ -7,10 +8,15 @@ from datetime import datetime, timezone
 from bson import ObjectId
 import csv
 import io
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.utils import get_column_letter
 
 router = APIRouter()
 
 ROLES = ["hr_admin", "management", "branch_manager", "employee", "field_agent"]
+STATUSES = ["active", "probation", "exited"]
 
 DEPARTMENTS = [
     "Accounts",
@@ -367,46 +373,244 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
     return emp_to_dict(emp)
 
 
+EMPLOYEE_TEMPLATE_COLUMNS = [
+    # Personal
+    ("employee_id", "Employee ID (leave blank to auto-assign)"),
+    ("first_name", "First Name *"),
+    ("last_name", "Last Name *"),
+    ("email", "Email *"),
+    ("mobile", "Mobile *"),
+    # Job
+    ("department", "Department *"),
+    ("designation", "Designation *"),
+    ("role", "Role *"),
+    ("reporting_to", "Reporting To (Employee ID)"),
+    ("joining_date", "Joining Date (YYYY-MM-DD) *"),
+    ("status", "Status *"),
+    # Salary — all manual
+    ("ctc_annual", "CTC Annual (₹)"),
+    ("basic", "Basic (₹/mo)"),
+    ("hra", "HRA (₹/mo)"),
+    ("special_allowance", "Special Allowance (₹/mo)"),
+    ("canteen_allowance", "Canteen Allowance (₹/mo)"),
+    ("conveyance_allowance", "Conveyance Allowance (₹/mo)"),
+    ("epf_employee", "EPF Employee (₹/mo)"),
+    # Statutory
+    ("uan_number", "UAN Number"),
+    ("esi_number", "ESIC / ESI Number"),
+    ("pan", "PAN"),
+    ("aadhaar", "Aadhaar"),
+    # Bank
+    ("bank_name", "Bank Name"),
+    ("account_number", "Account Number"),
+    ("ifsc_code", "IFSC Code"),
+    # Login
+    ("password", "Initial Password (default: Welcome@123)"),
+]
+
+
+@router.get("/bulk-upload/template")
+async def download_template(current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ["hr_admin"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Employees"
+
+    # Header styling
+    header_fill = PatternFill("solid", fgColor="1E2A47")
+    header_font = Font(color="FFFFFF", bold=True, size=11)
+    thin = Side(border_style="thin", color="CBD5E1")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # Write headers (row 1)
+    for col_idx, (_, label) in enumerate(EMPLOYEE_TEMPLATE_COLUMNS, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=label)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+        ws.column_dimensions[get_column_letter(col_idx)].width = max(18, len(label) // 2 + 10)
+    ws.row_dimensions[1].height = 42
+    ws.freeze_panes = "A2"
+
+    # Sample row (row 2)
+    sample_values = {
+        "employee_id": "",
+        "first_name": "John",
+        "last_name": "Doe",
+        "email": "john.doe@radhyamfi.com",
+        "mobile": "9876543210",
+        "department": "Operations",
+        "designation": "Field Officer",
+        "role": "field_agent",
+        "reporting_to": "",
+        "joining_date": "2026-03-01",
+        "status": "probation",
+        "ctc_annual": 300000,
+        "basic": 12000,
+        "hra": 4800,
+        "special_allowance": 2400,
+        "canteen_allowance": 1500,
+        "conveyance_allowance": 1500,
+        "epf_employee": 1440,
+        "uan_number": "",
+        "esi_number": "",
+        "pan": "ABCDE1234F",
+        "aadhaar": "123412341234",
+        "bank_name": "SBI",
+        "account_number": "1234567890",
+        "ifsc_code": "SBIN0001234",
+        "password": "Welcome@123",
+    }
+    for col_idx, (key, _) in enumerate(EMPLOYEE_TEMPLATE_COLUMNS, start=1):
+        ws.cell(row=2, column=col_idx, value=sample_values.get(key, "")).alignment = Alignment(horizontal="left")
+
+    # Data validation dropdowns
+    def _add_dv(col_key: str, values: list):
+        col_idx = next(i for i, (k, _) in enumerate(EMPLOYEE_TEMPLATE_COLUMNS, start=1) if k == col_key)
+        col_letter = get_column_letter(col_idx)
+        formula = '"' + ",".join(values) + '"'
+        dv = DataValidation(type="list", formula1=formula, allow_blank=True, showDropDown=False)
+        dv.error = f"Pick one of: {', '.join(values)}"
+        dv.errorTitle = "Invalid value"
+        ws.add_data_validation(dv)
+        dv.add(f"{col_letter}2:{col_letter}1001")
+
+    _add_dv("department", DEPARTMENTS)
+    _add_dv("designation", DESIGNATIONS)
+    _add_dv("role", ROLES)
+    _add_dv("status", STATUSES)
+
+    # Instructions sheet
+    ws2 = wb.create_sheet("Instructions")
+    ws2["A1"] = "Radhya Micro Finance — Employee Bulk Upload Template"
+    ws2["A1"].font = Font(bold=True, size=14, color="E85B1E")
+    instructions = [
+        "",
+        "How to use:",
+        "1. Delete the sample row on the 'Employees' sheet if you do not want it imported.",
+        "2. Fill one row per employee. Fields marked * are required.",
+        "3. Department, Designation, Role and Status use dropdowns — click the cell to pick.",
+        "4. Leave 'Employee ID' blank to auto-assign the next RMF number.",
+        "5. Salary values are per month unless otherwise stated.",
+        "6. 'EPF Employee' is the monthly employee-side PF contribution (usually 12% of Basic, capped).",
+        "7. ESIC (both sides) and Gratuity are auto-computed by the system — do not fill them here.",
+        "8. UAN = 12-digit Universal Account Number. ESI = 17-digit ESIC number. Leave blank if not yet issued.",
+        "9. Save as .xlsx and upload on the Employees page.",
+        "",
+        "Role options: " + ", ".join(ROLES),
+        "Status options: " + ", ".join(STATUSES),
+        "Department options: " + ", ".join(DEPARTMENTS),
+        "Designation options: " + ", ".join(DESIGNATIONS),
+    ]
+    for i, line in enumerate(instructions, start=2):
+        ws2.cell(row=i, column=1, value=line)
+    ws2.column_dimensions["A"].width = 120
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="employee_bulk_upload_template.xlsx"'},
+    )
+
+
+def _row_to_dict_from_excel(headers_labels: list, row_values: tuple) -> dict:
+    """Map Excel-sheet row to canonical field keys. headers_labels = list of col keys."""
+    return {headers_labels[i]: row_values[i] for i in range(min(len(headers_labels), len(row_values)))}
+
+
 @router.post("/bulk-upload")
 async def bulk_upload(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin"]:
         raise HTTPException(status_code=403, detail="Access denied")
     content = await file.read()
-    reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
-    created, skipped, errors = 0, 0, []
-    for row in reader:
-        try:
-            email = row.get("email", "").lower().strip()
-            if not email:
+    filename = (file.filename or "").lower()
+
+    # Parse either .xlsx (preferred) or legacy .csv
+    rows: list[dict] = []
+    if filename.endswith(".xlsx"):
+        wb = load_workbook(filename=io.BytesIO(content), data_only=True)
+        ws = wb["Employees"] if "Employees" in wb.sheetnames else wb.active
+        # We assume the template order. Map by column key.
+        col_keys = [k for k, _ in EMPLOYEE_TEMPLATE_COLUMNS]
+        # Skip header row (row 1); if the first real row equals the sample, we still attempt to import it
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not any(row):
                 continue
+            d = _row_to_dict_from_excel(col_keys, row)
+            rows.append(d)
+    else:
+        reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
+        for row in reader:
+            rows.append(row)
+
+    created, skipped, errors = 0, 0, []
+    for row in rows:
+        # Normalise all values to strings/floats as expected
+        email = str(row.get("email") or "").lower().strip()
+        if not email:
+            continue
+        try:
             existing = await db.employees.find_one({"email": email})
             if existing:
                 skipped += 1
                 continue
-            employee_id = row.get("employee_id", "").strip() or await get_next_employee_id()
-            basic = float(row.get("basic", 0))
-            hra = float(row.get("hra", 0))
-            special = float(row.get("special_allowance", 0))
-            canteen = float(row.get("canteen_allowance", 0))
-            conveyance = float(row.get("conveyance_allowance", 0))
+            employee_id = (str(row.get("employee_id") or "").strip()
+                           or await get_next_employee_id())
+
+            def _f(k: str) -> float:
+                v = row.get(k)
+                if v in (None, ""):
+                    return 0.0
+                try:
+                    return float(v)
+                except (TypeError, ValueError):
+                    return 0.0
+
+            basic = _f("basic")
+            hra = _f("hra")
+            special = _f("special_allowance")
+            canteen = _f("canteen_allowance")
+            conveyance = _f("conveyance_allowance")
+            epf_emp = _f("epf_employee") if row.get("epf_employee") not in (None, "") else None
+            ctc_annual = _f("ctc_annual") if row.get("ctc_annual") not in (None, "") else None
             gross = basic + hra + special + canteen + conveyance
+
             emp_doc = {
                 "employee_id": employee_id,
-                "first_name": row.get("first_name", ""),
-                "last_name": row.get("last_name", ""),
+                "first_name": str(row.get("first_name") or "").strip(),
+                "last_name": str(row.get("last_name") or "").strip(),
                 "email": email,
-                "mobile": row.get("mobile", ""),
-                "department": row.get("department", ""),
-                "designation": row.get("designation", ""),
-                "role": row.get("role", "employee"),
-                "reporting_to": row.get("reporting_to", "").strip() or None,
-                "joining_date": row.get("joining_date", ""),
-                "status": row.get("status", "active"),
-                "salary": {"basic": basic, "hra": hra, "special_allowance": special,
-                           "canteen_allowance": canteen, "conveyance_allowance": conveyance, "gross": gross},
-                "bank_details": {"bank_name": row.get("bank_name", ""),
-                                 "account_number": row.get("account_number", ""),
-                                 "ifsc_code": row.get("ifsc_code", "")},
+                "mobile": str(row.get("mobile") or "").strip(),
+                "department": str(row.get("department") or "").strip(),
+                "designation": str(row.get("designation") or "").strip(),
+                "role": str(row.get("role") or "employee").strip(),
+                "reporting_to": str(row.get("reporting_to") or "").strip() or None,
+                "joining_date": str(row.get("joining_date") or "").strip(),
+                "status": str(row.get("status") or "active").strip(),
+                "pan": str(row.get("pan") or "").strip() or None,
+                "aadhaar": str(row.get("aadhaar") or "").strip() or None,
+                "uan_number": str(row.get("uan_number") or "").strip() or None,
+                "esi_number": str(row.get("esi_number") or "").strip() or None,
+                "salary": {
+                    "ctc_annual": ctc_annual,
+                    "basic": basic, "hra": hra,
+                    "special_allowance": special,
+                    "canteen_allowance": canteen,
+                    "conveyance_allowance": conveyance,
+                    "epf_employee": epf_emp,
+                    "gross": gross,
+                },
+                "bank_details": {
+                    "bank_name": str(row.get("bank_name") or "").strip(),
+                    "account_number": str(row.get("account_number") or "").strip(),
+                    "ifsc_code": str(row.get("ifsc_code") or "").strip(),
+                },
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
             await db.employees.insert_one(emp_doc)
@@ -417,15 +621,15 @@ async def bulk_upload(file: UploadFile = File(...), current_user: dict = Depends
                 "SL": {"total": 15, "used": 0, "remaining": 15},
                 "EL": {"total": 12, "used": 0, "remaining": 12},
             })
-            password = row.get("password", "Welcome@123")
+            password = str(row.get("password") or "Welcome@123").strip() or "Welcome@123"
             await db.users.update_one(
                 {"username": employee_id},
                 {"$setOnInsert": {
                     "username": employee_id,
                     "email": email,
                     "password_hash": hash_password(password),
-                    "name": f"{row.get('first_name', '')} {row.get('last_name', '')}",
-                    "role": row.get("role", "employee"),
+                    "name": f"{emp_doc['first_name']} {emp_doc['last_name']}".strip(),
+                    "role": emp_doc["role"],
                     "employee_id": employee_id,
                     "is_active": True,
                     "created_at": datetime.now(timezone.utc).isoformat(),
