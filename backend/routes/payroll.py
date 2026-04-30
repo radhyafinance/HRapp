@@ -29,10 +29,13 @@ def calc_payroll_components(emp: dict, working_days: int = 26, present_days: int
 
     # EPF: only deduct if epf_employee is explicitly set to a value > 0.
     # If null/not set or 0 — employee is EPF-exempt.
+    # Capped at ₹1800 for both employee and employer side.
+    EPF_CAP = 1800
     stored_epf = salary.get("epf_employee")
     if stored_epf is not None and float(stored_epf) > 0:
-        epf_employee = round(float(stored_epf) * present_days / working_days, 2) if present_days < working_days else round(float(stored_epf), 2)
-        epf_employer = round(basic_payable * 0.12, 2)
+        raw_epf_emp = float(stored_epf) * present_days / working_days if present_days < working_days else float(stored_epf)
+        epf_employee = round(min(raw_epf_emp, EPF_CAP), 2)
+        epf_employer = min(round(basic_payable * 0.12, 2), EPF_CAP)
     else:
         epf_employee = 0
         epf_employer = 0

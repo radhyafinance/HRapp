@@ -16,15 +16,16 @@ export function SalaryBreakupForm({ form, onChange }) {
   const special  = parseFloat(form.special_allowance) || 0;
   const canteen  = parseFloat(form.canteen_allowance) || 0;
   const conv     = parseFloat(form.conveyance_allowance) || 0;
-  const epfRaw  = form.epf_employee;
-  const epfExempt = epfRaw === null || epfRaw === undefined || epfRaw === "" || parseFloat(epfRaw) === 0;
-  const epf      = epfExempt ? 0 : (parseFloat(epfRaw) || 0);
+  const EPF_CAP    = 1800;
+  const epfRaw     = form.epf_employee;
+  const epfExempt  = epfRaw === null || epfRaw === undefined || epfRaw === "" || parseFloat(epfRaw) === 0;
+  const epf        = epfExempt ? 0 : Math.min(parseFloat(epfRaw) || 0, EPF_CAP);
 
   const gross          = basic + hra + special + canteen + conv;
   const esicApplicable = basic > 0 && basic <= 21000;
   const esicEmp        = esicApplicable ? Math.round(basic * 0.0075) : 0;
   const esicEr         = esicApplicable ? Math.round(basic * 0.0325) : 0;
-  const epfEr          = epfExempt ? 0 : (basic > 0 ? Math.round(basic * 0.12) : 0);
+  const epfEr          = epfExempt ? 0 : Math.min(basic > 0 ? Math.round(basic * 0.12) : 0, EPF_CAP);
   const gratuity       = basic > 0 ? Math.round((basic * 15) / 26 / 12) : 0;
   const totalDeduction = epf + esicEmp;
   const netTakeHome    = gross - totalDeduction;
