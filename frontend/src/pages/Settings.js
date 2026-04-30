@@ -125,6 +125,23 @@ export default function Settings() {
     finally { setSavingFaceMatch(false); }
   };
 
+  const [creditResult, setCreditResult] = useState(null);
+  const [crediting, setCrediting] = useState(false);
+
+  const creditHalfYear = async () => {
+    if (!window.confirm("This will credit half-year SL and CL to all active employees. Continue?")) return;
+    setCrediting(true);
+    setCreditResult(null);
+    try {
+      const res = await API.post("/leaves/admin/credit-halfyear");
+      setCreditResult({ success: true, ...res.data });
+    } catch (e) {
+      setCreditResult({ success: false, message: e.response?.data?.detail || "Failed to credit leaves" });
+    } finally {
+      setCrediting(false);
+    }
+  };
+
   const TYPE_BADGE = { head_office: "bg-[#1E2A47] text-white", branch: "bg-blue-100 text-blue-700", field: "bg-green-100 text-green-700" };
 
   return (
@@ -136,7 +153,7 @@ export default function Settings() {
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 border-b border-slate-200">
-        {[["locations", "Office Locations"], ["company", "Company / Bank"], ["attendance", "Attendance"], ["users", "User Management"]].map(([val, label]) => (
+        {[["locations", "Office Locations"], ["company", "Company / Bank"], ["attendance", "Attendance"], ["leaves", "Leave Management"], ["users", "User Management"]].map(([val, label]) => (
           <button key={val} onClick={() => setActiveTab(val)} data-testid={`settings-tab-${val}`}
             className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${activeTab === val ? "border-[#E85B1E] text-[#E85B1E]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             {label}
@@ -306,6 +323,51 @@ export default function Settings() {
           <p className="text-xs text-slate-500">
             Match threshold: <strong>0.40</strong> (balanced). Powered by face_recognition (dlib).
           </p>
+        </div>
+      )}
+
+      {activeTab === "leaves" && (
+        <div className="space-y-6 max-w-2xl">
+          {/* Half-year credit card */}
+          <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+            <h3 className="text-base font-bold text-[#1E2A47] mb-1" style={{ fontFamily: "'Outfit', sans-serif" }}>Half-Year Leave Credit</h3>
+            <p className="text-sm text-slate-500 mb-4">
+              As per policy, SL and CL are credited twice a year on the financial calendar:
+            </p>
+            <div className="grid grid-cols-2 gap-3 mb-5">
+              {[
+                { label: "H1 Credit", date: "1st April", detail: "+7 SL, +3 CL", color: "bg-green-50 border-green-200 text-green-700" },
+                { label: "H2 Credit", date: "1st October", detail: "+7 SL, +3 CL", color: "bg-blue-50 border-blue-200 text-blue-700" },
+              ].map(h => (
+                <div key={h.label} className={`rounded-xl border p-4 ${h.color}`}>
+                  <p className="text-xs font-bold uppercase tracking-wider mb-1">{h.label}</p>
+                  <p className="text-sm font-semibold">{h.date}</p>
+                  <p className="text-xs mt-0.5 opacity-80">{h.detail} per employee</p>
+                </div>
+              ))}
+            </div>
+            <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 text-xs text-amber-700 mb-5">
+              <strong>Note:</strong> This credits leaves for all active &amp; probation employees for the current half-year period.
+              If a credit has already been applied this half-year, those employees will be skipped automatically.
+            </div>
+            <button
+              onClick={creditHalfYear}
+              disabled={crediting}
+              data-testid="credit-halfyear-btn"
+              className="px-5 py-2.5 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] disabled:opacity-60 transition-colors"
+            >
+              {crediting ? "Processing..." : "Credit Half-Year Leaves Now"}
+            </button>
+            {creditResult && (
+              <div className={`mt-4 rounded-lg px-4 py-3 text-sm ${creditResult.success ? "bg-green-50 border border-green-200 text-green-700" : "bg-red-50 border border-red-200 text-red-700"}`}
+                data-testid="credit-result">
+                {creditResult.success
+                  ? <><strong>Done!</strong> {creditResult.message} — {creditResult.credited} employees credited, {creditResult.skipped_already_credited} already credited this half.</>
+                  : creditResult.message
+                }
+              </div>
+            )}
+          </div>
         </div>
       )}
 
