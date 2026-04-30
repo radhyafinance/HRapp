@@ -344,16 +344,36 @@ async def list_active_field_staff(current_user: dict = Depends(get_current_user)
         raise HTTPException(status_code=403, detail="Access denied")
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     records = await db.attendance_records.find({"date": today, "punch_in_time": {"$exists": True}}).to_list(1000)
+    if not records:
+        return []
+
+    emp_ids = [r["employee_id"] for r in records]
+
+    # Batch fetch all employees in one query
+    employees = await db.employees.find({"employee_id": {"$in": emp_ids}}, {"_id": 0}).to_list(1000)
+    emp_map = {e["employee_id"]: e for e in employees}
+
+    # Single aggregation for location stats (count + last log per employee)
+    location_stats = await db.location_logs.aggregate([
+        {"$match": {"date": today, "employee_id": {"$in": emp_ids}}},
+        {"$sort": {"timestamp": -1}},
+        {"$group": {
+            "_id": "$employee_id",
+            "count": {"$sum": 1},
+            "last_timestamp": {"$first": "$timestamp"},
+            "last_lat": {"$first": "$latitude"},
+            "last_lon": {"$first": "$longitude"},
+        }}
+    ]).to_list(1000)
+    loc_map = {s["_id"]: s for s in location_stats}
+
     out = []
     for r in records:
         emp_id = r["employee_id"]
-        emp = await db.employees.find_one({"employee_id": emp_id})
+        emp = emp_map.get(emp_id)
         if not emp:
             continue
-        loc_count = await db.location_logs.count_documents({"employee_id": emp_id, "date": today})
-        last_log = await db.location_logs.find_one(
-            {"employee_id": emp_id, "date": today}, sort=[("timestamp", -1)]
-        )
+        loc = loc_map.get(emp_id)
         out.append({
             "employee_id": emp_id,
             "name": f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip(),
@@ -362,10 +382,10 @@ async def list_active_field_staff(current_user: dict = Depends(get_current_user)
             "role": emp.get("role", ""),
             "punch_in_time": r.get("punch_in_time"),
             "punch_out_time": r.get("punch_out_time"),
-            "location_points": loc_count,
-            "last_seen": last_log["timestamp"] if last_log else r.get("punch_in_time"),
-            "last_lat": last_log["latitude"] if last_log else (r.get("punch_in_location", {}) or {}).get("lat"),
-            "last_lon": last_log["longitude"] if last_log else (r.get("punch_in_location", {}) or {}).get("lon"),
+            "location_points": loc["count"] if loc else 0,
+            "last_seen": loc["last_timestamp"] if loc else r.get("punch_in_time"),
+            "last_lat": loc["last_lat"] if loc else (r.get("punch_in_location", {}) or {}).get("lat"),
+            "last_lon": loc["last_lon"] if loc else (r.get("punch_in_location", {}) or {}).get("lon"),
         })
     return out
 
