@@ -29,7 +29,7 @@ export function SalaryBreakupForm({ form, onChange }) {
   const gratuity       = basic > 0 ? Math.round((basic * 15) / 26 / 12) : 0;
   const totalDeduction = epf + esicEmp;
   const netTakeHome    = Math.round(gross - totalDeduction);
-  const totalCostToCompany = gross + epfEr + esicEr + gratuity;
+  const totalCostToCompany = Math.round(gross + epfEr + esicEr + gratuity);
 
   const F = (key, label) => (
     <div>

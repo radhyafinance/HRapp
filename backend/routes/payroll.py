@@ -53,7 +53,7 @@ def calc_payroll_components(emp: dict, working_days: int = 26, present_days: int
     gratuity_monthly = round((basic_payable * 15) / 26 / 12)  # rounded to nearest rupee
 
     # CTC components
-    ctc_monthly = gross + epf_employer + esic_employer + gratuity_monthly
+    ctc_monthly = round(gross + epf_employer + esic_employer + gratuity_monthly)  # rounded to nearest rupee
 
     net_salary = round(gross_payable - epf_employee - esic_employee)  # rounded to nearest rupee
 
