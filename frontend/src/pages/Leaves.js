@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
-import { Plus, Check, X, UserCheck, Info, AlertTriangle, Upload, FileText, Eye } from "lucide-react";
+import { Plus, Check, X, UserCheck, Info, AlertTriangle, Upload, FileText, Eye, Edit2, Download, Sparkles, History } from "lucide-react";
 
 const LEAVE_TYPES = ["CL", "SL", "EL", "Maternity", "Paternity", "Marriage", "Comp-Off", "LWP"];
 const LEAVE_LABELS = {
@@ -103,6 +103,17 @@ export default function Leaves() {
   const [approvalRemarks, setApprovalRemarks] = useState("");
   const [approvalSaving, setApprovalSaving] = useState(false);
   const [approvalError, setApprovalError] = useState("");
+
+  // Balance management
+  const [editBalance, setEditBalance] = useState(null); // employee row being edited
+  const [balForm, setBalForm] = useState({ CL_total: 0, CL_used: 0, SL_total: 0, SL_used: 0, EL_total: 0, EL_used: 0, Marriage_total: 0, Marriage_used: 0, reason: "" });
+  const [balSaving, setBalSaving] = useState(false);
+  const [balError, setBalError] = useState("");
+  const [initBusy, setInitBusy] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState(null);
+  const [auditLog, setAuditLog] = useState(null); // null = closed, [] = open
+  const bulkFileRef = useRef(null);
 
   const isManager = ["hr_admin", "management", "managers"].includes(user?.role);
 
@@ -220,6 +231,106 @@ export default function Leaves() {
     }
   };
 
+  // Open Edit Balance modal with current values pre-filled
+  const openEditBalance = (emp) => {
+    setEditBalance(emp);
+    setBalForm({
+      CL_total: emp.CL?.total ?? 7,   CL_used: emp.CL?.used ?? 0,
+      SL_total: emp.SL?.total ?? 15,  SL_used: emp.SL?.used ?? 0,
+      EL_total: emp.EL?.total ?? 0,   EL_used: emp.EL?.used ?? 0,
+      Marriage_total: emp.Marriage?.total ?? 5, Marriage_used: emp.Marriage?.used ?? 0,
+      reason: "",
+    });
+    setBalError("");
+  };
+
+  const submitBalance = async () => {
+    if (!balForm.reason.trim()) { setBalError("Reason is required."); return; }
+    for (const k of ["CL", "SL", "EL", "Marriage"]) {
+      const total = Number(balForm[`${k}_total`]);
+      const used = Number(balForm[`${k}_used`]);
+      if (total < 0 || used < 0) { setBalError(`${k}: values cannot be negative.`); return; }
+      if (used > total) { setBalError(`${k}: used (${used}) cannot exceed total (${total}).`); return; }
+    }
+    setBalSaving(true);
+    setBalError("");
+    try {
+      const payload = {};
+      for (const k of ["CL", "SL", "EL", "Marriage"]) {
+        payload[`${k}_total`] = Number(balForm[`${k}_total`]);
+        payload[`${k}_used`] = Number(balForm[`${k}_used`]);
+      }
+      payload.reason = balForm.reason.trim();
+      await API.put(`/leaves/admin/balance/${editBalance.employee_id}`, payload);
+      setEditBalance(null);
+      fetchData();
+    } catch (e) {
+      setBalError(e.response?.data?.detail || "Failed to update balance.");
+    } finally {
+      setBalSaving(false);
+    }
+  };
+
+  const initializeBalances = async () => {
+    if (!window.confirm("Initialize leave balances for all active employees who don't yet have one for the current FY?")) return;
+    setInitBusy(true);
+    try {
+      const res = await API.post("/leaves/admin/initialize-balances");
+      alert(`${res.data.message}\nInitialized: ${res.data.initialized}\nSkipped (already had balance): ${res.data.skipped_existing}`);
+      fetchData();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Initialization failed");
+    } finally {
+      setInitBusy(false);
+    }
+  };
+
+  const downloadTemplate = async () => {
+    try {
+      const res = await API.get("/leaves/admin/balances-template", { responseType: "blob" });
+      const url = URL.createObjectURL(new Blob([res.data]));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Leave_Balances_FY.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert("Failed to download template");
+    }
+  };
+
+  const handleBulkUpload = async (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setBulkBusy(true);
+    setBulkResult(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", f);
+      const res = await API.post("/leaves/admin/balances-upload", fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setBulkResult({ success: true, ...res.data });
+      fetchData();
+    } catch (err) {
+      setBulkResult({ success: false, message: err.response?.data?.detail || "Upload failed" });
+    } finally {
+      setBulkBusy(false);
+      if (bulkFileRef.current) bulkFileRef.current.value = "";
+    }
+  };
+
+  const openAuditLog = async () => {
+    try {
+      const res = await API.get("/leaves/admin/balance-audit?limit=200");
+      setAuditLog(res.data);
+    } catch (e) {
+      alert("Failed to load audit log");
+    }
+  };
+
   const days = form.start_date && form.end_date
     ? Math.max(1, Math.round((new Date(form.end_date) - new Date(form.start_date)) / 86400000) + 1)
     : 0;
@@ -283,15 +394,55 @@ export default function Leaves() {
       {/* All Employees Balances Tab */}
       {activeTab === "all" && !selectedEmp && (
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-          <div className="p-4 border-b border-slate-100 flex items-center gap-3">
+          <div className="p-4 border-b border-slate-100 flex flex-wrap items-center gap-3">
             <input
               value={balSearch} onChange={e => setBalSearch(e.target.value)}
               placeholder="Search by name or employee ID..."
-              className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
+              className="flex-1 min-w-[200px] border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
               data-testid="bal-search"
             />
-            <span className="text-xs text-slate-400">{allBalances.length} employees</span>
+            {(user?.role === "hr_admin" || user?.role === "management") && (
+              <>
+                <button onClick={initializeBalances} disabled={initBusy}
+                  data-testid="init-balances-btn"
+                  className="flex items-center gap-1.5 px-3 py-2 bg-[#1E2A47] text-white rounded-lg text-xs font-semibold hover:bg-[#2a3a5c] disabled:opacity-60">
+                  <Sparkles size={13} /> {initBusy ? "Initializing..." : "Initialize Missing"}
+                </button>
+                <button onClick={downloadTemplate}
+                  data-testid="download-template-btn"
+                  className="flex items-center gap-1.5 px-3 py-2 border-2 border-[#1E2A47] text-[#1E2A47] rounded-lg text-xs font-semibold hover:bg-slate-50">
+                  <Download size={13} /> Download Template
+                </button>
+                <input ref={bulkFileRef} type="file" accept=".xlsx" className="hidden" onChange={handleBulkUpload} />
+                <button onClick={() => bulkFileRef.current?.click()} disabled={bulkBusy}
+                  data-testid="bulk-upload-btn"
+                  className="flex items-center gap-1.5 px-3 py-2 bg-[#E85B1E] text-white rounded-lg text-xs font-semibold hover:bg-[#D04A15] disabled:opacity-60">
+                  <Upload size={13} /> {bulkBusy ? "Uploading..." : "Bulk Upload"}
+                </button>
+                <button onClick={openAuditLog}
+                  data-testid="audit-log-btn"
+                  className="flex items-center gap-1.5 px-3 py-2 border-2 border-slate-300 text-slate-600 rounded-lg text-xs font-semibold hover:bg-slate-50">
+                  <History size={13} /> Audit Log
+                </button>
+              </>
+            )}
+            <span className="text-xs text-slate-400 ml-auto">{allBalances.length} employees</span>
           </div>
+          {bulkResult && (
+            <div className={`px-4 py-3 text-sm border-b ${bulkResult.success ? "bg-green-50 border-green-200 text-green-700" : "bg-red-50 border-red-200 text-red-700"}`} data-testid="bulk-result">
+              {bulkResult.success ? (
+                <>
+                  <strong>Done!</strong> {bulkResult.message}
+                  {bulkResult.errors?.length > 0 && (
+                    <ul className="mt-1 list-disc pl-5 text-xs">
+                      {bulkResult.errors.slice(0, 10).map((err, i) => <li key={i}>{err}</li>)}
+                    </ul>
+                  )}
+                </>
+              ) : bulkResult.message}
+              <button onClick={() => setBulkResult(null)} className="ml-2 text-xs underline">Dismiss</button>
+            </div>
+          )}
           <div className="overflow-x-auto">
             <table className="w-full" data-testid="all-balances-table">
               <thead><tr className="bg-slate-50 border-b">
@@ -318,11 +469,20 @@ export default function Leaves() {
                         </td>
                       ))}
                       <td className="px-4 py-3">
-                        <button onClick={() => openEmpLeaves(e)}
-                          data-testid={`view-leaves-${e.employee_id}`}
-                          className="px-3 py-1 bg-slate-100 text-slate-600 rounded-lg text-xs font-medium hover:bg-slate-200">
-                          View Leaves
-                        </button>
+                        <div className="flex gap-2">
+                          <button onClick={() => openEmpLeaves(e)}
+                            data-testid={`view-leaves-${e.employee_id}`}
+                            className="px-3 py-1 bg-slate-100 text-slate-600 rounded-lg text-xs font-medium hover:bg-slate-200">
+                            View
+                          </button>
+                          {(user?.role === "hr_admin" || user?.role === "management") && (
+                            <button onClick={() => openEditBalance(e)}
+                              data-testid={`edit-balance-${e.employee_id}`}
+                              className="flex items-center gap-1 px-3 py-1 bg-[#E85B1E]/10 text-[#E85B1E] rounded-lg text-xs font-semibold hover:bg-[#E85B1E]/20">
+                              <Edit2 size={11} /> Edit
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -655,6 +815,115 @@ export default function Leaves() {
                 {approvalSaving ? "Processing..." : "Confirm Approval"}
               </button>
             </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Edit Balance Modal */}
+      {editBalance && (
+        <Modal title={`Edit Leave Balance — ${editBalance.employee_id}`} onClose={() => setEditBalance(null)}>
+          <div className="space-y-4">
+            <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-600">
+              <strong>{editBalance.name}</strong> · {editBalance.department || "—"}
+              <p className="mt-1 text-[11px] text-slate-500">Remaining is auto-calculated as Total − Used on save.</p>
+            </div>
+            {[
+              { k: "CL", label: "Casual Leave" },
+              { k: "SL", label: "Sick Leave" },
+              { k: "EL", label: "Earned Leave" },
+              { k: "Marriage", label: "Marriage Leave" },
+            ].map(({ k, label }) => (
+              <div key={k} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-2">
+                <label className="text-xs font-semibold text-slate-700">{label}</label>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400">Total</span>
+                  <input type="number" min="0"
+                    value={balForm[`${k}_total`]}
+                    onChange={e => setBalForm(f => ({ ...f, [`${k}_total`]: e.target.value }))}
+                    data-testid={`bal-${k}-total`}
+                    className="w-20 border border-slate-300 rounded-md px-2 py-1.5 text-sm text-center focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400">Used</span>
+                  <input type="number" min="0"
+                    value={balForm[`${k}_used`]}
+                    onChange={e => setBalForm(f => ({ ...f, [`${k}_used`]: e.target.value }))}
+                    data-testid={`bal-${k}-used`}
+                    className="w-20 border border-slate-300 rounded-md px-2 py-1.5 text-sm text-center focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                </div>
+                <div className="w-16 text-right">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400 block">Remain</span>
+                  <span className="text-sm font-bold text-[#E85B1E]">
+                    {Math.max(0, (Number(balForm[`${k}_total`]) || 0) - (Number(balForm[`${k}_used`]) || 0))}
+                  </span>
+                </div>
+              </div>
+            ))}
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Reason*</label>
+              <textarea value={balForm.reason}
+                onChange={e => setBalForm(f => ({ ...f, reason: e.target.value }))}
+                required rows={2} data-testid="bal-reason"
+                placeholder="e.g. Adjustment after maternity leave reconciliation"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none resize-none" />
+            </div>
+            {balError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-sm p-3 rounded-lg">{balError}</div>
+            )}
+            <div className="flex gap-3">
+              <button onClick={() => setEditBalance(null)}
+                className="flex-1 px-4 py-2.5 border-2 border-slate-300 text-slate-600 rounded-lg text-sm font-medium hover:bg-slate-50">Cancel</button>
+              <button onClick={submitBalance} disabled={balSaving}
+                data-testid="submit-balance-btn"
+                className="flex-1 px-4 py-2.5 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold disabled:opacity-60 transition-colors">
+                {balSaving ? "Saving..." : "Save Balance"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Audit Log Modal */}
+      {auditLog !== null && (
+        <Modal title="Leave Balance — Audit Log" onClose={() => setAuditLog(null)}>
+          <div className="space-y-3">
+            {auditLog.length === 0 ? (
+              <p className="text-sm text-slate-400 text-center py-8">No balance edits recorded yet.</p>
+            ) : (
+              auditLog.map((a, i) => (
+                <div key={i} className="border border-slate-200 rounded-lg p-3 text-xs" data-testid={`audit-entry-${i}`}>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="font-semibold font-mono text-[#E85B1E]">{a.employee_id}</span>
+                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                      a.source === "manual" ? "bg-blue-100 text-blue-700" :
+                      a.source === "bulk_upload" ? "bg-purple-100 text-purple-700" :
+                      "bg-green-100 text-green-700"
+                    }`}>{a.source}</span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1.5 text-[11px] mb-1.5">
+                    {["CL","SL","EL","Marriage"].map(k => {
+                      const b = a.before?.[k];
+                      const af = a.after?.[k];
+                      const changed = b && af && (b.total !== af.total || b.used !== af.used);
+                      return (
+                        <div key={k} className={`rounded px-2 py-1 ${changed ? "bg-amber-50 border border-amber-200" : "bg-slate-50"}`}>
+                          <p className="font-bold text-slate-500">{k}</p>
+                          {b ? (
+                            <p className="text-slate-500">{b.total}/{b.used} → <span className="font-semibold text-slate-700">{af?.total}/{af?.used}</span></p>
+                          ) : (
+                            <p className="text-slate-700 font-semibold">{af?.total}/{af?.used}</p>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <p className="text-slate-600"><strong>Reason:</strong> {a.reason}</p>
+                  <p className="text-slate-400 mt-1">
+                    by <span className="font-mono">{a.changed_by}</span> · {a.changed_at ? new Date(a.changed_at).toLocaleString("en-IN") : "—"}
+                  </p>
+                </div>
+              ))
+            )}
           </div>
         </Modal>
       )}

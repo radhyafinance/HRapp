@@ -1,0 +1,52 @@
+{
+  "summary": "Frontend-only E2E testing of the new admin Leave Balance management feature on /leaves → 'All Employees' tab. All 12 specified test points pass end-to-end: RBAC toolbar, Edit modal with validation (reason required + used>total), successful save + table refresh, Audit Log modal showing manual/bulk_upload entries with before→after/reason/admin/timestamp, Initialize Missing (0 initialized / 38 skipped), and Download Template (.xlsx). Existing leave functionality unaffected.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Leaves → All Employees → Initialize Missing",
+        "issues": [
+          "Uses native window.confirm() and window.alert() for initialize flow. Functional but inconsistent with the rest of the app which uses styled modals (e.g. Edit Balance, Audit Log). Low priority polish."
+        ]
+      }
+    ]
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Leaves.js initializeBalances handler relies on window.confirm + window.alert — consider replacing with shadcn Dialog/AlertDialog for consistent UX (not blocking).",
+    "Edit Balance modal: Inline validation for used>total fires on Save, not on blur/change — acceptable but on-input feedback would be a nicer UX.",
+    "Audit log shows both 'manual' and 'bulk_upload' source badges correctly — verified via RMF0001 (manual) and RMF0002 (bulk_upload) entries with before→after snapshots, reason, changed_by=admin, and timestamps.",
+    "Edit button styling uses bg-[#E85B1E]/10 text-[#E85B1E] (orange tint) as specified — visually distinct from the neutral View button. Good."
+  ],
+  "updated_files": [],
+  "success_rate": {
+    "backend": "not tested (frontend-only request)",
+    "frontend": "100% (12/12 verified)"
+  },
+  "test_credentials": "admin / Admin@123 (HR Admin)",
+  "seed_data_creation": "Modified RMF0001 leave balance to CL=10/2, SL=15/0, EL=3/1, Marriage=5/0 with reason 'Test adjustment from UI'. One audit entry created. RMF0001 now shows CL 8/10 (remaining/total) in the All Employees table.",
+  "retest_needed": false,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "New admin leave-balance endpoints are live and UI-wired. Edit buttons use data-testid='edit-balance-{EMP_ID}'. Toolbar testids: init-balances-btn, download-template-btn, bulk-upload-btn, audit-log-btn. Native confirm/alert is used for Initialize flow — Playwright handlers should register a page.on('dialog', ...) listener to accept both the confirm and the alert. Bulk-upload flow (excel parse) was not tested from UI in this run (no malformed file prepared); backend self-test already covered blank-reason and unknown-ID detection per agent-to-agent note.",
+  "verified_test_points": [
+    "Login as admin/Admin@123 → redirect to /dashboard",
+    "Navigate to /leaves → tab-all visible and clickable",
+    "4 admin toolbar buttons all rendered and visible: init-balances-btn, download-template-btn, bulk-upload-btn, audit-log-btn",
+    "38 edit-balance-{EMP_ID} buttons present (one per row), orange tint class bg-[#E85B1E]/10 text-[#E85B1E] applied",
+    "Edit modal opens titled 'Edit Leave Balance — RMF0001' with 4 leave-type rows (CL/SL/EL/Marriage), Total/Used inputs, Remaining auto-computed",
+    "Save without reason → inline error 'Reason is required.' shown, no API call fired",
+    "Used(10) > Total(5) → inline error 'CL: used (10) cannot exceed total (5).' shown, save blocked",
+    "Valid save (CL 10/2, SL 15/0, EL 3/1, Marriage 5/0 + reason) → modal closes, RMF0001 row refreshes to '8 / 10' for CL and '2 / 3' for EL",
+    "Audit Log modal opens and shows the just-made manual edit for RMF0001 with before→after values (CL 8/0 → 10/2 etc.), reason 'Test adjustment from UI', by admin, timestamp, badge='manual'",
+    "Audit Log also shows prior bulk_upload entries with badge='bulk_upload'",
+    "Initialize Missing → native confirm 'Initialize leave balances for all active employees...' → accept → POST /api/leaves/admin/initialize-balances returns 200 → alert 'Initialized: 0, Skipped (already had balance): 38'",
+    "Download Template → triggers download of file 'Leave_Balances_FY.xlsx'",
+    "Existing functionality: My Leaves tab, Pending Approvals tab, Apply Leave button all still render/clickable"
+  ]
+}

@@ -1,10 +1,14 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 from database import db
 from auth_utils import get_current_user
 from datetime import datetime, timezone, date, timedelta
 from bson import ObjectId
+import io
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 router = APIRouter()
 
@@ -613,6 +617,367 @@ async def request_el_encashment(data: EncashmentRequest, current_user: dict = De
     doc["id"] = str(result.inserted_id)
     doc.pop("_id", None)
     return doc
+
+
+# ──────────────────────────────────────────────────────────────
+#  Leave Balance Management (Admin) — Manual edit, Initialize, Bulk Excel
+# ──────────────────────────────────────────────────────────────
+
+BALANCE_KEYS = ["CL", "SL", "EL", "Marriage"]
+
+
+class BalanceUpdateRequest(BaseModel):
+    CL_total: int
+    CL_used: int
+    SL_total: int
+    SL_used: int
+    EL_total: int
+    EL_used: int
+    Marriage_total: int
+    Marriage_used: int
+    reason: str
+
+
+def _build_balance_snapshot(balance: dict) -> dict:
+    """Return a clean {CL:{total,used,remaining}, ...} snapshot for audit."""
+    snap = {}
+    for k in BALANCE_KEYS:
+        b = (balance or {}).get(k, {})
+        snap[k] = {
+            "total": int(b.get("total", 0)),
+            "used": int(b.get("used", 0)),
+            "remaining": int(b.get("remaining", 0)),
+        }
+    return snap
+
+
+async def _write_audit(
+    employee_id: str,
+    before: dict,
+    after: dict,
+    reason: str,
+    changed_by: str,
+    source: str,
+):
+    await db.leave_balance_audit.insert_one({
+        "employee_id": employee_id,
+        "year": get_financial_year(),
+        "before": before,
+        "after": after,
+        "reason": reason,
+        "changed_by": changed_by,
+        "changed_at": datetime.now(timezone.utc).isoformat(),
+        "source": source,  # "manual" | "bulk_upload" | "initialize"
+    })
+
+
+@router.post("/admin/initialize-balances")
+async def initialize_balances(current_user: dict = Depends(get_current_user)):
+    """Initialize a default leave balance row for any active/probation employee
+    who doesn't yet have one for the current Financial Year.
+    Defaults: CL 7, SL 15, EL 0, Marriage 5 (all unused)."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    fy = get_financial_year()
+    employees = await db.employees.find(
+        {"status": {"$in": ["active", "probation", "notice_period"]}},
+        {"employee_id": 1, "_id": 0}
+    ).to_list(2000)
+
+    existing = await db.leave_balances.find(
+        {"year": fy, "employee_id": {"$in": [e["employee_id"] for e in employees]}},
+        {"employee_id": 1, "_id": 0}
+    ).to_list(2000)
+    existing_ids = {b["employee_id"] for b in existing}
+
+    initialized = 0
+    changed_by = current_user.get("employee_id") or current_user.get("username")
+    for emp in employees:
+        emp_id = emp["employee_id"]
+        if emp_id in existing_ids:
+            continue
+        new_balance = {
+            "employee_id": emp_id,
+            "year": fy,
+            **{k: dict(v) for k, v in LEAVE_BALANCE_TEMPLATE.items()},
+        }
+        await db.leave_balances.insert_one(new_balance)
+        await _write_audit(
+            employee_id=emp_id,
+            before={},
+            after=_build_balance_snapshot(LEAVE_BALANCE_TEMPLATE),
+            reason="Initial leave balance creation",
+            changed_by=changed_by,
+            source="initialize",
+        )
+        initialized += 1
+
+    return {
+        "message": f"Initialized leave balances for FY{fy}–{str(fy+1)[-2:]}.",
+        "initialized": initialized,
+        "skipped_existing": len(existing_ids),
+    }
+
+
+@router.put("/admin/balance/{employee_id}")
+async def update_employee_balance(
+    employee_id: str,
+    data: BalanceUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Manually edit a single employee's leave balance for the current FY.
+    Requires a mandatory reason — logged in leave_balance_audit."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not data.reason or not data.reason.strip():
+        raise HTTPException(status_code=400, detail="Reason is required.")
+
+    for k in BALANCE_KEYS:
+        total = getattr(data, f"{k}_total")
+        used = getattr(data, f"{k}_used")
+        if total < 0 or used < 0:
+            raise HTTPException(status_code=400, detail=f"{k}: total/used cannot be negative.")
+        if used > total:
+            raise HTTPException(status_code=400, detail=f"{k}: used ({used}) cannot exceed total ({total}).")
+
+    employee = await db.employees.find_one({"employee_id": employee_id}, {"_id": 0, "employee_id": 1})
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found.")
+
+    fy = get_financial_year()
+    existing = await db.leave_balances.find_one({"employee_id": employee_id, "year": fy})
+    before_snap = _build_balance_snapshot(existing or {})
+
+    new_payload = {}
+    for k in BALANCE_KEYS:
+        total = getattr(data, f"{k}_total")
+        used = getattr(data, f"{k}_used")
+        new_payload[k] = {"total": total, "used": used, "remaining": total - used}
+
+    await db.leave_balances.update_one(
+        {"employee_id": employee_id, "year": fy},
+        {"$set": new_payload, "$setOnInsert": {"employee_id": employee_id, "year": fy}},
+        upsert=True,
+    )
+
+    await _write_audit(
+        employee_id=employee_id,
+        before=before_snap,
+        after=_build_balance_snapshot(new_payload),
+        reason=data.reason.strip(),
+        changed_by=current_user.get("employee_id") or current_user.get("username"),
+        source="manual",
+    )
+
+    return {"message": "Leave balance updated.", "balance": new_payload}
+
+
+@router.get("/admin/balances-template")
+async def download_balances_template(current_user: dict = Depends(get_current_user)):
+    """Download an Excel template pre-filled with current leave balances
+    for all active employees. Edit totals/used and upload back."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    fy = get_financial_year()
+
+    employees = await db.employees.find(
+        {"status": {"$in": ["active", "probation", "notice_period"]}},
+        {"employee_id": 1, "first_name": 1, "last_name": 1, "department": 1, "_id": 0}
+    ).sort("employee_id", 1).to_list(2000)
+
+    emp_ids = [e["employee_id"] for e in employees]
+    balances = await db.leave_balances.find(
+        {"year": fy, "employee_id": {"$in": emp_ids}}
+    ).to_list(2000)
+    bal_map = {b["employee_id"]: b for b in balances}
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"Leave Balances FY{fy}"
+
+    header_fill = PatternFill("solid", fgColor="1E2A47")
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    thin = Side(border_style="thin", color="CCCCCC")
+    border = Border(top=thin, bottom=thin, left=thin, right=thin)
+
+    headers = [
+        "Employee ID", "Name", "Department",
+        "CL Total", "CL Used",
+        "SL Total", "SL Used",
+        "EL Total", "EL Used",
+        "Marriage Total", "Marriage Used",
+        "Reason (required)",
+    ]
+    for col_idx, h in enumerate(headers, 1):
+        c = ws.cell(row=1, column=col_idx, value=h)
+        c.font = header_font
+        c.fill = header_fill
+        c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = border
+
+    for row_idx, emp in enumerate(employees, 2):
+        emp_id = emp["employee_id"]
+        name = f"{emp.get('first_name','')} {emp.get('last_name','')}".strip()
+        bal = bal_map.get(emp_id, LEAVE_BALANCE_TEMPLATE)
+        row = [
+            emp_id, name, emp.get("department", ""),
+            int(bal.get("CL", {}).get("total", 7)), int(bal.get("CL", {}).get("used", 0)),
+            int(bal.get("SL", {}).get("total", 15)), int(bal.get("SL", {}).get("used", 0)),
+            int(bal.get("EL", {}).get("total", 0)), int(bal.get("EL", {}).get("used", 0)),
+            int(bal.get("Marriage", {}).get("total", 5)), int(bal.get("Marriage", {}).get("used", 0)),
+            "",
+        ]
+        for col_idx, val in enumerate(row, 1):
+            c = ws.cell(row=row_idx, column=col_idx, value=val)
+            c.border = border
+
+    widths = [12, 28, 18, 10, 10, 10, 10, 10, 10, 14, 14, 40]
+    for i, w in enumerate(widths, 1):
+        ws.column_dimensions[chr(64 + i) if i <= 26 else "A" + chr(64 + i - 26)].width = w
+
+    ws.freeze_panes = "A2"
+
+    # Help sheet
+    help_ws = wb.create_sheet("Instructions")
+    help_lines = [
+        "Radhya MFI — Leave Balance Bulk Update Template",
+        "",
+        f"Financial Year: FY{fy}–{str(fy+1)[-2:]} (April {fy} – March {fy+1})",
+        "",
+        "How to use:",
+        "  1. Edit the Total and Used columns as required.",
+        "  2. Remaining is auto-calculated as Total − Used on save.",
+        "  3. Enter a Reason in the last column for EACH row you modify.",
+        "  4. Rows with a blank Reason will be SKIPPED (no changes applied).",
+        "  5. Upload the saved file via the 'Bulk Upload' button on the Leaves page.",
+        "",
+        "Validation rules:",
+        "  • Used cannot exceed Total.",
+        "  • Values must be non-negative integers.",
+        "  • Unknown Employee IDs will be reported as skipped.",
+        "  • Every change is audit-logged with your user, timestamp, and the reason.",
+    ]
+    for i, line in enumerate(help_lines, 1):
+        help_ws.cell(row=i, column=1, value=line)
+    help_ws.column_dimensions["A"].width = 80
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="Leave_Balances_FY{fy}.xlsx"'},
+    )
+
+
+@router.post("/admin/balances-upload")
+async def upload_balances_template(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Bulk update leave balances from a filled-in Excel template.
+    Rows with blank 'Reason' are skipped. Every applied row writes an audit log."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not file.filename.lower().endswith(".xlsx"):
+        raise HTTPException(status_code=400, detail="Only .xlsx files are accepted.")
+
+    content = await file.read()
+    try:
+        wb = load_workbook(filename=io.BytesIO(content), data_only=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Unable to read Excel file. Ensure it is a valid .xlsx file.")
+
+    ws = wb.active
+    fy = get_financial_year()
+    changed_by = current_user.get("employee_id") or current_user.get("username")
+
+    updated = 0
+    skipped_no_reason = 0
+    skipped_unknown = 0
+    errors = []
+
+    # Expected header: Employee ID(1), Name(2), Department(3), CL_T(4), CL_U(5),
+    # SL_T(6), SL_U(7), EL_T(8), EL_U(9), Mar_T(10), Mar_U(11), Reason(12)
+    for row_idx, row in enumerate(ws.iter_rows(min_row=2, values_only=True), 2):
+        if row is None or not any(row):
+            continue
+        try:
+            emp_id = str(row[0] or "").strip()
+            if not emp_id:
+                continue
+            reason = str(row[11] or "").strip() if len(row) > 11 else ""
+            if not reason:
+                skipped_no_reason += 1
+                continue
+
+            emp = await db.employees.find_one({"employee_id": emp_id}, {"_id": 0, "employee_id": 1})
+            if not emp:
+                skipped_unknown += 1
+                errors.append(f"Row {row_idx}: Employee ID '{emp_id}' not found.")
+                continue
+
+            values = {}
+            for k, col_t, col_u in [
+                ("CL", 3, 4), ("SL", 5, 6), ("EL", 7, 8), ("Marriage", 9, 10),
+            ]:
+                total = int(row[col_t] or 0)
+                used = int(row[col_u] or 0)
+                if total < 0 or used < 0 or used > total:
+                    raise ValueError(f"{k}: invalid total/used ({total}/{used})")
+                values[k] = {"total": total, "used": used, "remaining": total - used}
+
+            existing = await db.leave_balances.find_one({"employee_id": emp_id, "year": fy})
+            before_snap = _build_balance_snapshot(existing or {})
+
+            await db.leave_balances.update_one(
+                {"employee_id": emp_id, "year": fy},
+                {"$set": values, "$setOnInsert": {"employee_id": emp_id, "year": fy}},
+                upsert=True,
+            )
+            await _write_audit(
+                employee_id=emp_id,
+                before=before_snap,
+                after=_build_balance_snapshot(values),
+                reason=reason,
+                changed_by=changed_by,
+                source="bulk_upload",
+            )
+            updated += 1
+        except ValueError as ve:
+            errors.append(f"Row {row_idx}: {ve}")
+        except Exception as ex:
+            errors.append(f"Row {row_idx}: {ex}")
+
+    return {
+        "message": f"Bulk update complete. {updated} updated, {skipped_no_reason} skipped (no reason), {skipped_unknown} skipped (unknown ID).",
+        "updated": updated,
+        "skipped_no_reason": skipped_no_reason,
+        "skipped_unknown": skipped_unknown,
+        "errors": errors[:50],
+    }
+
+
+@router.get("/admin/balance-audit")
+async def balance_audit_log(
+    employee_id: Optional[str] = None,
+    limit: int = 200,
+    current_user: dict = Depends(get_current_user),
+):
+    """Return the audit trail of leave-balance edits (most recent first)."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    q = {}
+    if employee_id:
+        q["employee_id"] = employee_id
+    cursor = db.leave_balance_audit.find(q, {"_id": 0}).sort("changed_at", -1).limit(max(1, min(limit, 1000)))
+    return await cursor.to_list(limit)
 
 
 @router.get("/{leave_id}")
