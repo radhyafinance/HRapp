@@ -127,6 +127,8 @@ export default function Settings() {
 
   const [creditResult, setCreditResult] = useState(null);
   const [crediting, setCrediting] = useState(false);
+  const [elCreditResult, setElCreditResult] = useState(null);
+  const [elCrediting, setElCrediting] = useState(false);
 
   const creditHalfYear = async () => {
     if (!window.confirm("This will credit half-year SL and CL to all active employees. Continue?")) return;
@@ -139,6 +141,20 @@ export default function Settings() {
       setCreditResult({ success: false, message: e.response?.data?.detail || "Failed to credit leaves" });
     } finally {
       setCrediting(false);
+    }
+  };
+
+  const creditMonthlyEL = async () => {
+    if (!window.confirm("Credit 1 EL to all eligible employees (6+ months service) for this month?")) return;
+    setElCrediting(true);
+    setElCreditResult(null);
+    try {
+      const res = await API.post("/leaves/admin/credit-monthly-el");
+      setElCreditResult({ success: true, ...res.data });
+    } catch (e) {
+      setElCreditResult({ success: false, message: e.response?.data?.detail || "Failed to credit EL" });
+    } finally {
+      setElCrediting(false);
     }
   };
 
@@ -365,6 +381,31 @@ export default function Settings() {
                   ? <><strong>Done!</strong> {creditResult.message} — {creditResult.credited} employees credited, {creditResult.skipped_already_credited} already credited this half.</>
                   : creditResult.message
                 }
+              </div>
+            )}
+          </div>
+
+          {/* Monthly EL credit card */}
+          <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+            <h3 className="text-base font-bold text-[#1E2A47] mb-1" style={{ fontFamily: "'Outfit', sans-serif" }}>Monthly EL Credit</h3>
+            <p className="text-sm text-slate-500 mb-4">
+              Earned Leave accrues at <strong>1 day per month</strong> for employees who have completed 6 months of service.
+              Run this on the <strong>1st of every month.</strong>
+            </p>
+            <div className="bg-slate-50 border border-slate-200 rounded-lg px-4 py-3 text-xs text-slate-600 mb-5 space-y-1">
+              <p><span className="font-semibold text-green-700">Eligible:</span> Employees with 6+ months of service, not yet credited this month.</p>
+              <p><span className="font-semibold text-slate-500">Skipped:</span> Employees with &lt;6 months service or already credited this month.</p>
+            </div>
+            <button onClick={creditMonthlyEL} disabled={elCrediting} data-testid="credit-monthly-el-btn"
+              className="px-5 py-2.5 bg-[#1E2A47] text-white rounded-lg text-sm font-semibold hover:bg-[#2a3a5c] disabled:opacity-60 transition-colors">
+              {elCrediting ? "Processing..." : "Credit 1 EL for This Month"}
+            </button>
+            {elCreditResult && (
+              <div className={`mt-4 rounded-lg px-4 py-3 text-sm ${elCreditResult.success ? "bg-green-50 border border-green-200 text-green-700" : "bg-red-50 border border-red-200 text-red-700"}`}
+                data-testid="el-credit-result">
+                {elCreditResult.success
+                  ? <><strong>Done!</strong> {elCreditResult.message} — {elCreditResult.credited} credited, {elCreditResult.skipped_not_eligible} not yet eligible, {elCreditResult.skipped_already_credited} already credited this month.</>
+                  : elCreditResult.message}
               </div>
             )}
           </div>

@@ -455,7 +455,75 @@ async def credit_halfyear_leaves(current_user: dict = Depends(get_current_user))
     }
 
 
-@router.post("/encashment-request")
+@router.post("/admin/credit-monthly-el")
+async def credit_monthly_el(current_user: dict = Depends(get_current_user)):
+    """
+    Rule 6: EL accrues at 1 day/month after 6 months of employment.
+    HR Admin triggers this on the 1st of every month.
+    Only credits employees who have completed 6 months and haven't been credited this month.
+    """
+    if current_user.get("role") != "hr_admin":
+        raise HTTPException(status_code=403, detail="HR Admin only")
+
+    today = datetime.now(timezone.utc)
+    fy = get_financial_year(today)
+    flag_key = f"el_credited_{today.year}_{today.month:02d}"
+
+    employees = await db.employees.find(
+        {"status": {"$in": ["active", "probation"]}},
+        {"employee_id": 1, "joining_date": 1, "_id": 0}
+    ).to_list(1000)
+
+    credited = 0
+    skipped_not_eligible = 0
+    skipped_already_credited = 0
+
+    for emp in employees:
+        emp_id = emp["employee_id"]
+        joining_str = emp.get("joining_date")
+        if not joining_str:
+            skipped_not_eligible += 1
+            continue
+
+        try:
+            joining = date.fromisoformat(joining_str)
+        except (ValueError, TypeError):
+            skipped_not_eligible += 1
+            continue
+
+        # Must have completed 6 months
+        eligible_from = joining + timedelta(days=183)
+        if today.date() < eligible_from:
+            skipped_not_eligible += 1
+            continue
+
+        balance = await db.leave_balances.find_one({"employee_id": emp_id, "year": fy})
+        if not balance:
+            skipped_not_eligible += 1
+            continue
+
+        if balance.get(flag_key):
+            skipped_already_credited += 1
+            continue
+
+        await db.leave_balances.update_one(
+            {"employee_id": emp_id, "year": fy},
+            {
+                "$inc": {"EL.total": 1, "EL.remaining": 1},
+                "$set": {flag_key: True},
+            },
+        )
+        credited += 1
+
+    return {
+        "message": f"Monthly EL credit for {today.strftime('%B %Y')} completed.",
+        "credited": credited,
+        "skipped_not_eligible": skipped_not_eligible,
+        "skipped_already_credited": skipped_already_credited,
+    }
+
+
+
 async def request_el_encashment(data: EncashmentRequest, current_user: dict = Depends(get_current_user)):
     """
     Rule 7: EL encashment after 3 years of service, min 30 EL accumulated.
