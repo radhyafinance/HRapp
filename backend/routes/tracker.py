@@ -125,6 +125,69 @@ def _new_secret() -> str:
     return secrets.token_urlsafe(12)
 
 
+@router.get("/devices")
+async def list_devices(current_user: dict = Depends(get_current_user)):
+    """List all configured Traccar devices with freshness status.
+    Works independent of attendance so admins can diagnose silent devices."""
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    trackers = await db.employee_trackers.find({}, {"_id": 0}).to_list(2000)
+    if not trackers:
+        return []
+
+    emp_ids = [t["employee_id"] for t in trackers]
+    employees = await db.employees.find(
+        {"employee_id": {"$in": emp_ids}},
+        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1,
+         "designation": 1, "department": 1, "role": 1, "status": 1, "phone": 1},
+    ).to_list(2000)
+    emp_map = {e["employee_id"]: e for e in employees}
+
+    now = datetime.now(timezone.utc)
+    out = []
+    for t in trackers:
+        emp = emp_map.get(t["employee_id"]) or {}
+        last_ping = t.get("last_ping_at")
+        minutes_ago = None
+        freshness = "never"
+        if last_ping:
+            try:
+                dt = datetime.fromisoformat(last_ping.replace("Z", "+00:00"))
+                minutes_ago = int((now - dt).total_seconds() / 60)
+                if minutes_ago <= 5:
+                    freshness = "live"
+                elif minutes_ago <= 30:
+                    freshness = "recent"
+                elif minutes_ago <= 24 * 60:
+                    freshness = "stale"
+                else:
+                    freshness = "silent"
+            except Exception:
+                pass
+        out.append({
+            "employee_id": t["employee_id"],
+            "name": f"{emp.get('first_name','')} {emp.get('last_name','')}".strip(),
+            "designation": emp.get("designation", ""),
+            "department": emp.get("department", ""),
+            "role": emp.get("role", ""),
+            "employee_status": emp.get("status", ""),
+            "phone": emp.get("phone", ""),
+            "active": t.get("active", True),
+            "interval_seconds": t.get("interval_seconds", 60),
+            "last_ping_at": last_ping,
+            "minutes_ago": minutes_ago,
+            "freshness": freshness,
+            "last_lat": t.get("last_lat"),
+            "last_lon": t.get("last_lon"),
+            "last_battery": t.get("last_battery"),
+        })
+    # Sort: live > recent > stale > silent > never, then by name
+    order = {"live": 0, "recent": 1, "stale": 2, "silent": 3, "never": 4}
+    out.sort(key=lambda x: (order.get(x["freshness"], 5), x["name"]))
+    return out
+
+
 @router.get("/config/{employee_id}")
 async def get_tracker_config(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Return the Traccar Client setup details for an employee.

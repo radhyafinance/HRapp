@@ -1,17 +1,45 @@
 import React, { useEffect, useState } from "react";
 import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
-import { MapPin, Activity, Clock, AlertCircle, ArrowLeft, RefreshCw } from "lucide-react";
+import { MapPin, Activity, Clock, AlertCircle, ArrowLeft, RefreshCw, Battery, Smartphone, Search } from "lucide-react";
 import RouteMap from "../components/RouteMap";
+
+const FRESHNESS_STYLES = {
+  live:    { label: "Live",    dot: "bg-green-500",    bg: "bg-green-50",    text: "text-green-700",  border: "border-green-200" },
+  recent:  { label: "Recent",  dot: "bg-emerald-400",  bg: "bg-emerald-50",  text: "text-emerald-700",border: "border-emerald-200" },
+  stale:   { label: "Stale",   dot: "bg-amber-500",    bg: "bg-amber-50",    text: "text-amber-700",  border: "border-amber-200" },
+  silent:  { label: "Silent",  dot: "bg-red-500",      bg: "bg-red-50",      text: "text-red-700",    border: "border-red-200" },
+  never:   { label: "Never",   dot: "bg-slate-400",    bg: "bg-slate-50",    text: "text-slate-600",  border: "border-slate-200" },
+};
+
+function minsAgoLabel(m) {
+  if (m == null) return "Never";
+  if (m < 1) return "Just now";
+  if (m < 60) return `${m} min ago`;
+  if (m < 1440) return `${Math.floor(m / 60)} h ago`;
+  return `${Math.floor(m / 1440)} d ago`;
+}
 
 export default function FieldTracking() {
   const { user } = useAuth();
+  const [tab, setTab] = useState("live");          // live | devices | history
   const [activeStaff, setActiveStaff] = useState([]);
+  const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState(null);
+  const [selected, setSelected] = useState(null);   // { employee_id, name, ... }
   const [trackData, setTrackData] = useState(null);
   const [trackLoading, setTrackLoading] = useState(false);
   const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
+  const [devFilter, setDevFilter] = useState("");
+
+  // History mode
+  const [histEmpSearch, setHistEmpSearch] = useState("");
+  const [histDate, setHistDate] = useState(new Date().toISOString().split("T")[0]);
+  const [histEmployees, setHistEmployees] = useState([]);
+  const [histSelected, setHistSelected] = useState(null);
+  const [histTrack, setHistTrack] = useState(null);
+  const [histLoading, setHistLoading] = useState(false);
+
   const isManager = ["hr_admin", "management", "managers"].includes(user?.role);
 
   const fetchActive = async () => {
@@ -23,6 +51,22 @@ export default function FieldTracking() {
     finally { setLoading(false); }
   };
 
+  const fetchDevices = async () => {
+    setLoading(true);
+    try {
+      const res = await API.get("/tracker/devices");
+      setDevices(res.data);
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
+  };
+
+  const fetchEmployees = async () => {
+    try {
+      const res = await API.get("/employees?status=all");
+      setHistEmployees(res.data);
+    } catch (e) { console.error(e); }
+  };
+
   const fetchTrack = async (empId, d) => {
     setTrackLoading(true);
     try {
@@ -32,18 +76,38 @@ export default function FieldTracking() {
     finally { setTrackLoading(false); }
   };
 
-  useEffect(() => { if (isManager) fetchActive(); }, [isManager]);
+  const fetchHistTrack = async (empId, d) => {
+    setHistLoading(true);
+    try {
+      const res = await API.get(`/attendance/location-track/${empId}`, { params: { date_str: d } });
+      setHistTrack(res.data);
+    } catch (e) { console.error(e); }
+    finally { setHistLoading(false); }
+  };
 
-  // Auto-refresh active list every 30s
+  useEffect(() => { if (!isManager) return;
+    if (tab === "live") fetchActive();
+    else if (tab === "devices") fetchDevices();
+    else if (tab === "history" && histEmployees.length === 0) fetchEmployees();
+  }, [isManager, tab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Auto-refresh every 30s on live / devices tab when not drilled in
   useEffect(() => {
     if (!isManager || selected) return;
-    const t = setInterval(fetchActive, 30000);
+    const t = setInterval(() => {
+      if (tab === "live") fetchActive();
+      else if (tab === "devices") fetchDevices();
+    }, 30000);
     return () => clearInterval(t);
-  }, [isManager, selected]);
+  }, [isManager, selected, tab]);
 
   useEffect(() => {
     if (selected) fetchTrack(selected.employee_id, date);
   }, [selected, date]);
+
+  useEffect(() => {
+    if (histSelected) fetchHistTrack(histSelected.employee_id, histDate);
+  }, [histSelected, histDate]);
 
   if (!isManager) {
     return (
@@ -55,99 +119,251 @@ export default function FieldTracking() {
 
   const stops = trackData?.stops || [];
   const locations = trackData?.locations || [];
+  const histStops = histTrack?.stops || [];
+  const histLocations = histTrack?.locations || [];
+
+  const filteredDevices = devices.filter(d => {
+    if (!devFilter) return true;
+    const q = devFilter.toLowerCase();
+    return d.employee_id.toLowerCase().includes(q)
+        || (d.name || "").toLowerCase().includes(q)
+        || (d.designation || "").toLowerCase().includes(q)
+        || d.freshness === devFilter;
+  });
+
+  const filteredEmployees = histEmployees.filter(e => {
+    if (!histEmpSearch) return true;
+    const q = histEmpSearch.toLowerCase();
+    return e.employee_id.toLowerCase().includes(q)
+        || `${e.first_name || ""} ${e.last_name || ""}`.toLowerCase().includes(q);
+  }).slice(0, 12);
 
   return (
     <div style={{ fontFamily: "'Work Sans', sans-serif" }}>
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <div>
           <h1 className="text-2xl font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>
             Field Tracking
           </h1>
           <p className="text-slate-500 text-sm">Live GPS routes with stops &gt; 15 minutes</p>
         </div>
-        {!selected && (
-          <button onClick={fetchActive} data-testid="refresh-active-btn" className="flex items-center gap-2 px-4 py-2 bg-[#1E2A47] text-white rounded-lg text-sm font-semibold hover:bg-[#2A3A5E] transition-colors">
-            <RefreshCw size={14} /> Refresh
-          </button>
-        )}
       </div>
 
-      {!selected ? (
-        <>
-          <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden mb-4">
-            <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-              <h3 className="font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>
-                Active Today ({activeStaff.length})
-              </h3>
-              <span className="text-xs text-slate-500 flex items-center gap-1">
-                <Activity size={12} className="text-green-500" /> Auto-refresh 30s
-              </span>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full" data-testid="active-staff-table">
-                <thead>
-                  <tr className="bg-slate-50 border-b">
-                    {["Employee", "Designation", "Punch In", "Status", "Points", "Last Seen", "Action"].map(h => (
-                      <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
-                    ))}
+      {/* Tabs */}
+      {!selected && !histSelected && (
+        <div className="flex gap-1 mb-4 border-b border-slate-200">
+          {[
+            ["live", `Active Today (${activeStaff.length})`],
+            ["devices", `Tracker Devices (${devices.length})`],
+            ["history", "History"],
+          ].map(([val, label]) => (
+            <button key={val} onClick={() => setTab(val)} data-testid={`ft-tab-${val}`}
+              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${tab === val ? "border-[#E85B1E] text-[#E85B1E]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* TAB 1: Live — Active Today */}
+      {!selected && !histSelected && tab === "live" && (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+            <h3 className="font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Punched In Today</h3>
+            <button onClick={fetchActive} data-testid="refresh-active-btn"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1E2A47] text-white rounded-lg text-xs font-semibold hover:bg-[#2A3A5E]">
+              <RefreshCw size={12} /> Refresh
+            </button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full" data-testid="active-staff-table">
+              <thead><tr className="bg-slate-50 border-b">
+                {["Employee", "Designation", "Punch In", "Status", "Points", "Last Seen", ""].map(h =>
+                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>)}
+              </tr></thead>
+              <tbody>
+                {loading ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                : activeStaff.length === 0 ? <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-400">No active staff today. Check the <strong>Tracker Devices</strong> tab to diagnose.</td></tr>
+                : activeStaff.map(s => (
+                  <tr key={s.employee_id} className="border-b border-slate-100 hover:bg-slate-50">
+                    <td className="px-4 py-3">
+                      <p className="text-sm font-medium text-[#0F172A]">{s.name}</p>
+                      <p className="text-xs text-[#E85B1E] font-mono">{s.employee_id}</p>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{s.designation || "-"}</td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{s.punch_in_time ? new Date(s.punch_in_time).toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" }) : "-"}</td>
+                    <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${s.punch_out_time ? "bg-blue-100 text-blue-700" : "bg-green-100 text-green-700"}`}>{s.punch_out_time ? "Punched Out" : "Active"}</span></td>
+                    <td className="px-4 py-3 text-sm font-semibold text-[#1E2A47]">{s.location_points}</td>
+                    <td className="px-4 py-3 text-xs text-slate-500">{s.last_seen ? new Date(s.last_seen).toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" }) : "-"}</td>
+                    <td className="px-4 py-3">
+                      <button onClick={() => setSelected(s)} data-testid={`view-track-${s.employee_id}`}
+                        className="text-xs px-3 py-1.5 bg-[#E85B1E] text-white rounded-lg hover:bg-[#D04A15] flex items-center gap-1">
+                        <MapPin size={12} /> Route
+                      </button>
+                    </td>
                   </tr>
-                </thead>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 2: Tracker Devices — all configured, with freshness */}
+      {!selected && !histSelected && tab === "devices" && (
+        <div className="space-y-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex flex-wrap gap-2 items-center">
+            <div className="relative flex-1 min-w-[240px]">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input value={devFilter} onChange={e => setDevFilter(e.target.value)}
+                placeholder="Filter by ID, name, or freshness (live/stale/silent)..."
+                className="w-full border border-slate-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
+                data-testid="device-filter-input" />
+            </div>
+            {["live","recent","stale","silent","never"].map(k => (
+              <button key={k} onClick={() => setDevFilter(devFilter === k ? "" : k)}
+                className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${devFilter === k ? FRESHNESS_STYLES[k].bg + " " + FRESHNESS_STYLES[k].text + " " + FRESHNESS_STYLES[k].border : "bg-white border-slate-200 text-slate-500"}`}
+                data-testid={`filter-chip-${k}`}>
+                <span className={`w-2 h-2 rounded-full ${FRESHNESS_STYLES[k].dot}`} />
+                {FRESHNESS_STYLES[k].label} ({devices.filter(d => d.freshness === k).length})
+              </button>
+            ))}
+            <button onClick={fetchDevices} data-testid="refresh-devices-btn"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1E2A47] text-white rounded-lg text-xs font-semibold hover:bg-[#2A3A5E]">
+              <RefreshCw size={12} /> Refresh
+            </button>
+          </div>
+
+          <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full" data-testid="devices-table">
+                <thead><tr className="bg-slate-50 border-b">
+                  {["Status", "Employee", "Role", "Last Ping", "Battery", "Interval", ""].map(h =>
+                    <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>)}
+                </tr></thead>
                 <tbody>
-                  {loading ? (
-                    <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
-                  ) : activeStaff.length === 0 ? (
-                    <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-400">No active staff today</td></tr>
-                  ) : activeStaff.map(s => (
-                    <tr key={s.employee_id} className="border-b border-slate-100 hover:bg-slate-50">
-                      <td className="px-4 py-3">
-                        <p className="text-sm font-medium text-[#0F172A]">{s.name}</p>
-                        <p className="text-xs text-[#E85B1E] font-mono">{s.employee_id}</p>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-slate-600">{s.designation || "-"}</td>
-                      <td className="px-4 py-3 text-sm text-slate-600">
-                        {s.punch_in_time ? new Date(s.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${s.punch_out_time ? "bg-blue-100 text-blue-700" : "bg-green-100 text-green-700"}`}>
-                          {s.punch_out_time ? "Punched Out" : "Active"}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-sm font-semibold text-[#1E2A47]">{s.location_points}</td>
-                      <td className="px-4 py-3 text-xs text-slate-500">
-                        {s.last_seen ? new Date(s.last_seen).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}
-                      </td>
-                      <td className="px-4 py-3">
-                        <button
-                          onClick={() => setSelected(s)}
-                          data-testid={`view-track-${s.employee_id}`}
-                          className="text-xs px-3 py-1.5 bg-[#E85B1E] text-white rounded-lg hover:bg-[#D04A15] flex items-center gap-1"
-                        >
-                          <MapPin size={12} /> View Route
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                  {loading ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                  : filteredDevices.length === 0 ? <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-400">No tracker devices configured yet. Open an employee → Tracker tab to set one up.</td></tr>
+                  : filteredDevices.map(d => {
+                    const style = FRESHNESS_STYLES[d.freshness] || FRESHNESS_STYLES.never;
+                    return (
+                      <tr key={d.employee_id} className="border-b border-slate-100 hover:bg-slate-50" data-testid={`device-row-${d.employee_id}`}>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium ${style.bg} ${style.text} ${style.border} border`}>
+                            <span className={`w-2 h-2 rounded-full ${style.dot} ${d.freshness === "live" ? "animate-pulse" : ""}`} />
+                            {style.label}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          <p className="text-sm font-medium text-[#0F172A]">{d.name}</p>
+                          <p className="text-xs text-[#E85B1E] font-mono">{d.employee_id}</p>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-slate-600">{d.designation || "-"}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1.5">
+                            <Clock size={12} className="text-slate-400" />
+                            <span className="text-sm text-slate-700">{minsAgoLabel(d.minutes_ago)}</span>
+                          </div>
+                          {d.last_ping_at && (
+                            <p className="text-[11px] text-slate-400">{new Date(d.last_ping_at).toLocaleString("en-IN", { dateStyle:"short", timeStyle:"short" })}</p>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          {d.last_battery != null ? (
+                            <div className="flex items-center gap-1.5">
+                              <Battery size={12} className={d.last_battery > 30 ? "text-green-600" : d.last_battery > 15 ? "text-amber-500" : "text-red-600"} />
+                              <span className="text-sm font-semibold text-slate-700">{Math.round(d.last_battery)}%</span>
+                            </div>
+                          ) : <span className="text-xs text-slate-400">—</span>}
+                        </td>
+                        <td className="px-4 py-3 text-xs text-slate-500">{d.interval_seconds}s</td>
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => { setHistDate(new Date().toISOString().split("T")[0]); setHistSelected({ employee_id: d.employee_id, name: d.name, designation: d.designation }); setTab("history"); }}
+                            data-testid={`device-route-${d.employee_id}`}
+                            disabled={d.freshness === "never"}
+                            className="text-xs px-3 py-1.5 bg-[#E85B1E] text-white rounded-lg hover:bg-[#D04A15] disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1">
+                            <MapPin size={12} /> Route
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
           </div>
-        </>
-      ) : (
+
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-700">
+            <strong>Freshness key:</strong> Live ≤ 5 min · Recent ≤ 30 min · Stale ≤ 24 h · Silent &gt; 24 h · Never = never pinged.
+            Silent / Never devices are likely off or mis-configured on the employee's phone.
+          </div>
+        </div>
+      )}
+
+      {/* TAB 3: History — search any employee, any date */}
+      {!selected && !histSelected && tab === "history" && (
+        <div className="space-y-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+            <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
+              <div className="relative">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input value={histEmpSearch} onChange={e => setHistEmpSearch(e.target.value)}
+                  placeholder="Search employee by ID or name..."
+                  className="w-full border border-slate-300 rounded-lg pl-9 pr-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
+                  data-testid="hist-emp-search" />
+              </div>
+              <input type="date" value={histDate} onChange={e => setHistDate(e.target.value)}
+                max={new Date().toISOString().split("T")[0]}
+                className="border border-slate-300 rounded-lg px-3 py-2.5 text-sm bg-white"
+                data-testid="hist-date-input" />
+            </div>
+
+            {histEmpSearch && (
+              <div className="mt-3 max-h-60 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-lg" data-testid="hist-emp-results">
+                {filteredEmployees.length === 0 ? (
+                  <p className="p-3 text-xs text-slate-400">No employees match.</p>
+                ) : filteredEmployees.map(e => (
+                  <button key={e.employee_id}
+                    onClick={() => { setHistSelected({ employee_id: e.employee_id, name: `${e.first_name||""} ${e.last_name||""}`.trim(), designation: e.designation }); }}
+                    data-testid={`hist-pick-${e.employee_id}`}
+                    className="w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-slate-50">
+                    <div>
+                      <p className="text-sm font-medium text-slate-700">{e.first_name} {e.last_name}</p>
+                      <p className="text-xs text-slate-500">{e.designation || "—"} · {e.department || "—"}</p>
+                    </div>
+                    <span className="text-xs font-mono text-[#E85B1E]">{e.employee_id}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
+            <AlertCircle size={13} className="inline mr-1" />
+            View any employee's route on any past date — works with both PWA pings and Traccar Client pings. No attendance record required.
+          </div>
+        </div>
+      )}
+
+      {/* Drill-down view: shared between Live and History */}
+      {(selected || histSelected) && (
         <>
           <div className="flex items-center justify-between mb-4">
-            <button onClick={() => { setSelected(null); setTrackData(null); }} data-testid="back-to-list-btn" className="flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-[#1E2A47]">
-              <ArrowLeft size={16} /> Back to list
+            <button onClick={() => { setSelected(null); setHistSelected(null); setTrackData(null); setHistTrack(null); }}
+              data-testid="back-to-list-btn"
+              className="flex items-center gap-2 text-sm font-medium text-slate-600 hover:text-[#1E2A47]">
+              <ArrowLeft size={16} /> Back
             </button>
             <div className="flex items-center gap-2">
-              <input
-                type="date"
-                value={date}
-                onChange={e => setDate(e.target.value)}
+              <input type="date"
+                value={selected ? date : histDate}
+                onChange={e => selected ? setDate(e.target.value) : setHistDate(e.target.value)}
                 max={new Date().toISOString().split("T")[0]}
                 className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white"
-                data-testid="track-date-input"
-              />
-              <button onClick={() => fetchTrack(selected.employee_id, date)} className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200" data-testid="refresh-track-btn">
+                data-testid="track-date-input" />
+              <button onClick={() => selected ? fetchTrack(selected.employee_id, date) : fetchHistTrack(histSelected.employee_id, histDate)}
+                className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200" data-testid="refresh-track-btn">
                 <RefreshCw size={14} />
               </button>
             </div>
@@ -156,41 +372,45 @@ export default function FieldTracking() {
           <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm mb-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
               <div>
-                <p className="font-bold text-[#1E2A47] text-lg">{selected.name}</p>
-                <p className="text-xs text-slate-500">{selected.designation} • <span className="font-mono text-[#E85B1E]">{selected.employee_id}</span></p>
+                <p className="font-bold text-[#1E2A47] text-lg">{(selected || histSelected).name}</p>
+                <p className="text-xs text-slate-500">{(selected || histSelected).designation || "—"} · <span className="font-mono text-[#E85B1E]">{(selected || histSelected).employee_id}</span></p>
               </div>
               <div className="grid grid-cols-3 gap-3 text-center text-xs">
                 <div className="px-3 py-2 bg-slate-50 rounded-lg">
-                  <p className="text-lg font-bold text-[#1E2A47]">{locations.length}</p>
+                  <p className="text-lg font-bold text-[#1E2A47]">{(selected ? locations : histLocations).length}</p>
                   <p className="text-slate-500">Points</p>
                 </div>
                 <div className="px-3 py-2 bg-slate-50 rounded-lg">
-                  <p className="text-lg font-bold text-[#E85B1E]">{stops.length}</p>
+                  <p className="text-lg font-bold text-[#E85B1E]">{(selected ? stops : histStops).length}</p>
                   <p className="text-slate-500">Stops &gt; 15m</p>
                 </div>
                 <div className="px-3 py-2 bg-slate-50 rounded-lg">
                   <p className="text-sm font-bold text-green-700">
-                    {trackData?.attendance?.punch_in_time ? new Date(trackData.attendance.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}
+                    {(selected ? trackData : histTrack)?.attendance?.punch_in_time ? new Date((selected ? trackData : histTrack).attendance.punch_in_time).toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" }) : "—"}
                   </p>
                   <p className="text-slate-500">Punch In</p>
                 </div>
               </div>
             </div>
 
-            {trackLoading ? (
+            {(selected ? trackLoading : histLoading) ? (
               <div className="text-center py-12 text-slate-400">Loading map...</div>
-            ) : locations.length === 0 ? (
+            ) : (selected ? locations : histLocations).length === 0 ? (
               <div className="text-center py-12">
                 <AlertCircle size={32} className="mx-auto text-slate-300 mb-2" />
                 <p className="text-sm text-slate-500">No location data captured for this day</p>
-                <p className="text-xs text-slate-400">Tracking starts after punch-in (every 2 min)</p>
+                <p className="text-xs text-slate-400">Tracker may have been off or the employee didn't punch in.</p>
               </div>
             ) : (
-              <RouteMap locations={locations} stops={stops} attendance={trackData?.attendance} />
+              <RouteMap
+                locations={selected ? locations : histLocations}
+                stops={selected ? stops : histStops}
+                attendance={(selected ? trackData : histTrack)?.attendance}
+              />
             )}
           </div>
 
-          {stops.length > 0 && (
+          {(selected ? stops : histStops).length > 0 && (
             <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-100 bg-amber-50/50">
                 <h3 className="font-bold text-[#1E2A47] flex items-center gap-2" style={{ fontFamily: "'Outfit', sans-serif" }}>
@@ -198,29 +418,22 @@ export default function FieldTracking() {
                 </h3>
               </div>
               <table className="w-full" data-testid="stops-table">
-                <thead>
-                  <tr className="bg-slate-50 border-b">
-                    {["#", "Start Time", "End Time", "Duration", "Coordinates"].map(h => (
-                      <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
+                <thead><tr className="bg-slate-50 border-b">
+                  {["#", "Start Time", "End Time", "Duration", "Coordinates"].map(h =>
+                    <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>)}
+                </tr></thead>
                 <tbody>
-                  {stops.map((s, i) => (
+                  {(selected ? stops : histStops).map((s, i) => (
                     <tr key={`stop-${s.latitude}-${s.longitude}-${i}`} className="border-b border-slate-100 hover:bg-slate-50">
                       <td className="px-4 py-3 text-sm font-medium text-[#1E2A47]">{i + 1}</td>
                       <td className="px-4 py-3 text-sm text-slate-600">{new Date(s.start).toLocaleTimeString("en-IN")}</td>
                       <td className="px-4 py-3 text-sm text-slate-600">{new Date(s.end).toLocaleTimeString("en-IN")}</td>
                       <td className="px-4 py-3 text-sm font-semibold text-[#E85B1E]">{s.duration_minutes} min</td>
                       <td className="px-4 py-3 text-xs font-mono text-slate-500">
-                        {s.latitude.toFixed(5)}, {s.longitude.toFixed(5)}
-                        {" "}
-                        <a
-                          href={`https://www.google.com/maps?q=${s.latitude},${s.longitude}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="ml-2 text-[#E85B1E] hover:underline"
-                        >Open in Maps</a>
+                        {s.latitude.toFixed(5)}, {s.longitude.toFixed(5)}{" "}
+                        <a href={`https://www.google.com/maps?q=${s.latitude},${s.longitude}`}
+                          target="_blank" rel="noopener noreferrer"
+                          className="ml-2 text-[#E85B1E] hover:underline">Open in Maps</a>
                       </td>
                     </tr>
                   ))}
