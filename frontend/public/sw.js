@@ -1,4 +1,4 @@
-const CACHE_NAME = "radhya-hr-v3";
+const CACHE_NAME = "radhya-hr-v4";
 const STATIC_ASSETS = [
   "/manifest.json",
   "/logo192.png",

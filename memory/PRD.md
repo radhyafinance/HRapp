@@ -110,6 +110,19 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 - [x] Admin Leave Balance Management — Initialize, Manual Edit, Bulk Excel Upload, Audit Log ✅ Apr 2026
 - [x] Monthly Salary Register export ✅ Apr 2026
 - [ ] Letter PDFs (Offer / Appointment / Warning etc.) with company letterhead
+35. **Background GPS Tracking via Traccar Client (May 2026)** - Field-staff background GPS tracking using the free open-source **Traccar Client** Android/iOS app (works 24/7 even when phone is locked — solving the fundamental PWA background-tracking limitation). New route `/app/backend/routes/tracker.py`:
+    - `GET /api/tracker/osmand` — public OsmAnd-protocol endpoint accepting pings from Traccar Client. Validates `<emp_id>:<secret>` identifier against `employee_trackers` collection; unknown/invalid IDs silently dropped (still 200 OK). Writes to existing `location_logs` with `source:"traccar"` — admin field-tracking map automatically picks them up.
+    - `GET /api/tracker/config/{employee_id}` — HR/management fetch setup info (lazily creates secret on first fetch).
+    - `POST /api/tracker/regenerate/{employee_id}` — rotate secret (invalidates old device).
+    - `POST /api/tracker/toggle/{employee_id}` — enable/disable without rotating.
+    - **Frontend:** New "Tracker" tab on the Employee modal (`EmployeeTrackerTab.js`) with:
+      - Status card: Last Ping (relative + absolute time), Battery %, configured interval
+      - Copy-to-clipboard Server URL + Device Identifier
+      - **QR code** (via `qrcode.react`) for one-scan setup in Traccar Client
+      - **"Send setup via WhatsApp"** button (pre-filled message → employee's mobile number)
+      - **Rotate Secret** action (destructive, confirms first)
+      - Step-by-step install instructions incl. battery-optimisation disable guide
+    - Default interval: 60s. Security: unique `secrets.token_urlsafe(12)` per employee, stored in `employee_trackers.secret`.
 - [ ] Employee confirmation letter after probation
 - [ ] Leave encashment calculation
 
