@@ -29,24 +29,91 @@ router = APIRouter()
 
 @router.api_route("/osmand", methods=["GET", "POST"])
 async def traccar_ping(request: Request):
-    """OsmAnd-protocol ping from Traccar Client.
-    Traccar Client sends POST by default but some variants use GET — accept both.
+    """OsmAnd-protocol ping from Traccar Client / TS Background Geolocation.
+    Accepts:
+      - GET with query string (Traccar Client default on older Android)
+      - POST with query string body (Traccar Client default)
+      - POST with form-encoded body
+      - POST with JSON body (Transistorsoft Background Geolocation)
+    Identifier param is accepted as `id` OR `device_id` OR `deviceid`.
+    GPS coords accepted as `lat`/`lon` OR inside a nested `location.coords.latitude`.
     Returns 200 on success or silent-drop.
     """
-    # Merge query params + form body (OsmAnd sends params in URL even on POST)
+    # Start with URL query params
     qp = {k.lower(): v for k, v in request.query_params.items()}
-    try:
-        if request.method == "POST":
+
+    # Try form-encoded body
+    if request.method == "POST":
+        try:
             form = await request.form()
             for k, v in form.items():
                 qp.setdefault(k.lower(), str(v))
-    except Exception:
-        pass
+        except Exception:
+            pass
 
-    # Diagnostic log — captures raw identifier so HR can debug mis-typed setups.
-    # Stored in `tracker_ping_log` (capped-ish — auto-trimmed to last 500).
+        # Try JSON body (Transistorsoft sends JSON by default)
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                _flatten_json(body, qp)
+            elif isinstance(body, list) and body:
+                # TS sends an array of location objects — process each, use first for identifier
+                for item in body:
+                    if isinstance(item, dict):
+                        local = dict(qp)
+                        _flatten_json(item, local)
+                        await _process_ping(local, request)
+                return Response(status_code=200)
+        except Exception:
+            pass
+
+    await _process_ping(qp, request)
+    return Response(status_code=200)
+
+
+def _flatten_json(obj: dict, out: dict, prefix: str = ""):
+    """Flatten nested JSON into flat lowercase keys.
+    Also maps common Transistorsoft field names to our expected names.
+    """
+    for k, v in obj.items():
+        key = (prefix + k).lower()
+        if isinstance(v, dict):
+            _flatten_json(v, out, prefix=f"{key}.")
+        elif isinstance(v, list):
+            continue  # skip arrays inside fields
+        else:
+            out.setdefault(key, v)
+
+    # Map TS-specific nested paths to our expected flat keys
+    mappings = {
+        "coords.latitude": "lat",
+        "coords.longitude": "lon",
+        "coords.accuracy": "accuracy",
+        "coords.altitude": "altitude",
+        "coords.speed": "speed",
+        "coords.heading": "bearing",
+        "location.coords.latitude": "lat",
+        "location.coords.longitude": "lon",
+        "location.coords.accuracy": "accuracy",
+        "battery.level": "batt",
+        "device_id": "id",
+        "deviceid": "id",
+    }
+    for src, dst in mappings.items():
+        if src in out and dst not in out:
+            val = out[src]
+            # TS sends battery.level as 0.0-1.0 → convert to percentage
+            if src == "battery.level" and isinstance(val, (int, float)) and 0 <= val <= 1:
+                val = round(val * 100, 1)
+            out[dst] = val
+
+
+async def _process_ping(qp: dict, request: Request):
+    """Persist a single ping given flattened params."""
+    raw_id = str(qp.get("id") or qp.get("deviceid") or qp.get("device_id") or "").strip()
+
+    # Diagnostic log — stored in `tracker_ping_log` (capped to last 500).
     try:
-        raw_id = qp.get("id") or qp.get("deviceid") or ""
         await db.tracker_ping_log.insert_one({
             "raw_id": raw_id[:80],
             "has_lat": bool(qp.get("lat")),
@@ -55,7 +122,6 @@ async def traccar_ping(request: Request):
             "method": request.method,
             "received_at": datetime.now(timezone.utc).isoformat(),
         })
-        # Trim to last 500 rows
         cnt = await db.tracker_ping_log.estimated_document_count()
         if cnt > 550:
             old = await db.tracker_ping_log.find({}, {"_id": 1}).sort("received_at", 1).limit(cnt - 500).to_list(1000)
@@ -63,46 +129,40 @@ async def traccar_ping(request: Request):
                 await db.tracker_ping_log.delete_many({"_id": {"$in": [d["_id"] for d in old]}})
     except Exception:
         pass
-    identifier = (qp.get("id") or "").strip()
-    if not identifier or ":" not in identifier:
-        return Response(status_code=200)
 
-    emp_id, _, secret = identifier.partition(":")
+    if not raw_id or ":" not in raw_id:
+        return
+
+    emp_id, _, secret = raw_id.partition(":")
     emp_id = emp_id.strip().upper()
     secret = secret.strip()
     if not emp_id or not secret:
-        return Response(status_code=200)
+        return
 
-    # Verify identifier against stored tracker config
     tracker = await db.employee_trackers.find_one({"employee_id": emp_id, "secret": secret})
     if not tracker or not tracker.get("active", True):
-        # Silent drop — don't leak whether the ID exists
-        return Response(status_code=200)
+        return
 
-    # Parse coordinates
     try:
         lat = float(qp.get("lat", 0))
         lon = float(qp.get("lon", 0))
     except (ValueError, TypeError):
-        return Response(status_code=200)
+        return
     if lat == 0 and lon == 0:
-        return Response(status_code=200)
+        return
 
-    accuracy = None
-    for k in ("accuracy", "hdop"):
-        if qp.get(k):
-            try:
-                accuracy = float(qp[k])
-                break
-            except (ValueError, TypeError):
-                pass
+    accuracy = _safe_float(qp.get("accuracy")) or _safe_float(qp.get("hdop"))
 
-    # Timestamp — Traccar sends unix seconds; fall back to server time
     ts = datetime.now(timezone.utc)
     try:
-        raw_ts = qp.get("timestamp")
+        raw_ts = qp.get("timestamp") or qp.get("time")
         if raw_ts:
-            ts = datetime.fromtimestamp(float(raw_ts), tz=timezone.utc)
+            raw_ts = str(raw_ts)
+            # Accept unix seconds or ISO string
+            if raw_ts.replace(".", "").replace("-", "").isdigit():
+                ts = datetime.fromtimestamp(float(raw_ts), tz=timezone.utc)
+            else:
+                ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
     except (ValueError, TypeError):
         pass
 
@@ -123,7 +183,6 @@ async def traccar_ping(request: Request):
     }
     await db.location_logs.insert_one(log)
 
-    # Update last-seen on the tracker config for UI display
     await db.employee_trackers.update_one(
         {"employee_id": emp_id},
         {"$set": {
@@ -134,8 +193,6 @@ async def traccar_ping(request: Request):
             "last_battery": _safe_float(qp.get("batt")),
         }},
     )
-
-    return Response(status_code=200)
 
 
 def _safe_float(v):
