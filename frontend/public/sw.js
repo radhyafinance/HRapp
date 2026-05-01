@@ -1,9 +1,11 @@
-const CACHE_NAME = "radhya-hr-v2";
+const CACHE_NAME = "radhya-hr-v3";
 const STATIC_ASSETS = [
   "/manifest.json",
   "/logo192.png",
   "/logo512.png",
-  "/favicon.png"
+  "/favicon.png",
+  "/favicon-32.png",
+  "/apple-touch-icon.png"
 ];
 
 // Install — cache the app shell
