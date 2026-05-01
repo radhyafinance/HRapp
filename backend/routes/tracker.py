@@ -27,12 +27,42 @@ router = APIRouter()
 #  Public endpoint — accepts Traccar Client pings
 # ──────────────────────────────────────────────────────────────
 
-@router.get("/osmand")
+@router.api_route("/osmand", methods=["GET", "POST"])
 async def traccar_ping(request: Request):
     """OsmAnd-protocol ping from Traccar Client.
-    Accepts any param casing. Returns 200 on success or silent-drop.
+    Traccar Client sends POST by default but some variants use GET — accept both.
+    Returns 200 on success or silent-drop.
     """
+    # Merge query params + form body (OsmAnd sends params in URL even on POST)
     qp = {k.lower(): v for k, v in request.query_params.items()}
+    try:
+        if request.method == "POST":
+            form = await request.form()
+            for k, v in form.items():
+                qp.setdefault(k.lower(), str(v))
+    except Exception:
+        pass
+
+    # Diagnostic log — captures raw identifier so HR can debug mis-typed setups.
+    # Stored in `tracker_ping_log` (capped-ish — auto-trimmed to last 500).
+    try:
+        raw_id = qp.get("id") or qp.get("deviceid") or ""
+        await db.tracker_ping_log.insert_one({
+            "raw_id": raw_id[:80],
+            "has_lat": bool(qp.get("lat")),
+            "has_lon": bool(qp.get("lon")),
+            "ip": request.client.host if request.client else None,
+            "method": request.method,
+            "received_at": datetime.now(timezone.utc).isoformat(),
+        })
+        # Trim to last 500 rows
+        cnt = await db.tracker_ping_log.estimated_document_count()
+        if cnt > 550:
+            old = await db.tracker_ping_log.find({}, {"_id": 1}).sort("received_at", 1).limit(cnt - 500).to_list(1000)
+            if old:
+                await db.tracker_ping_log.delete_many({"_id": {"$in": [d["_id"] for d in old]}})
+    except Exception:
+        pass
     identifier = (qp.get("id") or "").strip()
     if not identifier or ":" not in identifier:
         return Response(status_code=200)
