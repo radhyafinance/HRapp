@@ -161,7 +161,7 @@ export default function Payroll() {
     try {
       const res = await API.delete(`/payroll/period/${period}`);
       alert(`Deleted ${res.data.deleted} payroll record(s) for ${periodLabel}.`);
-      fetchData();
+      fetchRecords();
     } catch (e) {
       alert(e.response?.data?.detail || "Delete failed");
     }
