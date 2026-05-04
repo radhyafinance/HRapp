@@ -156,6 +156,48 @@ async def process_payroll(data: ProcessPayrollRequest, current_user: dict = Depe
     return {"processed": len(processed), "employee_ids": processed, "period": period}
 
 
+@router.delete("/period/{period}")
+async def delete_payroll_period(period: str, current_user: dict = Depends(get_current_user)):
+    """Delete all payroll records for a given period (YYYY-MM).
+    Allowed only until the 15th of the following month
+    (e.g. April 2026 records can be deleted up to and including 15-May-2026).
+    HR Admin / Management only.
+    """
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    # Parse and validate period
+    try:
+        y, m = period.split("-")
+        period_year, period_month = int(y), int(m)
+        if not (1 <= period_month <= 12) or period_year < 2000 or period_year > 2100:
+            raise ValueError
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="Period must be in YYYY-MM format")
+
+    # Cutoff = 15th of the month AFTER the payroll period
+    if period_month == 12:
+        cutoff_year, cutoff_month = period_year + 1, 1
+    else:
+        cutoff_year, cutoff_month = period_year, period_month + 1
+    cutoff = datetime(cutoff_year, cutoff_month, 15, 23, 59, 59, tzinfo=timezone.utc)
+
+    now = datetime.now(timezone.utc)
+    if now > cutoff:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Cannot delete payroll for {period}. The deletion window closed on "
+                   f"{cutoff.strftime('%d %b %Y')}. Edit individual records instead.",
+        )
+
+    res = await db.payroll_records.delete_many({"period": period})
+    return {
+        "period": period,
+        "deleted": res.deleted_count,
+        "cutoff": cutoff.isoformat(),
+    }
+
+
 @router.get("")
 async def list_payroll(
     period: str = None,

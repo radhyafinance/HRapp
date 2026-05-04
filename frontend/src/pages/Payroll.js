@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
-import { Play, Download, Eye, X, FileText, Save, CheckCircle2 } from "lucide-react";
+import { Play, Download, Eye, X, FileText, Save, CheckCircle2, Trash2 } from "lucide-react";
 
 function Modal({ title, onClose, children }) {
   return (
@@ -141,6 +141,32 @@ export default function Payroll() {
     }
   };
 
+  // Whether the deletion window is still open (until 15th of month after `period`).
+  const canDeletePeriod = (() => {
+    const cutYear = selectedMonth === 12 ? selectedYear + 1 : selectedYear;
+    const cutMonth = selectedMonth === 12 ? 1 : selectedMonth + 1;
+    const cutoff = new Date(cutYear, cutMonth - 1, 15, 23, 59, 59);
+    return Date.now() <= cutoff.getTime();
+  })();
+
+  const handleDeletePeriod = async () => {
+    const period = `${selectedYear}-${String(selectedMonth).padStart(2, "0")}`;
+    const periodLabel = `${months[selectedMonth - 1]} ${selectedYear}`;
+    const periodCount = records.filter(r => r.period === period).length;
+    if (periodCount === 0) {
+      alert(`No payroll records to delete for ${periodLabel}.`);
+      return;
+    }
+    if (!window.confirm(`Delete ALL ${periodCount} payroll record(s) for ${periodLabel}?\n\nThis cannot be undone. You'll need to re-run "Process Payroll" to regenerate them.`)) return;
+    try {
+      const res = await API.delete(`/payroll/period/${period}`);
+      alert(`Deleted ${res.data.deleted} payroll record(s) for ${periodLabel}.`);
+      fetchData();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Delete failed");
+    }
+  };
+
   const downloadPayslipPdf = async (record) => {
     setDownloadingId(record.id);
     try {
@@ -190,6 +216,13 @@ export default function Payroll() {
             <button onClick={downloadSalaryRegister} data-testid="download-register-btn"
               className="flex items-center gap-2 px-4 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] transition-colors">
               <Download size={14} /> Salary Register
+            </button>
+            <button onClick={handleDeletePeriod}
+              disabled={!canDeletePeriod}
+              data-testid="delete-period-btn"
+              title={canDeletePeriod ? `Delete all payroll records for ${months[selectedMonth-1]} ${selectedYear}` : `Deletion window closed (allowed until 15th of the next month)`}
+              className="flex items-center gap-2 px-4 py-2 border-2 border-red-300 text-red-600 rounded-lg text-sm font-semibold hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">
+              <Trash2 size={14} /> Delete Period
             </button>
           </div>
         )}
