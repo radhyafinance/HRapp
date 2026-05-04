@@ -12,7 +12,7 @@ from auth_utils import hash_password
 
 from routes import auth, employees, candidates, attendance, leaves, payroll
 from routes import performance, exit_routes, letters, locations, dashboard, gratuity, settings as app_settings
-from routes import employee_documents, tracker
+from routes import employee_documents, tracker, holidays, comp_offs
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -70,6 +70,8 @@ app.include_router(dashboard.router, prefix="/api/dashboard", tags=["Dashboard"]
 app.include_router(gratuity.router, prefix="/api/gratuity", tags=["Gratuity"])
 app.include_router(app_settings.router, prefix="/api/settings", tags=["Settings"])
 app.include_router(tracker.router, prefix="/api/tracker", tags=["Tracker"])
+app.include_router(holidays.router, prefix="/api/holidays", tags=["Holidays"])
+app.include_router(comp_offs.router, prefix="/api/comp-offs", tags=["Comp-Offs"])
 
 
 @app.get("/api")

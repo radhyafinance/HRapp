@@ -9,6 +9,7 @@ import Employees from "./pages/Employees";
 import Candidates from "./pages/Candidates";
 import Attendance from "./pages/Attendance";
 import FieldTracking from "./pages/FieldTracking";
+import HolidayCalendar from "./pages/HolidayCalendar";
 import Leaves from "./pages/Leaves";
 import Payroll from "./pages/Payroll";
 import Performance from "./pages/Performance";
@@ -31,6 +32,7 @@ function App() {
             <Route path="candidates" element={<Candidates />} />
             <Route path="attendance" element={<Attendance />} />
             <Route path="field-tracking" element={<FieldTracking />} />
+            <Route path="calendar" element={<HolidayCalendar />} />
             <Route path="leaves" element={<Leaves />} />
             <Route path="payroll" element={<Payroll />} />
             <Route path="performance" element={<Performance />} />

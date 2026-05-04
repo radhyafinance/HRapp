@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
 import { MapPin, Plus, Edit, Trash2, X } from "lucide-react";
+import HolidaysAndCompOffTab from "./HolidaysAndCompOffTab";
 
 function Modal({ title, onClose, children }) {
   return (
@@ -169,7 +170,7 @@ export default function Settings() {
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 border-b border-slate-200">
-        {[["locations", "Office Locations"], ["company", "Company / Bank"], ["attendance", "Attendance"], ["leaves", "Leave Management"], ["users", "User Management"]].map(([val, label]) => (
+        {[["locations", "Office Locations"], ["company", "Company / Bank"], ["attendance", "Attendance"], ["leaves", "Leave Management"], ["holidays", "Holidays & Comp-Off"], ["users", "User Management"]].map(([val, label]) => (
           <button key={val} onClick={() => setActiveTab(val)} data-testid={`settings-tab-${val}`}
             className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${activeTab === val ? "border-[#E85B1E] text-[#E85B1E]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             {label}
@@ -411,6 +412,8 @@ export default function Settings() {
           </div>
         </div>
       )}
+
+      {activeTab === "holidays" && <HolidaysAndCompOffTab />}
 
       {activeTab === "users" && (
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">

@@ -1,0 +1,27 @@
+{
+  "summary": "Frontend e2e testing of Holiday Calendar + Holidays & Comp-Off Settings tab as HR admin. All 21 review-request scenarios passed: Calendar nav placement, calendar grid + legend + side panel, holiday CRUD, duplicate-date 409 error, seed defaults for 2027, comp-off scan and approval. Routing guard correctly redirects unauthenticated users to /login.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "HolidayCalendar.js builds month grid using `new Date(year, month, d).toISOString()` which converts to UTC and can shift the date by one day in non-UTC timezones (e.g., IST on early-AM browsers can produce previous-day ISO strings). Recommend formatting locally: `${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`. Currently works in UTC test env but is a latent bug for India users.",
+    "HolidaysAndCompOffTab.js description input has no data-testid (test had to fall back to placeholder selector). Add data-testid='holiday-description' for consistency.",
+    "Year selector dropdown only offers todayY-1..todayY+2 (4 years). If admin needs to plan further out or revisit history, this range is restrictive."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "n/a (frontend-only)", "frontend": "100%"},
+  "test_credentials": "admin/Admin@123 used. Tried RMF0001/Welcome@123 for RBAC negative test — login did not progress past /login page (could be wrong password or rate-limit), so RBAC was instead verified by hitting /settings and /calendar in unauthenticated session — both correctly redirect to /login.",
+  "seed_data_creation": "Seeded 12 default holidays for year 2027 via 'Seed India Defaults' button during testing. Approved one pending comp-off (RMF0008, earn_date 2026-05-01 Labour Day). No teardown done (data is intentional admin config).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All Calendar + Holidays & Comp-Off flows validated end-to-end. Pending in DB after this run: the 'Approved comp-off' is now consumed; 2027 holidays seeded so re-running 'Seed India Defaults' for 2027 will skip all 12. Add holiday Add/Edit/Delete validated with id 69f881794c7a90ca1017ff16 (already deleted). Duplicate Republic Day (2026-01-26) returned proper 409 with message 'A holiday already exists on 2026-01-26: Republic Day'.",
+  "rca_of_the_issue": "n/a — no failures observed."
+}

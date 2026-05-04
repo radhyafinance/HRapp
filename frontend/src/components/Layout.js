@@ -4,7 +4,7 @@ import { useAuth } from "../contexts/AuthContext";
 import {
   LayoutDashboard, Users, UserPlus, CalendarCheck, FileText,
   CreditCard, TrendingUp, LogOut, Settings, Menu, X,
-  DoorOpen, Award, MapPin, ChevronRight, Bell, User
+  DoorOpen, Award, MapPin, ChevronRight, Bell, User, Calendar
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { path: "/candidates", label: "Candidates", icon: UserPlus, roles: ["hr_admin", "management"] },
   { path: "/employees", label: "Employees", icon: Users, roles: ["hr_admin", "management", "managers"] },
   { path: "/attendance", label: "Attendance", icon: CalendarCheck, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
+  { path: "/calendar", label: "Calendar", icon: Calendar, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
   { path: "/field-tracking", label: "Field Tracking", icon: MapPin, roles: ["hr_admin", "management", "managers"] },
   { path: "/leaves", label: "Leaves", icon: FileText, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
   { path: "/payroll", label: "Payroll", icon: CreditCard, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
