@@ -20,12 +20,31 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Radhya HR System", version="1.0.0")
 
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+
+# CORS — supports comma-separated list via CORS_ORIGINS env, or "*" for any origin.
+# Falls back to FRONTEND_URL if CORS_ORIGINS is not set.
+_cors_env = os.environ.get("CORS_ORIGINS", FRONTEND_URL).strip()
+if _cors_env == "*":
+    _cors_kwargs = {
+        "allow_origin_regex": ".*",
+        "allow_credentials": True,
+    }
+else:
+    _origins = [o.strip() for o in _cors_env.split(",") if o.strip()]
+    # Always include localhost dev + the FRONTEND_URL
+    for extra in ("http://localhost:3000", FRONTEND_URL):
+        if extra and extra not in _origins:
+            _origins.append(extra)
+    _cors_kwargs = {
+        "allow_origins": _origins,
+        "allow_credentials": True,
+    }
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_URL, "http://localhost:3000"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    **_cors_kwargs,
 )
 
 mongo_client = AsyncIOMotorClient(os.environ["MONGO_URL"])
