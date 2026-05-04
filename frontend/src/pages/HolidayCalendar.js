@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from "react";
 import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
-import { ChevronLeft, ChevronRight, Calendar as CalendarIcon, Sun, Sparkles } from "lucide-react";
+import { ChevronLeft, ChevronRight, Calendar as CalIcon, Sun, Sparkles } from "lucide-react";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
