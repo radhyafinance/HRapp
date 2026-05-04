@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import API from "../utils/api";
-import { Camera, MapPin, CheckCircle, AlertCircle, Clock, LogIn, LogOut, RefreshCw, Edit3, Plus, FileEdit } from "lucide-react";
+import { Camera, MapPin, CheckCircle, AlertCircle, Clock, LogIn, LogOut, RefreshCw, Edit3, Plus, FileEdit, Search, Filter, Download } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { AdminRegulariseModal, EmployeeRegulariseRequestModal, PendingRequestsPanel, MyRequestsList } from "../components/attendance/Regularisation";
 
@@ -85,6 +85,14 @@ export default function Attendance() {
   const { user } = useAuth();
   const [todayRecord, setTodayRecord] = useState(null);
   const [history, setHistory] = useState([]);
+  const [teamRecords, setTeamRecords] = useState([]);
+  const [teamLoading, setTeamLoading] = useState(false);
+  const [search, setSearch] = useState("");
+  const [filterStatus, setFilterStatus] = useState("");
+  const today_iso = new Date().toISOString().split("T")[0];
+  const thirty_days_ago = new Date(Date.now() - 30 * 86400000).toISOString().split("T")[0];
+  const [dateFrom, setDateFrom] = useState(thirty_days_ago);
+  const [dateTo, setDateTo] = useState(today_iso);
   const [loading, setLoading] = useState(true);
   const [showCamera, setShowCamera] = useState(false);
   const [punchType, setPunchType] = useState(null);
@@ -125,6 +133,26 @@ export default function Attendance() {
   };
 
   useEffect(() => { fetchData(); }, []);
+
+  // Privileged users: fetch team-wide attendance history
+  const fetchTeamRecords = async () => {
+    if (!isManager) return;
+    setTeamLoading(true);
+    try {
+      const params = { date_from: dateFrom, date_to: dateTo, limit: 500 };
+      if (search.trim()) params.search = search.trim();
+      if (filterStatus) params.status = filterStatus;
+      const res = await API.get("/attendance", { params });
+      setTeamRecords(res.data || []);
+    } catch (e) { console.error(e); }
+    finally { setTeamLoading(false); }
+  };
+
+  useEffect(() => {
+    if (!isManager) return;
+    const t = setTimeout(fetchTeamRecords, 250);  // debounce search/date changes
+    return () => clearTimeout(t);
+  }, [isManager, search, filterStatus, dateFrom, dateTo, pendingReload]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load employee list once for admin's "Add attendance" modal dropdown
   useEffect(() => {
@@ -461,27 +489,103 @@ export default function Attendance() {
       </div>
 
       {/* Attendance History */}
-      <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-          <h3 className="font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Attendance History</h3>
-          {!isManager && user?.employee_id && (
-            <button onClick={() => setEmpReqOpen(true)} data-testid="request-regularisation-btn"
-              className="flex items-center gap-1 px-3 py-1.5 bg-[#1E2A47] text-white rounded-lg text-xs font-semibold hover:bg-[#2A3A5E]">
-              <FileEdit size={12} /> Request Regularisation
-            </button>
+      {!isManager ? (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+            <h3 className="font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Attendance History</h3>
+            {user?.employee_id && (
+              <button onClick={() => setEmpReqOpen(true)} data-testid="request-regularisation-btn"
+                className="flex items-center gap-1 px-3 py-1.5 bg-[#1E2A47] text-white rounded-lg text-xs font-semibold hover:bg-[#2A3A5E]">
+                <FileEdit size={12} /> Request Regularisation
+              </button>
+            )}
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full" data-testid="attendance-table">
+              <thead><tr className="bg-slate-50 border-b">
+                {["Date", "Punch In", "Punch Out", "Hours", "Location", "Status"].map(h => (
+                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {loading ? <tr><td colSpan={6}><div className="h-8 bg-slate-100 animate-pulse m-4 rounded"></div></td></tr>
+                  : history.slice(0, 20).map(r => (
+                    <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
+                      <td className="px-4 py-3 text-sm font-medium text-slate-700">
+                        {r.date}{r.regularised && <span className="ml-1 text-[10px] text-amber-600 font-semibold">• REG</span>}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{r.punch_in_time ? new Date(r.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{r.punch_out_time ? new Date(r.punch_out_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{r.hours_worked ? `${r.hours_worked}h` : "-"}</td>
+                      <td className="px-4 py-3 text-xs text-slate-500">{r.location_name || "-"}</td>
+                      <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${r.geofence_verified ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>{r.punch_in_time ? (r.geofence_verified ? "Present" : "Outside Fence") : (r.status || "Absent")}</span></td>
+                    </tr>
+                  ))}
+              </tbody>
+            </table>
+          </div>
+          {user?.employee_id && (
+            <div className="p-4 border-t border-slate-100">
+              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Your recent regularisation requests</p>
+              <MyRequestsList refreshToken={pendingReload} />
+            </div>
           )}
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full" data-testid="attendance-table">
-            <thead><tr className="bg-slate-50 border-b">
-              {["Date", "Punch In", "Punch Out", "Hours", "Location", "Status", ""].map(h => (
-                <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
-              ))}
-            </tr></thead>
-            <tbody>
-              {loading ? <tr><td colSpan={7}><div className="h-8 bg-slate-100 animate-pulse m-4 rounded"></div></td></tr>
-                : history.slice(0, 20).map(r => (
-                  <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
+      ) : (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between flex-wrap gap-2">
+            <h3 className="font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>
+              {user?.role === "managers" ? "Team Attendance" : "All Employee Attendance"}
+              <span className="text-xs font-normal text-slate-400 ml-2">({teamRecords.length} records)</span>
+            </h3>
+            <button onClick={fetchTeamRecords} className="flex items-center gap-1 px-3 py-1.5 bg-slate-100 text-slate-600 rounded-lg text-xs font-semibold hover:bg-slate-200" data-testid="refresh-team-attendance">
+              <RefreshCw size={12} /> Refresh
+            </button>
+          </div>
+
+          {/* Filters */}
+          <div className="px-5 py-3 border-b border-slate-100 grid grid-cols-1 md:grid-cols-[1fr_auto_auto_auto] gap-2">
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input value={search} onChange={e => setSearch(e.target.value)}
+                placeholder="Search by name or employee ID..."
+                className="w-full border border-slate-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
+                data-testid="team-search-input" />
+            </div>
+            <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)} max={dateTo}
+              className="border border-slate-300 rounded-lg px-3 py-2 text-sm" data-testid="team-date-from" />
+            <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)} min={dateFrom} max={today_iso}
+              className="border border-slate-300 rounded-lg px-3 py-2 text-sm" data-testid="team-date-to" />
+            <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}
+              className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white" data-testid="team-status-filter">
+              <option value="">All statuses</option>
+              <option value="present">Present</option>
+              <option value="absent">Absent</option>
+              <option value="half_day">Half Day</option>
+              <option value="leave">Leave</option>
+              <option value="weekly_off">Weekly Off</option>
+              <option value="holiday">Holiday</option>
+            </select>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full" data-testid="team-attendance-table">
+              <thead><tr className="bg-slate-50 border-b">
+                {["Employee", "Date", "Punch In", "Punch Out", "Hours", "Location", "Status", canRegulariseAdmin && ""].filter(Boolean).map(h => (
+                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {teamLoading ? (
+                  <tr><td colSpan={canRegulariseAdmin ? 8 : 7}><div className="h-8 bg-slate-100 animate-pulse m-4 rounded"></div></td></tr>
+                ) : teamRecords.length === 0 ? (
+                  <tr><td colSpan={canRegulariseAdmin ? 8 : 7} className="px-4 py-12 text-center text-sm text-slate-400">No attendance records match the current filters.</td></tr>
+                ) : teamRecords.map(r => (
+                  <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50" data-testid={`team-att-row-${r.id}`}>
+                    <td className="px-4 py-3">
+                      <p className="text-sm font-medium text-[#0F172A]">{r.employee_name || r.employee_id}</p>
+                      <p className="text-[11px] text-[#E85B1E] font-mono">{r.employee_id}{r.designation ? ` · ${r.designation}` : ""}</p>
+                    </td>
                     <td className="px-4 py-3 text-sm font-medium text-slate-700">
                       {r.date}{r.regularised && <span className="ml-1 text-[10px] text-amber-600 font-semibold">• REG</span>}
                     </td>
@@ -489,28 +593,23 @@ export default function Attendance() {
                     <td className="px-4 py-3 text-sm text-slate-600">{r.punch_out_time ? new Date(r.punch_out_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{r.hours_worked ? `${r.hours_worked}h` : "-"}</td>
                     <td className="px-4 py-3 text-xs text-slate-500">{r.location_name || "-"}</td>
-                    <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${r.geofence_verified ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>{r.punch_in_time ? (r.geofence_verified ? "Present" : "Outside Fence") : (r.status || "Absent")}</span></td>
-                    <td className="px-4 py-3 text-right">
-                      {canRegulariseAdmin && (
-                        <button onClick={() => setRegEditRecord(r)} data-testid={`edit-history-${r.id}`}
+                    <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${r.geofence_verified ? "bg-green-100 text-green-700" : r.status === "absent" ? "bg-red-100 text-red-700" : r.status === "leave" ? "bg-amber-100 text-amber-700" : r.punch_in_time ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>{r.punch_in_time ? (r.geofence_verified ? "Present" : "Outside Fence") : (r.status || "Absent")}</span></td>
+                    {canRegulariseAdmin && (
+                      <td className="px-4 py-3 text-right">
+                        <button onClick={() => setRegEditRecord(r)} data-testid={`edit-team-${r.id}`}
                           title="Regularise this record"
                           className="p-1 rounded hover:bg-slate-100 text-slate-400 hover:text-[#E85B1E]">
                           <Edit3 size={12} />
                         </button>
-                      )}
-                    </td>
+                      </td>
+                    )}
                   </tr>
                 ))}
-            </tbody>
-          </table>
-        </div>
-        {!isManager && user?.employee_id && (
-          <div className="p-4 border-t border-slate-100">
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Your recent regularisation requests</p>
-            <MyRequestsList refreshToken={pendingReload} />
+              </tbody>
+            </table>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* Regularisation modals */}
       {regEditRecord && (

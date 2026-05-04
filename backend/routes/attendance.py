@@ -395,19 +395,101 @@ async def list_attendance(
     employee_id: str = None,
     date_from: str = None,
     date_to: str = None,
+    status: str = None,
+    search: str = None,
+    limit: int = 500,
     current_user: dict = Depends(get_current_user),
 ):
+    """List attendance records.
+    - hr_admin / management: full access; no scoping
+    - managers (reporting manager): defaults to direct reports + own records
+    - employees / field_agent: only own records
+    """
+    role = current_user.get("role")
+    me_id = current_user.get("employee_id")
+
     query = {}
+
     if employee_id:
-        query["employee_id"] = employee_id
-    elif current_user.get("role") in ["employee", "field_agent"]:
-        query["employee_id"] = current_user.get("employee_id")
+        # Explicit employee filter — only privileged roles can pick anyone else
+        if role in ["hr_admin", "management"]:
+            query["employee_id"] = employee_id
+        elif role == "managers":
+            # Reporting manager can only inspect their own reports
+            reports = await db.employees.find(
+                {"reporting_to": me_id}, {"employee_id": 1, "_id": 0}
+            ).to_list(500)
+            allowed = {r["employee_id"] for r in reports}
+            allowed.add(me_id)
+            if employee_id not in allowed:
+                raise HTTPException(status_code=403, detail="Not allowed to view this employee's attendance")
+            query["employee_id"] = employee_id
+        else:
+            query["employee_id"] = me_id  # ignore the param, force own
+    else:
+        if role in ["hr_admin", "management"]:
+            pass  # no scope — see everyone
+        elif role == "managers":
+            reports = await db.employees.find(
+                {"reporting_to": me_id}, {"employee_id": 1, "_id": 0}
+            ).to_list(500)
+            scope_ids = [r["employee_id"] for r in reports]
+            if me_id:
+                scope_ids.append(me_id)
+            query["employee_id"] = {"$in": scope_ids} if scope_ids else me_id or "__none__"
+        else:
+            query["employee_id"] = me_id
+
     if date_from:
         query["date"] = {"$gte": date_from}
     if date_to:
         query.setdefault("date", {})["$lte"] = date_to
-    records = await db.attendance_records.find(query).sort("date", -1).to_list(500)
-    return [att_to_dict(r) for r in records]
+    if status:
+        query["status"] = status
+
+    # Optional fuzzy name/id search — resolve to employee_id list
+    if search and role in ["hr_admin", "management", "managers"]:
+        s = search.strip()
+        if s:
+            emp_q = {
+                "$or": [
+                    {"employee_id": {"$regex": s, "$options": "i"}},
+                    {"first_name": {"$regex": s, "$options": "i"}},
+                    {"last_name": {"$regex": s, "$options": "i"}},
+                ]
+            }
+            # Intersect with manager scope if applicable
+            existing_emp_filter = query.get("employee_id")
+            if isinstance(existing_emp_filter, dict) and "$in" in existing_emp_filter:
+                emp_q["employee_id"] = existing_emp_filter
+            elif isinstance(existing_emp_filter, str):
+                emp_q["employee_id"] = existing_emp_filter
+            matches = await db.employees.find(emp_q, {"employee_id": 1, "_id": 0}).to_list(500)
+            ids = [m["employee_id"] for m in matches]
+            if not ids:
+                return []
+            query["employee_id"] = {"$in": ids}
+
+    records = await db.attendance_records.find(query).sort("date", -1).limit(max(1, min(limit, 2000))).to_list(2000)
+
+    # Enrich with employee name for the team view
+    if records:
+        emp_ids = list({r["employee_id"] for r in records})
+        emps = await db.employees.find(
+            {"employee_id": {"$in": emp_ids}},
+            {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "designation": 1, "department": 1},
+        ).to_list(2000)
+        emap = {e["employee_id"]: e for e in emps}
+        out = []
+        for r in records:
+            d = att_to_dict(r)
+            e = emap.get(d.get("employee_id"), {})
+            d["employee_name"] = f"{e.get('first_name','')} {e.get('last_name','')}".strip() or d.get("employee_id")
+            d["designation"] = e.get("designation", "")
+            d["department"] = e.get("department", "")
+            out.append(d)
+        return out
+    return []
 
 
 # --------------------------------------------------------------------
