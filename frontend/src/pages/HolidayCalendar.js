@@ -40,6 +40,10 @@ export default function HolidayCalendar() {
     return m;
   }, [data]);
 
+  // Local-timezone-safe ISO date helper (avoids the toISOString UTC shift bug)
+  const toLocalISO = (y, m, d) =>
+    `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+
   // Build month grid (cells)
   const monthGrid = useMemo(() => {
     const first = new Date(year, month, 1);
@@ -50,8 +54,7 @@ export default function HolidayCalendar() {
     // Leading blanks
     for (let i = 0; i < startWeekday; i++) cells.push(null);
     for (let d = 1; d <= daysInMonth; d++) {
-      const dt = new Date(year, month, d);
-      const iso = dt.toISOString().split("T")[0];
+      const iso = toLocalISO(year, month, d);
       cells.push({ day: d, iso, info: dayMap[iso] });
     }
     // Pad to 42 (6 rows × 7)
@@ -114,7 +117,7 @@ export default function HolidayCalendar() {
               {monthGrid.map((cell, i) => {
                 if (!cell) return <div key={`pad-${i}`} className="aspect-square" />;
                 const style = cell.info ? TYPE_STYLES[cell.info.type] || TYPE_STYLES.holiday : null;
-                const isToday = cell.iso === today.toISOString().split("T")[0];
+                const isToday = cell.iso === toLocalISO(today.getFullYear(), today.getMonth(), today.getDate());
                 return (
                   <div key={cell.iso}
                     title={cell.info ? `${cell.info.label}` : ""}
