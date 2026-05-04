@@ -49,8 +49,13 @@ def calc_payroll_components(emp: dict, working_days: int = 26, present_days: int
         esic_employer = 0
 
     # Gratuity provision (monthly): (Basic × 15 / 26) / 12
-    # 15/26 of basic = annual gratuity per year of service; divide by 12 for monthly accrual
-    gratuity_monthly = round((basic_payable * 15) / 26 / 12)  # rounded to nearest rupee
+    # 15/26 of basic = annual gratuity per year of service; divide by 12 for monthly accrual.
+    # Directors are excluded from gratuity (per company policy).
+    designation = (emp.get("designation") or "").strip().lower()
+    if designation == "director":
+        gratuity_monthly = 0
+    else:
+        gratuity_monthly = round((basic_payable * 15) / 26 / 12)  # rounded to nearest rupee
 
     # CTC components
     ctc_monthly = round(gross + epf_employer + esic_employer + gratuity_monthly)  # rounded to nearest rupee
