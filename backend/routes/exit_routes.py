@@ -180,8 +180,11 @@ async def full_final_settlement(exit_id: str, current_user: dict = Depends(get_c
     years_of_service = 0
     if joining_date and last_date:
         try:
-            jd = date.fromisoformat(joining_date)
-            ld = date.fromisoformat(last_date)
+            # Robust to Excel-imported 'YYYY-MM-DD HH:MM:SS' strings
+            jd_str = joining_date.split(" ")[0].split("T")[0] if isinstance(joining_date, str) else ""
+            ld_str = last_date.split(" ")[0].split("T")[0] if isinstance(last_date, str) else ""
+            jd = date.fromisoformat(jd_str)
+            ld = date.fromisoformat(ld_str)
             years_of_service = round((ld - jd).days / 365, 2)
         except Exception:
             pass

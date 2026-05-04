@@ -623,7 +623,7 @@ async def bulk_upload(file: UploadFile = File(...), current_user: dict = Depends
                 "designation": str(row.get("designation") or "").strip(),
                 "role": str(row.get("role") or "employee").strip(),
                 "reporting_to": str(row.get("reporting_to") or "").strip() or None,
-                "joining_date": str(row.get("joining_date") or "").strip(),
+                "joining_date": str(row.get("joining_date") or "").strip().split(" ")[0].split("T")[0],
                 "status": str(row.get("status") or "active").strip(),
                 "pan": str(row.get("pan") or "").strip() or None,
                 "aadhaar": str(row.get("aadhaar") or "").strip() or None,

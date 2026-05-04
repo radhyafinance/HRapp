@@ -6,6 +6,20 @@ from datetime import date
 router = APIRouter()
 
 
+def _parse_joining_date(value):
+    """Parse joining_date robust to either pure ISO 'YYYY-MM-DD' or
+    Excel-imported 'YYYY-MM-DD HH:MM:SS' / 'YYYY-MM-DDTHH:MM:SS' strings."""
+    if not value:
+        return None
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip().split(" ")[0].split("T")[0]
+    try:
+        return date.fromisoformat(cleaned)
+    except ValueError:
+        return None
+
+
 def _is_director(emp: dict) -> bool:
     return (emp.get("designation") or "").strip().lower() == "director"
 
@@ -19,7 +33,9 @@ async def calc_gratuity(employee_id: str, current_user: dict = Depends(get_curre
     if not joining_date_str:
         raise HTTPException(status_code=400, detail="Joining date not set")
     today = date.today()
-    joining_date = date.fromisoformat(joining_date_str)
+    joining_date = _parse_joining_date(joining_date_str)
+    if not joining_date:
+        raise HTTPException(status_code=400, detail=f"Invalid joining date format: '{joining_date_str}'")
     total_days = (today - joining_date).days
     years_of_service = total_days / 365.25
     basic = emp.get("salary", {}).get("basic", 0)
@@ -59,7 +75,9 @@ async def all_gratuity(current_user: dict = Depends(get_current_user)):
         if not joining_date_str:
             continue
         try:
-            jd = date.fromisoformat(joining_date_str)
+            jd = _parse_joining_date(joining_date_str)
+            if not jd:
+                continue
             years = (today - jd).days / 365.25
             basic = emp.get("salary", {}).get("basic", 0)
             is_director = _is_director(emp)
