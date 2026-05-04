@@ -232,6 +232,74 @@ async def apply_leave(data: LeaveApplyRequest, current_user: dict = Depends(get_
     return doc
 
 
+@router.get("/calendar-overlay")
+async def calendar_overlay(
+    date_from: str,
+    date_to: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Return APPROVED leaves overlapping the given date window.
+    Scope:
+      - hr_admin / management → all employees
+      - managers → direct reports + self
+      - employee / field_agent → only own
+    Used by the Calendar page to overlay team-coverage gaps.
+    """
+    role = current_user.get("role")
+    me_id = current_user.get("employee_id")
+
+    q = {
+        "status": "approved",
+        "from_date": {"$lte": date_to},
+        "to_date": {"$gte": date_from},
+    }
+
+    if role in ["hr_admin", "management"]:
+        pass
+    elif role == "managers":
+        reports = await db.employees.find(
+            {"reporting_to": me_id}, {"_id": 0, "employee_id": 1}
+        ).to_list(500)
+        scope_ids = [r["employee_id"] for r in reports]
+        if me_id:
+            scope_ids.append(me_id)
+        q["employee_id"] = {"$in": scope_ids} if scope_ids else "__none__"
+    else:
+        q["employee_id"] = me_id
+
+    leaves = await db.leave_applications.find(q).to_list(2000)
+    if not leaves:
+        return []
+
+    # Enrich with employee name
+    emp_ids = list({l["employee_id"] for l in leaves})
+    employees = await db.employees.find(
+        {"employee_id": {"$in": emp_ids}},
+        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "designation": 1},
+    ).to_list(2000)
+    emap = {e["employee_id"]: e for e in employees}
+
+    out = []
+    for l in leaves:
+        emp = emap.get(l["employee_id"], {})
+        name = f"{emp.get('first_name','')} {emp.get('last_name','')}".strip() or l["employee_id"]
+        # Initials for the dot
+        initials = "".join([w[0] for w in name.split()[:2] if w])[:2].upper() or l["employee_id"][:2]
+        out.append({
+            "id": str(l["_id"]),
+            "employee_id": l["employee_id"],
+            "employee_name": name,
+            "initials": initials,
+            "designation": emp.get("designation", ""),
+            "leave_type": l.get("leave_type"),
+            "from_date": l.get("from_date"),
+            "to_date": l.get("to_date"),
+            "days": l.get("days"),
+            "reason": l.get("reason"),
+        })
+    return out
+
+
 @router.get("")
 async def list_leaves(
     employee_id: str = None,

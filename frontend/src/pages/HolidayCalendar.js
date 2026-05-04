@@ -21,6 +21,9 @@ export default function HolidayCalendar() {
   const [loading, setLoading] = useState(true);
 
   const role = user?.role || "employee";
+  const canSeeOverlay = ["hr_admin", "management", "managers"].includes(role);
+  const [leaves, setLeaves] = useState([]);
+  const [hoveredCell, setHoveredCell] = useState(null);
 
   const fetchData = async () => {
     setLoading(true);
@@ -31,7 +34,22 @@ export default function HolidayCalendar() {
     finally { setLoading(false); }
   };
 
+  // Fetch approved leaves for the visible month (managers / hr_admin)
+  const fetchLeaves = async () => {
+    if (!canSeeOverlay) { setLeaves([]); return; }
+    const monthStart = `${year}-${String(month + 1).padStart(2, "0")}-01`;
+    const lastDay = new Date(year, month + 1, 0).getDate();
+    const monthEnd = `${year}-${String(month + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+    try {
+      const res = await API.get("/leaves/calendar-overlay", {
+        params: { date_from: monthStart, date_to: monthEnd },
+      });
+      setLeaves(res.data || []);
+    } catch (e) { console.error(e); }
+  };
+
   useEffect(() => { fetchData(); }, [year, role]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchLeaves(); }, [year, month, canSeeOverlay]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Map { 'YYYY-MM-DD': dayInfo } for fast lookup
   const dayMap = useMemo(() => {
@@ -61,6 +79,23 @@ export default function HolidayCalendar() {
     while (cells.length < 42) cells.push(null);
     return cells;
   }, [year, month, dayMap]);
+
+  // Map of YYYY-MM-DD → array of leaves on that day
+  const leavesByDay = useMemo(() => {
+    const m = {};
+    for (const l of leaves) {
+      const start = new Date(l.from_date + "T00:00:00");
+      const end = new Date(l.to_date + "T00:00:00");
+      const cur = new Date(start);
+      while (cur <= end) {
+        const iso = toLocalISO(cur.getFullYear(), cur.getMonth(), cur.getDate());
+        if (!m[iso]) m[iso] = [];
+        m[iso].push(l);
+        cur.setDate(cur.getDate() + 1);
+      }
+    }
+    return m;
+  }, [leaves]);
 
   // Holidays only for the right-side list
   const monthHolidays = data.filter(d => {
@@ -118,8 +153,11 @@ export default function HolidayCalendar() {
                 if (!cell) return <div key={`pad-${i}`} className="aspect-square" />;
                 const style = cell.info ? TYPE_STYLES[cell.info.type] || TYPE_STYLES.holiday : null;
                 const isToday = cell.iso === toLocalISO(today.getFullYear(), today.getMonth(), today.getDate());
+                const onLeave = leavesByDay[cell.iso] || [];
                 return (
                   <div key={cell.iso}
+                    onMouseEnter={() => onLeave.length && setHoveredCell(cell.iso)}
+                    onMouseLeave={() => setHoveredCell(null)}
                     title={cell.info ? `${cell.info.label}` : ""}
                     data-testid={`cal-cell-${cell.iso}`}
                     className={`aspect-square p-2 rounded-lg border text-sm relative
@@ -132,6 +170,45 @@ export default function HolidayCalendar() {
                     </div>
                     {cell.info?.type === "holiday" && (
                       <p className="text-[10px] leading-tight font-semibold text-red-700 line-clamp-2">{cell.info.label}</p>
+                    )}
+                    {/* Leave overlay — initials avatars */}
+                    {onLeave.length > 0 && (
+                      <div className="flex flex-wrap items-end gap-0.5 mt-auto" data-testid={`cell-leaves-${cell.iso}`}>
+                        {onLeave.slice(0, 3).map((lv, idx) => (
+                          <span key={`${lv.id}-${idx}`}
+                            title={`${lv.employee_name} • ${lv.leave_type} (${lv.from_date} → ${lv.to_date})`}
+                            className={`inline-flex items-center justify-center text-[8px] font-bold rounded-full w-4 h-4 ${
+                              lv.leave_type === "SL" ? "bg-rose-200 text-rose-800" :
+                              lv.leave_type === "CL" ? "bg-amber-200 text-amber-800" :
+                              lv.leave_type === "EL" ? "bg-violet-200 text-violet-800" :
+                              "bg-slate-200 text-slate-700"
+                            }`}>
+                            {lv.initials}
+                          </span>
+                        ))}
+                        {onLeave.length > 3 && (
+                          <span className="text-[8px] font-bold text-slate-500">+{onLeave.length - 3}</span>
+                        )}
+                      </div>
+                    )}
+                    {/* Hover popover with details */}
+                    {hoveredCell === cell.iso && onLeave.length > 0 && (
+                      <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-30 pointer-events-none">
+                        <div className="bg-white border border-slate-200 shadow-xl rounded-lg p-2.5 min-w-[180px] text-left">
+                          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
+                            On Leave • {cell.iso}
+                          </p>
+                          {onLeave.map(lv => (
+                            <div key={lv.id} className="text-[11px] leading-tight mb-1.5 last:mb-0">
+                              <p className="font-semibold text-slate-700 truncate">{lv.employee_name}</p>
+                              <p className="text-slate-500">
+                                <span className="font-mono text-[#E85B1E]">{lv.employee_id}</span> · {lv.leave_type}
+                                <span className="text-slate-400"> · {lv.from_date.slice(5)} → {lv.to_date.slice(5)}</span>
+                              </p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     )}
                   </div>
                 );
@@ -158,6 +235,31 @@ export default function HolidayCalendar() {
                 <span className="w-3 h-3 rounded-full bg-emerald-400" />
                 <span className="text-slate-600">1st/3rd Saturday (Employee role only)</span>
               </div>
+              {canSeeOverlay && (
+                <>
+                  <div className="border-t border-slate-100 mt-2 pt-2">
+                    <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Approved Leaves</p>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <span className="inline-flex items-center justify-center text-[8px] font-bold rounded-full w-4 h-4 bg-rose-200 text-rose-800">SL</span>
+                        <span className="text-slate-600">Sick</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <span className="inline-flex items-center justify-center text-[8px] font-bold rounded-full w-4 h-4 bg-amber-200 text-amber-800">CL</span>
+                        <span className="text-slate-600">Casual</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <span className="inline-flex items-center justify-center text-[8px] font-bold rounded-full w-4 h-4 bg-violet-200 text-violet-800">EL</span>
+                        <span className="text-slate-600">Earned</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <span className="inline-flex items-center justify-center text-[8px] font-bold rounded-full w-4 h-4 bg-slate-200 text-slate-700">··</span>
+                        <span className="text-slate-600">Other</span>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           </div>
 
@@ -212,6 +314,39 @@ export default function HolidayCalendar() {
               ))}
             </div>
           </div>
+
+          {/* Team on leave this month */}
+          {canSeeOverlay && leaves.length > 0 && (
+            <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm" data-testid="team-leaves-panel">
+              <p className="text-xs font-bold uppercase tracking-wider text-slate-500 mb-3 flex items-center gap-1.5">
+                <CalIcon size={12} /> {role === "managers" ? "Team" : "Employees"} on leave
+              </p>
+              <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1">
+                {leaves.sort((a, b) => a.from_date.localeCompare(b.from_date)).map(lv => {
+                  const typeColor =
+                    lv.leave_type === "SL" ? "bg-rose-200 text-rose-800" :
+                    lv.leave_type === "CL" ? "bg-amber-200 text-amber-800" :
+                    lv.leave_type === "EL" ? "bg-violet-200 text-violet-800" :
+                    "bg-slate-200 text-slate-700";
+                  return (
+                    <div key={lv.id} className="flex items-start gap-2 text-xs" data-testid={`team-leave-${lv.id}`}>
+                      <span className={`inline-flex items-center justify-center text-[9px] font-bold rounded-full w-7 h-7 ${typeColor}`}>
+                        {lv.initials}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-slate-700 truncate">{lv.employee_name}</p>
+                        <p className="text-[11px] text-slate-500">
+                          <span className={`px-1.5 py-0.5 rounded ${typeColor} font-semibold`}>{lv.leave_type}</span>
+                          <span className="ml-1.5">{lv.from_date.slice(5)} → {lv.to_date.slice(5)}</span>
+                          <span className="text-slate-400"> · {lv.days}d</span>
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
