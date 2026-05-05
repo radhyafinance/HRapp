@@ -423,7 +423,23 @@ async def _enrich_leaves_with_employee(leaves: list) -> list:
 async def pending_leaves(current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
-    leaves = await db.leave_applications.find({"status": "pending"}).sort("applied_at", -1).to_list(500)
+
+    query = {"status": "pending"}
+    # Managers see only their direct reports' leaves; HR/Management see everything.
+    if current_user.get("role") == "managers":
+        me_id = current_user.get("employee_id")
+        if not me_id:
+            return []
+        reports = await db.employees.find(
+            {"reporting_to": me_id},
+            {"_id": 0, "employee_id": 1},
+        ).to_list(500)
+        report_ids = [r["employee_id"] for r in reports]
+        if not report_ids:
+            return []
+        query["employee_id"] = {"$in": report_ids}
+
+    leaves = await db.leave_applications.find(query).sort("applied_at", -1).to_list(500)
     return await _enrich_leaves_with_employee(leaves)
 
 
@@ -550,6 +566,16 @@ async def approve_leave(leave_id: str, data: LeaveApproveRequest, current_user: 
         raise HTTPException(status_code=404, detail="Leave application not found")
     if leave["status"] != "pending":
         raise HTTPException(status_code=400, detail="Leave is already processed")
+
+    # Managers may only act on leaves filed by their direct reports.
+    if current_user.get("role") == "managers":
+        me_id = current_user.get("employee_id")
+        applicant = await db.employees.find_one(
+            {"employee_id": leave["employee_id"]},
+            {"_id": 0, "reporting_to": 1},
+        )
+        if not me_id or not applicant or applicant.get("reporting_to") != me_id:
+            raise HTTPException(status_code=403, detail="You can only approve leaves of employees reporting to you.")
 
     new_status = "approved" if data.action == "approve" else "rejected"
 
