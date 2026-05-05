@@ -242,8 +242,30 @@ async def update_location(data: LocationUpdateRequest, current_user: dict = Depe
 @router.get("/today")
 async def today_attendance(current_user: dict = Depends(get_current_user)):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    records = await db.attendance_records.find({"date": today}).to_list(1000)
-    total_employees = await db.employees.count_documents({"status": {"$in": ["active", "probation"]}})
+    role = current_user.get("role")
+    me_id = current_user.get("employee_id")
+
+    base_query = {"date": today}
+    emp_query = {"status": {"$in": ["active", "probation"]}}
+
+    if role == "managers":
+        from services.hierarchy import get_descendant_employee_ids
+        scope_ids = list(await get_descendant_employee_ids(me_id)) if me_id else []
+        if me_id:
+            scope_ids.append(me_id)
+        if scope_ids:
+            base_query["employee_id"] = {"$in": scope_ids}
+            emp_query["employee_id"] = {"$in": scope_ids}
+        else:
+            base_query["employee_id"] = "__none__"
+            emp_query["employee_id"] = "__none__"
+    elif role not in ["hr_admin", "management"]:
+        # Employee/field_agent — only own record
+        base_query["employee_id"] = me_id
+        emp_query["employee_id"] = me_id
+
+    records = await db.attendance_records.find(base_query).to_list(1000)
+    total_employees = await db.employees.count_documents(emp_query)
     present = len([r for r in records if r.get("punch_in_time")])
     punched_out = len([r for r in records if r.get("punch_out_time")])
     return {
@@ -278,6 +300,13 @@ async def my_attendance(
 async def location_track(employee_id: str, date_str: str = None, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
+    # Manager scope: only employees in their sub-tree
+    if current_user.get("role") == "managers":
+        from services.hierarchy import get_descendant_employee_ids
+        me_id = current_user.get("employee_id")
+        allowed = await get_descendant_employee_ids(me_id) if me_id else set()
+        if employee_id not in allowed and employee_id != me_id:
+            raise HTTPException(status_code=403, detail="Not allowed to view this employee's tracking data")
     today = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     logs = await db.location_logs.find(
         {"employee_id": employee_id, "date": today}
@@ -343,7 +372,18 @@ async def list_active_field_staff(current_user: dict = Depends(get_current_user)
     if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    records = await db.attendance_records.find({"date": today, "punch_in_time": {"$exists": True}}).to_list(1000)
+
+    role = current_user.get("role")
+    me_id = current_user.get("employee_id")
+    rec_query = {"date": today, "punch_in_time": {"$exists": True}}
+    if role == "managers":
+        from services.hierarchy import get_descendant_employee_ids
+        scope = list(await get_descendant_employee_ids(me_id)) if me_id else []
+        if not scope:
+            return []
+        rec_query["employee_id"] = {"$in": scope}
+
+    records = await db.attendance_records.find(rec_query).to_list(1000)
     if not records:
         return []
 
@@ -415,11 +455,8 @@ async def list_attendance(
         if role in ["hr_admin", "management"]:
             query["employee_id"] = employee_id
         elif role == "managers":
-            # Reporting manager can only inspect their own reports
-            reports = await db.employees.find(
-                {"reporting_to": me_id}, {"employee_id": 1, "_id": 0}
-            ).to_list(500)
-            allowed = {r["employee_id"] for r in reports}
+            from services.hierarchy import get_descendant_employee_ids
+            allowed = await get_descendant_employee_ids(me_id) if me_id else set()
             allowed.add(me_id)
             if employee_id not in allowed:
                 raise HTTPException(status_code=403, detail="Not allowed to view this employee's attendance")
@@ -430,10 +467,8 @@ async def list_attendance(
         if role in ["hr_admin", "management"]:
             pass  # no scope — see everyone
         elif role == "managers":
-            reports = await db.employees.find(
-                {"reporting_to": me_id}, {"employee_id": 1, "_id": 0}
-            ).to_list(500)
-            scope_ids = [r["employee_id"] for r in reports]
+            from services.hierarchy import get_descendant_employee_ids
+            scope_ids = list(await get_descendant_employee_ids(me_id)) if me_id else []
             if me_id:
                 scope_ids.append(me_id)
             query["employee_id"] = {"$in": scope_ids} if scope_ids else me_id or "__none__"

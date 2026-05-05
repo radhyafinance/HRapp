@@ -219,7 +219,16 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
 
-    trackers = await db.employee_trackers.find({}, {"_id": 0}).to_list(2000)
+    tracker_q = {}
+    if current_user.get("role") == "managers":
+        from services.hierarchy import get_descendant_employee_ids
+        me_id = current_user.get("employee_id")
+        scope = list(await get_descendant_employee_ids(me_id)) if me_id else []
+        if not scope:
+            return []
+        tracker_q["employee_id"] = {"$in": scope}
+
+    trackers = await db.employee_trackers.find(tracker_q, {"_id": 0}).to_list(2000)
     if not trackers:
         return []
 

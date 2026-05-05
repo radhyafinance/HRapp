@@ -9,16 +9,33 @@ router = APIRouter()
 @router.get("/stats")
 async def dashboard_stats(current_user: dict = Depends(get_current_user)):
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    total_employees = await db.employees.count_documents({"status": {"$in": ["active", "probation"]}})
-    present_today = await db.attendance_records.count_documents(
-        {"date": today, "punch_in_time": {"$exists": True, "$ne": None}}
-    )
-    on_leave_today = await db.leave_applications.count_documents({
+    role = current_user.get("role")
+    me_id = current_user.get("employee_id")
+
+    emp_query = {"status": {"$in": ["active", "probation"]}}
+    att_query = {"date": today, "punch_in_time": {"$exists": True, "$ne": None}}
+    leave_today_query = {
         "status": "approved",
         "start_date": {"$lte": today},
         "end_date": {"$gte": today},
-    })
-    pending_leaves = await db.leave_applications.count_documents({"status": "pending"})
+    }
+    pending_leave_query = {"status": "pending"}
+
+    if role == "managers":
+        from services.hierarchy import get_descendant_employee_ids
+        scope = list(await get_descendant_employee_ids(me_id)) if me_id else []
+        if me_id:
+            scope.append(me_id)
+        scope = scope or ["__none__"]
+        emp_query["employee_id"] = {"$in": scope}
+        att_query["employee_id"] = {"$in": scope}
+        leave_today_query["employee_id"] = {"$in": scope}
+        pending_leave_query["employee_id"] = {"$in": scope}
+
+    total_employees = await db.employees.count_documents(emp_query)
+    present_today = await db.attendance_records.count_documents(att_query)
+    on_leave_today = await db.leave_applications.count_documents(leave_today_query)
+    pending_leaves = await db.leave_applications.count_documents(pending_leave_query)
     total_candidates = await db.candidates.count_documents({})
     pending_candidates = await db.candidates.count_documents({"status": "pending"})
     exit_requests = await db.exit_requests.count_documents({"status": {"$in": ["pending", "approved"]}})
@@ -67,9 +84,15 @@ async def field_agents_live(current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    active_sessions = await db.attendance_records.find(
-        {"date": today, "punch_in_time": {"$exists": True, "$ne": None}, "punch_out_time": None}
-    ).to_list(100)
+    sess_query = {"date": today, "punch_in_time": {"$exists": True, "$ne": None}, "punch_out_time": None}
+    if current_user.get("role") == "managers":
+        from services.hierarchy import get_descendant_employee_ids
+        me_id = current_user.get("employee_id")
+        scope = list(await get_descendant_employee_ids(me_id)) if me_id else []
+        if not scope:
+            return []
+        sess_query["employee_id"] = {"$in": scope}
+    active_sessions = await db.attendance_records.find(sess_query).to_list(100)
     result = []
     for session in active_sessions:
         emp_id = session.get("employee_id")

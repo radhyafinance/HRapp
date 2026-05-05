@@ -96,6 +96,22 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 39. **Manager-Scoped Leave Approval (Feb 2026)** -
     - `GET /api/leaves/pending` now scopes to the manager's direct reports for `managers` role (uses `reporting_to`); HR Admin / Management still see everything.
     - `PUT /api/leaves/{id}/approve` enforces the same scope server-side: a manager can only approve/reject leaves filed by employees who report to them. Cross-team attempts return HTTP 403.
+
+40. **Hierarchical (Transitive) Visibility for Managers (Feb 2026)** -
+    A manager (role `managers`) can now see the full sub-tree of employees reporting to them — direct reports + their reports' reports + ... (unlimited depth). HR Admin / Management remain unscoped.
+    - New shared helper: `services/hierarchy.py::get_descendant_employee_ids()` walks `employees.reporting_to` breadth-first (max 10 levels) and returns the full sub-tree set.
+    - **Applied to all manager-scoped endpoints**:
+      - `GET /api/leaves/pending` (now transitive)
+      - `GET /api/leaves/calendar-overlay` (now transitive)
+      - `GET /api/attendance` (with or without `employee_id` filter)
+      - `GET /api/attendance/today`
+      - `GET /api/attendance/field-staff/active`
+      - `GET /api/attendance/location-track/{employee_id}` (cross-team blocked 403)
+      - `GET /api/tracker/devices` (sub-tree only)
+      - `GET /api/dashboard/stats` (employee/attendance/leave counts scoped to sub-tree)
+      - `GET /api/dashboard/field-agents-live`
+    - **Approval rule (per Q3a + Admin)**: Only the **direct reporting manager** OR HR Admin / Management can approve a leave. Skip-level managers can VIEW but get HTTP 403 on approve attempts ("Only the direct reporting manager (or HR Admin) can approve this leave.").
+    - **Verified end-to-end** with a 3-level test tree (Dhruv → Ankit Pal → Rajeev): skip-level sees+blocked-approve; direct manager approves OK; sibling manager sees nothing (403).
 29. **Username-based Login (Feb 2026)** - Login identifier changed from email to **`username`**. Admin = literal `admin` (not an employee). Employees = their Employee ID (e.g. `RMF0001`). Email-based login removed. Auto-migration on startup: legacy `admin@radhyamfi.com` → username `admin`; existing employee users get `username = employee_id`. Login blocks exited employees (HTTP 403) and inactive accounts. New endpoint `POST /api/auth/employees/{employee_id}/reset-password` — HR Admin can reset any employee's password from the Employee Edit modal's "Login Account" section.
 30. **Email OTP Login (Feb 2026)** - Login page now has tabs: **Password** + **Email OTP**. Endpoints `POST /api/auth/otp/request` (lookup user by username, generate 6-digit OTP, store bcrypt hash + 10-min expiry, email via Resend) and `POST /api/auth/otp/verify` (verify OTP, issue JWT, burn). 60-second cooldown between requests, max 5 wrong attempts per code, returned email is masked (e.g. `t***********e@radhyamfi.com`). Branded HTML email template (Radhya navy + orange). Resend integration in `/app/backend/services/email_service.py`. SENDER_EMAIL configured to `noreply@updates.radhyafinance.com`. TTL index on `otp_codes.expires_at` auto-removes expired records.
 31. **Face Match for Punch In/Out (Feb 2026)** - Each punch-in/out selfie is compared to the employee's `passport_photo` document (stored under `employee_documents`). Implemented with `face_recognition` (dlib) — no TF, no cloud calls. Service `/app/backend/services/face_match.py`. Default threshold 0.40 (balanced). **Strict mode toggle** in Settings → Attendance: OFF (default) = warn-but-allow with mismatch flagged on the record; ON = punch is rejected on mismatch. **No passport_photo on file → punch is blocked** with a clear message. Match status surfaced in punch UI ("Face verified" or "⚠ Face check…"). Per-record fields written: `punch_in_face_matched`, `punch_in_face_distance`, `punch_in_face_warning` (and `_out_` variants). **Punch photos are only persisted when the face check failed/flagged** — saves DB space for normal matched punches.

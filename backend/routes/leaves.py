@@ -334,10 +334,8 @@ async def calendar_overlay(
     if role in ["hr_admin", "management"]:
         pass
     elif role == "managers":
-        reports = await db.employees.find(
-            {"reporting_to": me_id}, {"_id": 0, "employee_id": 1}
-        ).to_list(500)
-        scope_ids = [r["employee_id"] for r in reports]
+        from services.hierarchy import get_descendant_employee_ids
+        scope_ids = list(await get_descendant_employee_ids(me_id)) if me_id else []
         if me_id:
             scope_ids.append(me_id)
         q["employee_id"] = {"$in": scope_ids} if scope_ids else "__none__"
@@ -425,19 +423,17 @@ async def pending_leaves(current_user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Access denied")
 
     query = {"status": "pending"}
-    # Managers see only their direct reports' leaves; HR/Management see everything.
+    # Managers see leaves of every employee in their sub-tree (direct + indirect
+    # reports). HR/Management see everything.
     if current_user.get("role") == "managers":
+        from services.hierarchy import get_descendant_employee_ids
         me_id = current_user.get("employee_id")
         if not me_id:
             return []
-        reports = await db.employees.find(
-            {"reporting_to": me_id},
-            {"_id": 0, "employee_id": 1},
-        ).to_list(500)
-        report_ids = [r["employee_id"] for r in reports]
-        if not report_ids:
+        scope = await get_descendant_employee_ids(me_id)
+        if not scope:
             return []
-        query["employee_id"] = {"$in": report_ids}
+        query["employee_id"] = {"$in": list(scope)}
 
     leaves = await db.leave_applications.find(query).sort("applied_at", -1).to_list(500)
     return await _enrich_leaves_with_employee(leaves)
@@ -567,7 +563,11 @@ async def approve_leave(leave_id: str, data: LeaveApproveRequest, current_user: 
     if leave["status"] != "pending":
         raise HTTPException(status_code=400, detail="Leave is already processed")
 
-    # Managers may only act on leaves filed by their direct reports.
+    # Approval permission rules (per Q3 — direct manager + Admin only):
+    #   hr_admin                        → always allowed
+    #   management                      → always allowed (for emergencies)
+    #   managers (direct reporting_to) → allowed
+    #   managers (skip-level)           → CAN view (in pending list) but NOT approve
     if current_user.get("role") == "managers":
         me_id = current_user.get("employee_id")
         applicant = await db.employees.find_one(
@@ -575,7 +575,10 @@ async def approve_leave(leave_id: str, data: LeaveApproveRequest, current_user: 
             {"_id": 0, "reporting_to": 1},
         )
         if not me_id or not applicant or applicant.get("reporting_to") != me_id:
-            raise HTTPException(status_code=403, detail="You can only approve leaves of employees reporting to you.")
+            raise HTTPException(
+                status_code=403,
+                detail="Only the direct reporting manager (or HR Admin) can approve this leave."
+            )
 
     new_status = "approved" if data.action == "approve" else "rejected"
 
