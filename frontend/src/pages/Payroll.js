@@ -39,6 +39,7 @@ export default function Payroll() {
   const [editTds, setEditTds] = useState("");
   const [editOtherDed, setEditOtherDed] = useState("");
   const [editOtherAdd, setEditOtherAdd] = useState("");
+  const [editLopDays, setEditLopDays] = useState("");
   const [editRemarks, setEditRemarks] = useState("");
   const [savingEdits, setSavingEdits] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
@@ -50,6 +51,9 @@ export default function Payroll() {
     setEditTds(r.tds || 0);
     setEditOtherDed(r.other_deductions || 0);
     setEditOtherAdd(r.other_additions || 0);
+    const wd = r.working_days || 26;
+    const pd = r.present_days ?? wd;
+    setEditLopDays(r.lop_days != null ? r.lop_days : Math.max(0, wd - pd));
     setEditRemarks(r.remarks || "");
   };
 
@@ -61,6 +65,7 @@ export default function Payroll() {
         tds: parseFloat(editTds) || 0,
         other_deductions: parseFloat(editOtherDed) || 0,
         other_additions: parseFloat(editOtherAdd) || 0,
+        lop_days: editLopDays === "" ? null : parseFloat(editLopDays) || 0,
         remarks: editRemarks || null,
       });
       setShowSlip(res.data);
@@ -243,14 +248,18 @@ export default function Payroll() {
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="payroll-table">
             <thead><tr className="bg-slate-50 border-b">
-              {["Employee", "Period", "Gross", "EPF (Emp)", "ESIC (Emp)", "Net Salary", "Status", "Actions"].map(h => (
+              {["Employee", "Period", "Gross", "EPF (Emp)", "ESIC (Emp)", "Deductions", "Net Salary", "Status", "Actions"].map(h => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
               ))}
             </tr></thead>
             <tbody>
-              {loading ? <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
-                : records.length === 0 ? <tr><td colSpan={8} className="px-4 py-12 text-center text-slate-400">No payroll records. Process payroll to see records.</td></tr>
-                : records.map(r => (
+              {loading ? <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                : records.length === 0 ? <tr><td colSpan={9} className="px-4 py-12 text-center text-slate-400">No payroll records. Process payroll to see records.</td></tr>
+                : records.map(r => {
+                  const totalDed = r.total_deductions != null
+                    ? r.total_deductions
+                    : (Number(r.epf_employee || 0) + Number(r.esic_employee || 0) + Number(r.tds || 0) + Number(r.other_deductions || 0));
+                  return (
                   <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
                     <td className="px-4 py-3">
                       <p className="text-sm font-medium text-[#0F172A]">{r.employee_name}</p>
@@ -260,6 +269,7 @@ export default function Payroll() {
                     <td className="px-4 py-3 text-sm font-medium text-slate-700">₹{r.gross_salary?.toLocaleString("en-IN")}</td>
                     <td className="px-4 py-3 text-sm text-red-600">-₹{r.epf_employee?.toLocaleString("en-IN")}</td>
                     <td className="px-4 py-3 text-sm text-red-600">-₹{r.esic_employee?.toLocaleString("en-IN")}</td>
+                    <td className="px-4 py-3 text-sm font-semibold text-red-600" data-testid={`deductions-${r.id}`}>-₹{Math.round(totalDed).toLocaleString("en-IN")}</td>
                     <td className="px-4 py-3 text-sm font-bold text-green-700">₹{r.net_salary?.toLocaleString("en-IN")}</td>
                     <td className="px-4 py-3">
                       <span className={`px-2 py-1 rounded-full text-xs font-medium ${r.status === "paid" ? "bg-green-100 text-green-700" : r.status === "processed" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"}`}>{r.status}</span>
@@ -284,7 +294,7 @@ export default function Payroll() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                );})}
             </tbody>
           </table>
         </div>
@@ -363,7 +373,13 @@ export default function Payroll() {
 
               {isManager && showSlip.status !== "paid" ? (
                 <>
-                  <div className="grid grid-cols-3 gap-2 pt-2">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">LOP Days</label>
+                      <input type="number" min="0" step="0.5" value={editLopDays} onChange={e => setEditLopDays(e.target.value)} data-testid="edit-lop-days"
+                        title="Loss of pay days. Supports 0.5 (half day). Pro-rates Basic/HRA/EPF/ESIC."
+                        className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                    </div>
                     <div>
                       <label className="block text-[11px] font-semibold text-slate-600 mb-1">TDS (₹)</label>
                       <input type="number" min="0" step="1" value={editTds} onChange={e => setEditTds(e.target.value)} data-testid="edit-tds"
@@ -385,7 +401,7 @@ export default function Payroll() {
                     <input value={editRemarks} onChange={e => setEditRemarks(e.target.value)} placeholder="e.g. Bonus paid in March" data-testid="edit-remarks"
                       className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
                   </div>
-                  <p className="text-[11px] text-slate-500 italic">Saving these will recalculate Net Salary and move status to <span className="font-semibold">Processed</span>.</p>
+                  <p className="text-[11px] text-slate-500 italic">LOP days pro-rate Basic/HRA/Allowances/EPF/ESIC. Saving recalculates Net Salary and moves status to <span className="font-semibold">Processed</span>.</p>
                 </>
               ) : (
                 [

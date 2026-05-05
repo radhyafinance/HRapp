@@ -94,11 +94,15 @@ def build_payslip_pdf(record: dict, employee: dict) -> bytes:
     month_name    = _MONTH_NAMES[month_num - 1]
     days_in_month = _calendar.monthrange(year_num, month_num)[1]   # actual calendar days
 
-    present_days  = int(record.get("present_days", days_in_month))
-    working_days  = int(record.get("working_days", 26))
+    present_days  = float(record.get("present_days", days_in_month))
+    working_days  = float(record.get("working_days", 26))
     leave_days    = int(record.get("leave_days", 0))
-    lop_days      = max(0, working_days - present_days)
+    lop_days      = float(record.get("lop_days") if record.get("lop_days") is not None else max(0, working_days - present_days))
     payable_days  = present_days
+
+    def _days(v):
+        # Show integer when whole, else 1 decimal (e.g. 25.5).
+        return f"{int(v)}" if float(v).is_integer() else f"{float(v):.1f}"
 
     # ── Salary components ─────────────────────────────────────────────────────
     basic      = float(record.get("basic", 0))
@@ -174,8 +178,8 @@ def build_payslip_pdf(record: dict, employee: dict) -> bytes:
         [L("Bank Account No."), V(bank_acc),          L("Bank Name"),        V(bank_name)],
         [L("IFSC Code"),        V(ifsc),              L(""),                 V("")],
         [L("UAN Number"),       V(uan),               L("ESI Number"),       V(esi_no)],
-        [L("Days in Month"),    V(str(days_in_month)),L("LOP Days"),         V(str(lop_days))],
-        [L("Payable Days"),     V(str(payable_days)), L("Leave Days"),       V(str(leave_days))],
+        [L("Days in Month"),    V(str(days_in_month)),L("LOP Days"),         V(_days(lop_days))],
+        [L("Payable Days"),     V(_days(payable_days)), L("Leave Days"),       V(str(leave_days))],
     ]
 
     info_tbl = Table(info_rows, colWidths=["20%", "30%", "20%", "30%"])

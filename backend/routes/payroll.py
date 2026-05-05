@@ -84,6 +84,14 @@ def calc_payroll_components(emp: dict, working_days: int = 26, present_days: int
 
 def pay_to_dict(p):
     p["id"] = str(p.pop("_id"))
+    # Always expose a derived total_deductions field for UI/exports
+    p["total_deductions"] = round(
+        float(p.get("epf_employee") or 0)
+        + float(p.get("esic_employee") or 0)
+        + float(p.get("tds") or 0)
+        + float(p.get("other_deductions") or 0),
+        2,
+    )
     return p
 
 
@@ -97,6 +105,9 @@ class PayrollUpdateRequest(BaseModel):
     tds: Optional[float] = 0
     other_deductions: Optional[float] = 0
     other_additions: Optional[float] = 0
+    # Loss-of-pay days set by HR (supports half-day, e.g. 0.5, 1, 1.5).
+    # When provided, pro-rata recomputes Basic/HRA/allowances/EPF/ESIC.
+    lop_days: Optional[float] = None
     remarks: Optional[str] = None
 
 
@@ -231,20 +242,37 @@ async def update_payroll(record_id: str, data: PayrollUpdateRequest, current_use
     tds = data.tds or 0
     other_ded = data.other_deductions or 0
     other_add = data.other_additions or 0
-    gross_payable = record.get("gross_payable", 0)
-    epf_employee = record.get("epf_employee", 0)
-    esic_employee = record.get("esic_employee", 0)
-    net_salary = round(gross_payable - epf_employee - esic_employee - tds - other_ded + other_add, 2)
+
+    update_doc = {
+        "tds": tds,
+        "other_deductions": other_ded,
+        "other_additions": other_add,
+        "remarks": data.remarks,
+        "status": "processed",
+    }
+
+    # If HR sets LOP days, recompute pro-rata earnings + EPF/ESIC.
+    if data.lop_days is not None:
+        emp = await db.employees.find_one({"employee_id": record.get("employee_id")})
+        working_days = record.get("working_days", 26) or 26
+        lop = max(0.0, float(data.lop_days))
+        present_days = max(0.0, working_days - lop)
+        if emp:
+            new_components = calc_payroll_components(emp, working_days, present_days)
+            update_doc.update(new_components)
+        update_doc["lop_days"] = lop
+
+    gross_payable = update_doc.get("gross_payable", record.get("gross_payable", 0))
+    epf_employee = update_doc.get("epf_employee", record.get("epf_employee", 0))
+    esic_employee = update_doc.get("esic_employee", record.get("esic_employee", 0))
+
+    net_salary = round(gross_payable - epf_employee - esic_employee - tds - other_ded + other_add)
+    update_doc["net_salary"] = net_salary
+    update_doc["total_deductions"] = round(epf_employee + esic_employee + tds + other_ded, 2)
+
     await db.payroll_records.update_one(
         {"_id": ObjectId(record_id)},
-        {"$set": {
-            "tds": tds,
-            "other_deductions": other_ded,
-            "other_additions": other_add,
-            "net_salary": net_salary,
-            "remarks": data.remarks,
-            "status": "processed",
-        }},
+        {"$set": update_doc},
     )
     record = await db.payroll_records.find_one({"_id": ObjectId(record_id)})
     return pay_to_dict(record)
