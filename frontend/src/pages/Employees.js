@@ -19,13 +19,14 @@ const DESIGNATION_GROUPS = {
   "Risk Team": ["Audit Manager", "Credit Officer"],
 };
 
-const INITIAL_FORM = { first_name: "", last_name: "", email: "", mobile: "", department: "", designation: "", role: "employee", reporting_to: "", joining_date: "", ctc_monthly: "", basic: "", hra: "", special_allowance: "", canteen_allowance: "", conveyance_allowance: "", epf_employee: "", bank_name: "", account_number: "", ifsc_code: "", password: "Welcome@123", create_user_account: true };
+const INITIAL_FORM = { first_name: "", last_name: "", email: "", mobile: "", department: "", designation: "", role: "employee", reporting_to: "", joining_date: "", branch: "", ctc_monthly: "", basic: "", hra: "", special_allowance: "", canteen_allowance: "", conveyance_allowance: "", epf_employee: "", bank_name: "", account_number: "", ifsc_code: "", password: "Welcome@123", create_user_account: true };
 
 const gross = (f) => (parseFloat(f.basic) || 0) + (parseFloat(f.hra) || 0) + (parseFloat(f.special_allowance) || 0) + (parseFloat(f.canteen_allowance) || 0) + (parseFloat(f.conveyance_allowance) || 0); // kept for reference only
 
 export default function Employees() {
   const [employees, setEmployees] = useState([]);
   const [completeness, setCompleteness] = useState({});
+  const [branches, setBranches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -65,6 +66,11 @@ export default function Employees() {
 
   useEffect(() => { fetchEmployees(); }, [search, statusFilter]);
   useEffect(() => { fetchCompleteness(); }, []);
+  useEffect(() => {
+    API.get("/locations")
+      .then(r => setBranches(r.data.map(l => l.name).sort((a, b) => a.localeCompare(b))))
+      .catch(() => setBranches([]));
+  }, []);
 
   const handleAdd = async (e) => {
     e.preventDefault();
@@ -250,6 +256,14 @@ export default function Employees() {
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Joining Date*</label>
                 <input type="date" value={form.joining_date} onChange={e => setForm({ ...form, joining_date: e.target.value })} required data-testid="emp-joining-date"
                   className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Branch</label>
+                <select value={form.branch} onChange={e => setForm({ ...form, branch: e.target.value })} data-testid="emp-branch"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-[#E85B1E] outline-none">
+                  <option value="">— Not Assigned —</option>
+                  {branches.map(b => <option key={b} value={b}>{b}</option>)}
+                </select>
               </div>
             </div>
             <div className="border border-slate-200 rounded-lg p-4 bg-slate-50/60">

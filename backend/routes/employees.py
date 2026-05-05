@@ -127,6 +127,7 @@ class EmployeeCreate(BaseModel):
     esi_number: Optional[str] = None
     create_user_account: bool = True
     password: Optional[str] = None
+    branch: Optional[str] = None
 
 
 class EmployeeUpdate(BaseModel):
@@ -162,6 +163,7 @@ class EmployeeUpdate(BaseModel):
     state: Optional[str] = None
     pincode: Optional[str] = None
     joining_location: Optional[str] = None
+    branch: Optional[str] = None
     status: Optional[str] = None
     uan_number: Optional[str] = None
     esi_number: Optional[str] = None
@@ -252,6 +254,7 @@ async def create_employee(data: EmployeeCreate, current_user: dict = Depends(get
         "blood_group": data.blood_group,
         "uan_number": data.uan_number,
         "esi_number": data.esi_number,
+        "branch": data.branch,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "created_by": current_user.get("employee_id"),
     }

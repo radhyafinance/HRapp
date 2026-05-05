@@ -52,6 +52,7 @@ export function EmployeeDetailView({ emp }) {
           ["Status", emp.status],
           ["Joining Date", emp.joining_date],
           ["Joining Location", emp.joining_location],
+          ["Branch", emp.branch],
           ["Date of Birth", emp.date_of_birth],
           ["Gender", emp.gender],
           ["Father / Husband", emp.father_or_husband_name],

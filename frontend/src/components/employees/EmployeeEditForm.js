@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { AlertCircle } from "lucide-react";
 import API from "../../utils/api";
 import { ReportingManagerInput } from "./ReportingManagerInput";
@@ -21,6 +21,7 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
     department: emp.department || "", designation: emp.designation || "",
     role: emp.role || "employee", reporting_to: emp.reporting_to || "",
     joining_date: emp.joining_date || "", joining_location: emp.joining_location || "",
+    branch: emp.branch || "",
     status: emp.status || "active", date_of_birth: emp.date_of_birth || "",
     gender: emp.gender || "", father_or_husband_name: emp.father_or_husband_name || "",
     aadhaar_number: emp.aadhaar_number || "", pan_number: emp.pan_number || "",
@@ -38,7 +39,14 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
+  const [branches, setBranches] = useState([]);
   const ifscValid = !form.ifsc_code || /^[A-Z]{4}0[A-Z0-9]{6}$/.test((form.ifsc_code || "").toUpperCase());
+
+  useEffect(() => {
+    API.get("/locations")
+      .then(r => setBranches(r.data.map(l => l.name).sort((a, b) => a.localeCompare(b))))
+      .catch(() => setBranches([]));
+  }, []);
 
   const save = async (e) => {
     e.preventDefault();
@@ -115,6 +123,9 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
         ] })}
         {F("joining_date", "Joining Date", "date")}
         {F("joining_location", "Joining Location")}
+        {F("branch", "Branch (Office Location)", "text", {
+          options: [{ value: "", label: "— Not Assigned —" }, ...branches.map(b => ({ value: b, label: b }))]
+        })}
       </div>
       <ReportingManagerInput value={form.reporting_to} onChange={(val) => setForm({ ...form, reporting_to: val })} />
 
