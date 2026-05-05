@@ -244,6 +244,48 @@ export default function Payroll() {
         </select>
       </div>
 
+      {/* Summary card — visible whenever the user has filtered to a single period */}
+      {isManager && filterPeriod && records.length > 0 && (() => {
+        const periodRecords = records.filter(r => r.period === filterPeriod);
+        if (periodRecords.length === 0) return null;
+        const sum = periodRecords.reduce((acc, r) => {
+          const totalDed = r.total_deductions != null
+            ? r.total_deductions
+            : (Number(r.epf_employee || 0) + Number(r.esic_employee || 0) + Number(r.tds || 0) + Number(r.other_deductions || 0));
+          const wd = Number(r.working_days || 26);
+          const pd = r.present_days != null ? Number(r.present_days) : wd;
+          const lop = r.lop_days != null ? Number(r.lop_days) : Math.max(0, wd - pd);
+          return {
+            net: acc.net + Number(r.net_salary || 0),
+            ded: acc.ded + totalDed,
+            lop: acc.lop + lop,
+            employer: acc.employer + Number(r.epf_employer || 0) + Number(r.esic_employer || 0),
+            ctc: acc.ctc + Number(r.ctc_monthly || 0),
+            count: acc.count + 1,
+          };
+        }, { net: 0, ded: 0, lop: 0, employer: 0, ctc: 0, count: 0 });
+        const fmt = (n) => `₹${Math.round(n).toLocaleString("en-IN")}`;
+        const fmtLop = (n) => Number.isInteger(n) ? n : n.toFixed(1);
+        const cards = [
+          { label: "Total Net Payable", val: fmt(sum.net),     hint: `${sum.count} employees`, accent: "bg-green-50 border-green-200 text-green-700", bigCls: "text-green-800" },
+          { label: "Total Deductions", val: fmt(sum.ded),      hint: "EPF + ESIC + TDS + Other", accent: "bg-red-50 border-red-200 text-red-700",       bigCls: "text-red-800" },
+          { label: "Total LOP Days",   val: fmtLop(sum.lop),   hint: "Across all employees",   accent: "bg-amber-50 border-amber-200 text-amber-700",   bigCls: "text-amber-800" },
+          { label: "Employer Cost",    val: fmt(sum.employer), hint: "EPF + ESIC contributions", accent: "bg-blue-50 border-blue-200 text-blue-700",     bigCls: "text-blue-800" },
+          { label: "Total Monthly CTC",val: fmt(sum.ctc),      hint: "Gross + Employer cost",  accent: "bg-slate-50 border-slate-200 text-slate-600",   bigCls: "text-[#1E2A47]" },
+        ];
+        return (
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3 mb-4" data-testid="payroll-summary-card">
+            {cards.map(c => (
+              <div key={c.label} className={`border rounded-xl p-3 ${c.accent}`}>
+                <p className="text-[11px] font-semibold uppercase tracking-wider">{c.label}</p>
+                <p className={`text-xl font-bold mt-0.5 ${c.bigCls}`} style={{ fontFamily: "'Outfit', sans-serif" }}>{c.val}</p>
+                <p className="text-[10px] mt-0.5 opacity-70">{c.hint}</p>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="payroll-table">

@@ -465,7 +465,7 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
     ]
     col_headers = [
         "Sr", "Employee ID", "Name", "Designation", "Department", "Joining Date", "Status",
-        "Working Days", "Paid Days", "LOP",
+        "Working Days", "Paid Days", "LOP Days",
         "Basic", "HRA", "Special Allow.", "Canteen", "Conveyance", "Other Add.",
         "Gross Salary",
         "EPF (Emp)", "ESIC (Emp)", "TDS", "Other Ded.", "Total Ded.",
@@ -509,9 +509,10 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
         c.border = border
     ws.row_dimensions[4].height = 30
 
-    # Totals accumulator (money columns only)
+    # Totals accumulator (money columns + LOP days)
     money_cols = [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]
     totals = {c: 0.0 for c in money_cols}
+    lop_total = 0.0
 
     # Data rows start at row 5
     r_idx = 5
@@ -519,7 +520,12 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
         emp = emp_map.get(rec.get("employee_id"), {})
         working = rec.get("working_days", 26) or 26
         paid = rec.get("present_days", working) or working
-        lop = max(0, working - paid)
+        # Prefer stored lop_days (set explicitly by HR — supports half days);
+        # fall back to derived value if missing.
+        if rec.get("lop_days") is not None:
+            lop = float(rec.get("lop_days"))
+        else:
+            lop = max(0.0, float(working) - float(paid))
         gross = float(rec.get("gross_payable") or rec.get("gross_salary") or 0)
         epf_e = float(rec.get("epf_employee") or 0)
         esic_e = float(rec.get("esic_employee") or 0)
@@ -569,6 +575,10 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
             if col_idx in money_cols:
                 c.number_format = '#,##0'
                 totals[col_idx] = round(totals.get(col_idx, 0) + float(val or 0), 2)
+            elif col_idx == 10:  # LOP Days — show 0.5/1.5 with one decimal when fractional
+                c.number_format = '0.##'
+                c.alignment = Alignment(vertical="center", horizontal="right")
+                lop_total += float(val or 0)
         r_idx += 1
 
     # Totals row
@@ -581,6 +591,10 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
         if col_idx == 1:
             c.value = "TOTAL"
             c.alignment = Alignment(horizontal="center", vertical="center")
+        elif col_idx == 10:
+            c.value = round(lop_total, 2)
+            c.number_format = '0.##'
+            c.alignment = Alignment(horizontal="right", vertical="center")
         elif col_idx in totals:
             c.value = round(totals[col_idx], 2)
             c.number_format = '#,##0'
