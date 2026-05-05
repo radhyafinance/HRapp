@@ -17,6 +17,7 @@ import ExitManagement from "./pages/ExitManagement";
 import Letters from "./pages/Letters";
 import Settings from "./pages/Settings";
 import Gratuity from "./pages/Gratuity";
+import CandidateApply from "./pages/CandidateApply";
 import "./App.css";
 
 function App() {
@@ -25,6 +26,7 @@ function App() {
       <BrowserRouter>
         <Routes>
           <Route path="/login" element={<Login />} />
+          <Route path="/apply/:token" element={<CandidateApply />} />
           <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<Dashboard />} />

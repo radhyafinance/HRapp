@@ -1,9 +1,10 @@
 import React, { useEffect, useState } from "react";
 import API from "../utils/api";
-import { UserPlus, Search, CalendarClock, Undo2 } from "lucide-react";
+import { UserPlus, Search, CalendarClock, Undo2, Link2 } from "lucide-react";
 import { AddCandidateModal } from "../components/candidates/AddCandidateModal";
 import { CandidateDetailModal } from "../components/candidates/CandidateDetailModal";
 import { ScheduleInterviewModal } from "../components/candidates/ScheduleInterviewModal";
+import { CandidateInvitesModal } from "../components/candidates/CandidateInvitesModal";
 
 const STATUS_COLORS = { pending: "bg-amber-100 text-amber-700", selected: "bg-green-100 text-green-700", rejected: "bg-red-100 text-red-700", converted: "bg-blue-100 text-blue-700" };
 
@@ -15,6 +16,7 @@ export default function Candidates() {
   const [showAdd, setShowAdd] = useState(false);
   const [showDetail, setShowDetail] = useState(null);
   const [scheduleFor, setScheduleFor] = useState(null);
+  const [invitesOpen, setInvitesOpen] = useState(false);
 
   const fetchCandidates = async () => {
     setLoading(true);
@@ -45,10 +47,16 @@ export default function Candidates() {
           <h1 className="text-2xl font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Candidate Management</h1>
           <p className="text-slate-500 text-sm">{candidates.length} candidates</p>
         </div>
-        <button onClick={() => setShowAdd(true)} data-testid="add-candidate-btn"
-          className="flex items-center gap-2 px-4 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] transition-colors">
-          <UserPlus size={16} /> Add Candidate
-        </button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => setInvitesOpen(true)} data-testid="invite-link-btn"
+            className="flex items-center gap-2 px-4 py-2 border border-slate-300 text-slate-700 rounded-lg text-sm font-semibold hover:bg-slate-50 transition-colors">
+            <Link2 size={16} /> Invite Links
+          </button>
+          <button onClick={() => setShowAdd(true)} data-testid="add-candidate-btn"
+            className="flex items-center gap-2 px-4 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] transition-colors">
+            <UserPlus size={16} /> Add Candidate
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-col sm:flex-row gap-3 mb-4">
@@ -143,6 +151,13 @@ export default function Candidates() {
             setScheduleFor(null);
             setCandidates((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
           }}
+        />
+      )}
+
+      {invitesOpen && (
+        <CandidateInvitesModal
+          onClose={() => setInvitesOpen(false)}
+          onCandidateCreated={fetchCandidates}
         />
       )}
     </div>

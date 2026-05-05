@@ -74,6 +74,10 @@ app.include_router(holidays.router, prefix="/api/holidays", tags=["Holidays"])
 app.include_router(comp_offs.router, prefix="/api/comp-offs", tags=["Comp-Offs"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["Notifications"])
 
+from routes import candidate_invites
+app.include_router(candidate_invites.router, prefix="/api/candidate-invites", tags=["Candidate Invites"])
+app.include_router(candidate_invites.public_router, prefix="/api/public/candidate-invite", tags=["Public Candidate Invite"])
+
 
 @app.get("/api")
 async def root():
