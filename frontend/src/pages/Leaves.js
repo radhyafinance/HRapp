@@ -79,7 +79,9 @@ export default function Leaves() {
   const [balance, setBalance] = useState(null);
   const [pending, setPending] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState("my");
+  const isAdminOrMgmt = ["hr_admin", "management"].includes(user?.role);
+  const [activeTab, setActiveTab] = useState(isAdminOrMgmt ? "pending" : "my");
+  const [approvedLeaves, setApprovedLeaves] = useState([]);
 
   // Apply modal
   const [showApply, setShowApply] = useState(false);
@@ -133,6 +135,14 @@ export default function Leaves() {
         ]);
         setPending(pendRes.data);
         setAllBalances(allBalRes.data);
+      }
+      if (isAdminOrMgmt) {
+        try {
+          const apRes = await API.get("/leaves/approved");
+          setApprovedLeaves(apRes.data);
+        } catch (e) {
+          console.error("approved fetch failed:", e);
+        }
       }
     } catch (e) {
       console.error("fetchData failed:", e);
@@ -348,16 +358,18 @@ export default function Leaves() {
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Leave Management</h1>
-          <p className="text-slate-500 text-sm">Apply and track your leaves</p>
+          <p className="text-slate-500 text-sm">{isAdminOrMgmt ? "Approve, track, and audit company-wide leaves" : "Apply and track your leaves"}</p>
         </div>
-        <button onClick={() => setShowApply(true)} data-testid="apply-leave-btn"
-          className="flex items-center gap-2 px-4 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] transition-colors">
-          <Plus size={16} /> Apply Leave
-        </button>
+        {!isAdminOrMgmt && (
+          <button onClick={() => setShowApply(true)} data-testid="apply-leave-btn"
+            className="flex items-center gap-2 px-4 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] transition-colors">
+            <Plus size={16} /> Apply Leave
+          </button>
+        )}
       </div>
 
-      {/* Leave Balance */}
-      {balance && (
+      {/* Leave Balance — hide for admin/management since they don't apply leaves */}
+      {balance && !isAdminOrMgmt && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           {BALANCE_DISPLAY.map(({ key, label, color }) => (
             <div key={key} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm" data-testid={`balance-${key}`}>
@@ -381,8 +393,11 @@ export default function Leaves() {
 
       {/* Tabs */}
       {isManager && (
-        <div className="flex gap-2 mb-4 border-b border-slate-200">
-          {[["my", "My Leaves"], ["pending", `Pending Approvals (${pending.length})`], ["all", "All Employees"]].map(([val, label]) => (
+        <div className="flex gap-2 mb-4 border-b border-slate-200 flex-wrap">
+          {(isAdminOrMgmt
+            ? [["pending", `Pending Approvals (${pending.length})`], ["approved", `All Approved Leaves (${approvedLeaves.length})`], ["all", "All Employees"]]
+            : [["my", "My Leaves"], ["pending", `Pending Approvals (${pending.length})`], ["all", "All Employees"]]
+          ).map(([val, label]) => (
             <button key={val} onClick={() => setActiveTab(val)} data-testid={`tab-${val}`}
               className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${activeTab === val ? "border-[#E85B1E] text-[#E85B1E]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
               {label}
@@ -536,14 +551,18 @@ export default function Leaves() {
         </div>
       )}
 
-      {/* Leaves Table (My + Pending tabs) */}
+      {/* Leaves Table (My + Pending + Approved tabs) */}
       {activeTab !== "all" && (
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="leaves-table">
             <thead><tr className="bg-slate-50 border-b">
               {activeTab === "pending"
-                ? ["Employee", "Type", "From – To", "Days", "Certificate", "Actions"].map(h => (
+                ? ["Employee", "Designation", "Branch", "Type", "From – To", "Days", "Certificate", "Actions"].map(h => (
+                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
+                ))
+                : activeTab === "approved"
+                ? ["Employee", "Designation", "Branch", "Type", "From – To", "Days", "Approved By", "Reason"].map(h => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
                 ))
                 : ["Type", "From", "To", "Days", "Status", "Certificate", "Applied"].map(h => (
@@ -553,16 +572,21 @@ export default function Leaves() {
             </tr></thead>
             <tbody>
               {loading
-                ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                ? <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
                 : activeTab === "pending"
-                  ? pending.map(l => {
+                  ? pending.length === 0
+                    ? <tr><td colSpan={8} className="px-4 py-12 text-center text-slate-400">No pending leave requests.</td></tr>
+                    : pending.map(l => {
                     const needsCert = l.leave_type === "SL" && l.days > 2;
                     const hasCert = !!l.medical_certificate;
                     return (
                       <tr key={l.id} className="border-b border-slate-100 hover:bg-slate-50">
                         <td className="px-4 py-3">
-                          <p className="text-sm font-mono font-semibold text-[#E85B1E]">{l.employee_id}</p>
+                          <p className="text-sm font-semibold text-[#0F172A]">{l.employee_name || l.employee_id}</p>
+                          <p className="text-xs font-mono text-[#E85B1E]">{l.employee_id}</p>
                         </td>
+                        <td className="px-4 py-3 text-sm text-slate-600">{l.designation || <span className="text-slate-300">—</span>}</td>
+                        <td className="px-4 py-3 text-sm text-slate-600">{l.branch || <span className="text-slate-300">—</span>}</td>
                         <td className="px-4 py-3">
                           <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">{l.leave_type}</span>
                         </td>
@@ -601,6 +625,31 @@ export default function Leaves() {
                       </tr>
                     );
                   })
+                : activeTab === "approved"
+                  ? approvedLeaves.length === 0
+                    ? <tr><td colSpan={8} className="px-4 py-12 text-center text-slate-400">No approved leaves yet.</td></tr>
+                    : approvedLeaves.map(l => (
+                    <tr key={l.id} className="border-b border-slate-100 hover:bg-slate-50">
+                      <td className="px-4 py-3">
+                        <p className="text-sm font-semibold text-[#0F172A]">{l.employee_name || l.employee_id}</p>
+                        <p className="text-xs font-mono text-[#E85B1E]">{l.employee_id}</p>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{l.designation || <span className="text-slate-300">—</span>}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{l.branch || <span className="text-slate-300">—</span>}</td>
+                      <td className="px-4 py-3">
+                        <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">{l.leave_type}</span>
+                        {l.approval_type && l.approval_type !== "sl" && (
+                          <span className={`ml-1 px-1.5 py-0.5 rounded text-xs ${l.approval_type === "el" ? "bg-yellow-100 text-yellow-700" : "bg-red-100 text-red-700"}`}>
+                            {APPROVAL_TYPE_LABELS[l.approval_type]}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{l.start_date} → {l.end_date}</td>
+                      <td className="px-4 py-3 text-sm font-medium text-slate-700">{l.days}d</td>
+                      <td className="px-4 py-3 text-xs font-mono text-slate-500">{l.approved_by || <span className="text-slate-300">—</span>}</td>
+                      <td className="px-4 py-3 text-xs text-slate-500 max-w-xs truncate" title={l.reason}>{l.reason || <span className="text-slate-300">—</span>}</td>
+                    </tr>
+                  ))
                   : leaves.map(l => {
                     const needsCert = l.leave_type === "SL" && l.days > 2;
                     const hasCert = !!l.medical_certificate;

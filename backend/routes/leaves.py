@@ -87,6 +87,11 @@ LEAVE_BALANCE_TEMPLATE = {
 
 def leave_to_dict(l):
     l["id"] = str(l.pop("_id"))
+    # Normalize legacy from_date/to_date schema → start_date/end_date so the UI doesn't break
+    if not l.get("start_date") and l.get("from_date"):
+        l["start_date"] = l["from_date"]
+    if not l.get("end_date") and l.get("to_date"):
+        l["end_date"] = l["to_date"]
     return l
 
 
@@ -314,8 +319,16 @@ async def calendar_overlay(
 
     q = {
         "status": "approved",
-        "from_date": {"$lte": date_to},
-        "to_date": {"$gte": date_from},
+        "$and": [
+            {"$or": [
+                {"start_date": {"$lte": date_to}},
+                {"from_date": {"$lte": date_to}},
+            ]},
+            {"$or": [
+                {"end_date": {"$gte": date_from}},
+                {"to_date": {"$gte": date_from}},
+            ]},
+        ],
     }
 
     if role in ["hr_admin", "management"]:
@@ -356,8 +369,10 @@ async def calendar_overlay(
             "initials": initials,
             "designation": emp.get("designation", ""),
             "leave_type": l.get("leave_type"),
-            "from_date": l.get("from_date"),
-            "to_date": l.get("to_date"),
+            "from_date": l.get("from_date") or l.get("start_date"),
+            "to_date": l.get("to_date") or l.get("end_date"),
+            "start_date": l.get("start_date") or l.get("from_date"),
+            "end_date": l.get("end_date") or l.get("to_date"),
             "days": l.get("days"),
             "reason": l.get("reason"),
         })
@@ -381,12 +396,45 @@ async def list_leaves(
     return [leave_to_dict(l) for l in leaves]
 
 
+async def _enrich_leaves_with_employee(leaves: list) -> list:
+    """Attach name, designation, department, branch to each leave row."""
+    if not leaves:
+        return []
+    emp_ids = list({l.get("employee_id") for l in leaves if l.get("employee_id")})
+    employees = await db.employees.find(
+        {"employee_id": {"$in": emp_ids}},
+        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1,
+         "designation": 1, "department": 1, "branch": 1},
+    ).to_list(2000)
+    emap = {e["employee_id"]: e for e in employees}
+    out = []
+    for l in leaves:
+        d = leave_to_dict(l)
+        emp = emap.get(d.get("employee_id"), {})
+        d["employee_name"] = f"{emp.get('first_name','')} {emp.get('last_name','')}".strip()
+        d["designation"] = emp.get("designation", "")
+        d["department"] = emp.get("department", "")
+        d["branch"] = emp.get("branch", "")
+        out.append(d)
+    return out
+
+
 @router.get("/pending")
 async def pending_leaves(current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
     leaves = await db.leave_applications.find({"status": "pending"}).sort("applied_at", -1).to_list(500)
-    return [leave_to_dict(l) for l in leaves]
+    return await _enrich_leaves_with_employee(leaves)
+
+
+@router.get("/approved")
+async def approved_leaves(current_user: dict = Depends(get_current_user)):
+    """All approved leaves enriched with employee name/designation/branch.
+    HR Admin / Management only."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    leaves = await db.leave_applications.find({"status": "approved"}).sort("start_date", -1).to_list(2000)
+    return await _enrich_leaves_with_employee(leaves)
 
 
 @router.get("/balances/all")
