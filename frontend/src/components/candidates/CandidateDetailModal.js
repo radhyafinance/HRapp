@@ -1,16 +1,51 @@
 import React, { useEffect, useState } from "react";
-import { Image as ImageIcon, Eye, CalendarClock, FileText } from "lucide-react";
+import { Image as ImageIcon, Eye, CalendarClock, FileText, Pencil, Check, X as XIcon } from "lucide-react";
 import { Modal } from "../shared/Modal";
 import { JoiningKitPanel } from "./JoiningKitPanel";
 import API from "../../utils/api";
 
 const STATUS_COLORS = { pending: "bg-amber-100 text-amber-700", selected: "bg-green-100 text-green-700", rejected: "bg-red-100 text-red-700", converted: "bg-blue-100 text-blue-700" };
+const DEPARTMENTS = ["Accounts", "Administration", "Compliance", "Human Resources", "IT", "Management", "Operations", "Risk and Credit"];
 
 export function CandidateDetailModal({ candidate, onClose, onSchedule }) {
   const [c, setC] = useState(candidate);
   const [docsMeta, setDocsMeta] = useState(null);
   const [zoomDoc, setZoomDoc] = useState(null);
   const [docBlobs, setDocBlobs] = useState({});
+
+  // Inline edit state for Position + Department
+  const [editingRole, setEditingRole] = useState(false);
+  const [posDraft, setPosDraft] = useState(c.position || "");
+  const [deptDraft, setDeptDraft] = useState(c.department || "");
+  const [saving, setSaving] = useState(false);
+  const [saveErr, setSaveErr] = useState("");
+
+  const startEdit = () => {
+    setPosDraft(c.position || "");
+    setDeptDraft(c.department || "");
+    setSaveErr("");
+    setEditingRole(true);
+  };
+  const cancelEdit = () => { setEditingRole(false); setSaveErr(""); };
+  const saveRole = async () => {
+    if (!posDraft.trim() || !deptDraft) {
+      setSaveErr("Both Position and Department are required.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await API.put(`/candidates/${c.id}`, {
+        position: posDraft.trim(),
+        department: deptDraft,
+      });
+      setC(res.data);
+      setEditingRole(false);
+    } catch (e) {
+      setSaveErr(e.response?.data?.detail || "Failed to save.");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   useEffect(() => {
     (async () => {
@@ -37,12 +72,59 @@ export function CandidateDetailModal({ candidate, onClose, onSchedule }) {
   return (
     <Modal title={`${c.first_name} ${c.last_name}`} onClose={onClose} wide>
       <div className="space-y-5">
-        <div className="bg-slate-50 p-4 rounded-lg flex items-center justify-between">
-          <div>
-            <p className="text-sm text-slate-500">{c.position} • {c.department}</p>
-            <p className="text-xs text-slate-400 mt-0.5">{c.mobile} {c.email && `• ${c.email}`}</p>
+        <div className="bg-slate-50 p-4 rounded-lg flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            {editingRole ? (
+              <div className="space-y-2" data-testid="role-edit-form">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Position Applied For*</label>
+                    <input value={posDraft} onChange={e => setPosDraft(e.target.value)}
+                      placeholder="e.g. Field Officer, Branch Manager"
+                      data-testid="role-edit-position"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Department*</label>
+                    <select value={deptDraft} onChange={e => setDeptDraft(e.target.value)}
+                      data-testid="role-edit-department"
+                      className="w-full border border-slate-300 rounded-lg px-3 py-1.5 text-sm bg-white focus:ring-2 focus:ring-[#E85B1E] outline-none">
+                      <option value="">Select Department</option>
+                      {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
+                    </select>
+                  </div>
+                </div>
+                {saveErr && <p className="text-xs text-red-600">{saveErr}</p>}
+                <div className="flex gap-2">
+                  <button onClick={saveRole} disabled={saving} data-testid="role-save"
+                    className="flex items-center gap-1 px-3 py-1.5 bg-[#E85B1E] text-white rounded-lg text-xs font-semibold hover:bg-[#D04A15] disabled:opacity-50">
+                    <Check size={12} /> {saving ? "Saving..." : "Save"}
+                  </button>
+                  <button onClick={cancelEdit} disabled={saving} data-testid="role-cancel"
+                    className="flex items-center gap-1 px-3 py-1.5 border border-slate-300 text-slate-600 rounded-lg text-xs hover:bg-slate-100">
+                    <XIcon size={12} /> Cancel
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="text-sm text-slate-700 font-medium">
+                    {c.position || <span className="italic text-slate-400">Position not set</span>}
+                    <span className="text-slate-400"> · </span>
+                    {c.department || <span className="italic text-slate-400">Department not set</span>}
+                  </p>
+                  <button onClick={startEdit} data-testid="role-edit-btn"
+                    title="Edit position & department"
+                    className="p-1 rounded hover:bg-white text-slate-400 hover:text-[#E85B1E]">
+                    <Pencil size={12} />
+                  </button>
+                </div>
+                <p className="text-xs text-slate-400 mt-0.5">{c.mobile} {c.email && `• ${c.email}`}</p>
+              </>
+            )}
           </div>
-          <span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[c.status]}`}>{c.status}</span>
+          <span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[c.status]} flex-shrink-0`}>{c.status}</span>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
