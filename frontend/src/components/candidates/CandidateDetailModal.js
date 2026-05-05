@@ -106,10 +106,12 @@ export function CandidateDetailModal({ candidate, onClose, onSchedule }) {
 
         <div className="border-t pt-4">
           <h4 className="font-bold text-[#1E2A47] text-sm mb-3">KYC Documents</h4>
-          <div className="grid grid-cols-3 gap-3">
-            {[["aadhaar_front", "Aadhaar Front"], ["aadhaar_back", "Aadhaar Back"], ["pan_card", "PAN Card"]].map(([key, label]) => {
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {[["aadhaar_front", "Aadhaar Front"], ["aadhaar_back", "Aadhaar Back"], ["pan_card", "PAN Card"], ["cv", "CV / Resume"]].map(([key, label]) => {
               const exists = docsMeta && docsMeta[key];
               const blobUrl = docBlobs[key];
+              const isCv = key === "cv";
+              const cvName = (docsMeta && docsMeta.cv_file_name) || "cv.pdf";
               return (
                 <div key={key} className={`border rounded-xl p-2 text-center ${exists ? "border-slate-200 bg-white" : "border-dashed border-slate-300 bg-slate-50/50"}`}>
                   {!exists ? (
@@ -117,6 +119,25 @@ export function CandidateDetailModal({ candidate, onClose, onSchedule }) {
                       <ImageIcon size={24} />
                       <p className="text-xs mt-1">Not uploaded</p>
                     </div>
+                  ) : isCv ? (
+                    <a
+                      href={blobUrl || "#"}
+                      onClick={async (e) => {
+                        if (!blobUrl) {
+                          e.preventDefault();
+                          const url = await fetchDoc(key);
+                          if (url) window.open(url, "_blank", "noopener,noreferrer");
+                        }
+                      }}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      data-testid={`open-${key}`}
+                      className="h-32 w-full flex flex-col items-center justify-center text-[#E85B1E] hover:bg-[#E85B1E]/5 rounded-lg"
+                    >
+                      <FileText size={28} />
+                      <p className="text-[11px] mt-1 font-semibold truncate max-w-full px-1">{cvName}</p>
+                      <p className="text-[10px] text-slate-400">{blobUrl ? "Open in new tab" : "Click to load"}</p>
+                    </a>
                   ) : blobUrl ? (
                     <img src={blobUrl} alt={label} className="h-32 w-full object-contain mx-auto cursor-zoom-in" onClick={() => setZoomDoc({ url: blobUrl, label })} />
                   ) : (

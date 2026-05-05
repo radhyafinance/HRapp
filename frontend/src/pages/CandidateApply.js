@@ -119,8 +119,6 @@ export default function CandidateApply() {
   const [linkValid, setLinkValid] = useState(false);
   const [linkError, setLinkError] = useState("");
 
-  const [first, setFirst] = useState("");
-  const [last, setLast] = useState("");
   const [mobile, setMobile] = useState("");
   const [email, setEmail] = useState("");
 
@@ -142,7 +140,7 @@ export default function CandidateApply() {
     return () => { active = false; };
   }, [token]);
 
-  const valid = first.trim() && last.trim() && /^\d{10}$/.test(mobile.trim()) && /^\S+@\S+\.\S+$/.test(email.trim()) && aadhaarFront && aadhaarBack && panCard && cv;
+  const valid = /^\d{10}$/.test(mobile.trim()) && /^\S+@\S+\.\S+$/.test(email.trim()) && aadhaarFront && aadhaarBack && panCard && cv;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -151,8 +149,6 @@ export default function CandidateApply() {
     setError("");
     try {
       const fd = new FormData();
-      fd.append("first_name", first.trim());
-      fd.append("last_name", last.trim());
       fd.append("mobile", mobile.trim());
       fd.append("email", email.trim());
       fd.append("aadhaar_front", aadhaarFront);
@@ -222,19 +218,9 @@ export default function CandidateApply() {
 
         <form onSubmit={submit} className="bg-white border border-slate-200 rounded-2xl p-6 sm:p-8 shadow-sm space-y-5">
           <div>
-            <h2 className="font-bold text-[#1E2A47] mb-1" style={{ fontFamily: "'Outfit', sans-serif" }}>Your Details</h2>
-            <p className="text-xs text-slate-500 mb-4">All fields are required. Your data is shared only with Radhya HR.</p>
+            <h2 className="font-bold text-[#1E2A47] mb-1" style={{ fontFamily: "'Outfit', sans-serif" }}>Contact Details</h2>
+            <p className="text-xs text-slate-500 mb-4">We&apos;ll auto-fill your name from your Aadhaar/PAN — just give us a way to reach you.</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">First Name*</label>
-                <input value={first} onChange={e => setFirst(e.target.value)} data-testid="apply-first-name"
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
-              </div>
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">Last Name*</label>
-                <input value={last} onChange={e => setLast(e.target.value)} data-testid="apply-last-name"
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
-              </div>
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">Mobile* (10 digits)</label>
                 <input value={mobile} onChange={e => setMobile(e.target.value.replace(/\D/g, "").slice(0, 10))} data-testid="apply-mobile"

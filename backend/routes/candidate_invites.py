@@ -236,8 +236,6 @@ def _split_name(full: str) -> tuple[str, str]:
 @public_router.post("/{token}/submit")
 async def public_invite_submit(
     token: str,
-    first_name: str = Form(...),
-    last_name: str = Form(...),
     mobile: str = Form(...),
     email: str = Form(...),
     aadhaar_front: UploadFile = File(...),
@@ -270,20 +268,30 @@ async def public_invite_submit(
     pan_b64 = base64.b64encode(pan_bytes).decode("ascii")
     cv_b64  = base64.b64encode(cv_bytes).decode("ascii")
 
-    # Run OCR (best-effort — don't block submission if OCR fails)
-    aadhaar_data = await _ocr_aadhaar_safe(
-        af_b64, ab_b64,
-        aadhaar_front.content_type or "image/jpeg",
-        aadhaar_back.content_type or "image/jpeg",
-    )
-    pan_data = await _ocr_pan_safe(pan_b64, pan_card.content_type or "image/jpeg")
+    af_mime  = aadhaar_front.content_type or "image/jpeg"
+    ab_mime  = aadhaar_back.content_type or "image/jpeg"
+    pan_mime = pan_card.content_type or "image/jpeg"
+    cv_mime  = cv.content_type or "application/pdf"
 
-    # Pick name from explicit field first, else OCR
-    aadhaar_name_first, aadhaar_name_last = _split_name(aadhaar_data.get("name", ""))
+    # Run OCR — name MUST come from these documents per requirement.
+    aadhaar_data = await _ocr_aadhaar_safe(af_b64, ab_b64, af_mime, ab_mime)
+    pan_data = await _ocr_pan_safe(pan_b64, pan_mime)
+
+    # Derive name strictly from OCR (Aadhaar first, fall back to PAN)
+    full_name = (aadhaar_data.get("name") or pan_data.get("name") or "").strip()
+    if not full_name:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "We couldn't read your name from the Aadhaar or PAN images. "
+                "Please retry with clearer, well-lit photos showing your full name."
+            ),
+        )
+    first_name, last_name = _split_name(full_name)
 
     cand_doc = {
-        "first_name": first_name.strip(),
-        "last_name": last_name.strip(),
+        "first_name": first_name,
+        "last_name": last_name,
         "mobile": (mobile or "").strip(),
         "email": (email or "").strip(),
         "position": "",
@@ -301,12 +309,6 @@ async def public_invite_submit(
         "pincode": aadhaar_data.get("pincode", ""),
         "aadhaar_data": aadhaar_data or None,
         "pan_data": pan_data or None,
-        # Stored documents (base64)
-        "aadhaar_front": {"data": af_b64,  "mime": aadhaar_front.content_type or "image/jpeg"},
-        "aadhaar_back":  {"data": ab_b64,  "mime": aadhaar_back.content_type or "image/jpeg"},
-        "pan_card":      {"data": pan_b64, "mime": pan_card.content_type or "image/jpeg"},
-        "cv":            {"data": cv_b64,  "mime": cv.content_type or "application/pdf",
-                          "file_name": cv.filename or "cv.pdf"},
         "documents_uploaded": {
             "aadhaar_front": True,
             "aadhaar_back": True,
@@ -321,16 +323,34 @@ async def public_invite_submit(
         "ocr_status": {
             "aadhaar_ok": bool(aadhaar_data.get("aadhaar_number")),
             "pan_ok": bool(pan_data.get("pan_number")),
+            "name_from_ocr": full_name,
         },
     }
     res = await db.candidates.insert_one(cand_doc)
+    cand_id = str(res.inserted_id)
+
+    # Persist binary documents in the canonical `candidate_documents` collection
+    # (same place HR-uploaded docs live), so the existing UI/API surfaces them.
+    await db.candidate_documents.update_one(
+        {"candidate_id": cand_id},
+        {"$set": {
+            "candidate_id": cand_id,
+            "aadhaar_front": {"data": af_b64,  "mime": af_mime},
+            "aadhaar_back":  {"data": ab_b64,  "mime": ab_mime},
+            "pan_card":      {"data": pan_b64, "mime": pan_mime},
+            "cv":            {"data": cv_b64,  "mime": cv_mime, "file_name": cv.filename or "cv.pdf"},
+            "uploaded_at":   now.isoformat(),
+            "uploaded_via":  "self_onboarding",
+        }},
+        upsert=True,
+    )
 
     await db.candidate_invites.update_one(
         {"_id": inv["_id"]},
         {"$set": {
             "status": "used",
             "used_at": now.isoformat(),
-            "candidate_id": str(res.inserted_id),
+            "candidate_id": cand_id,
         }},
     )
 
@@ -343,7 +363,7 @@ async def public_invite_submit(
                 "user_id": a.get("username"),
                 "type": "candidate_self_onboarded",
                 "title": "New candidate self-onboarded",
-                "message": f"{cand_doc['first_name']} {cand_doc['last_name']} submitted documents via invite link. Please review and assign role.",
+                "message": f"{first_name} {last_name} submitted documents via invite link. Please review and assign role.",
                 "link": "/candidates",
                 "read": False,
                 "created_at": now.isoformat(),
@@ -355,6 +375,7 @@ async def public_invite_submit(
 
     return {
         "success": True,
-        "message": "Thank you! Your details have been submitted to HR.",
+        "message": f"Thank you, {first_name}! Your details have been submitted to HR.",
+        "name": f"{first_name} {last_name}",
         "ocr_status": cand_doc["ocr_status"],
     }

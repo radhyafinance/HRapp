@@ -485,12 +485,14 @@ async def get_documents_meta(cand_id: str, current_user: dict = Depends(get_curr
         raise HTTPException(status_code=403, detail="Access denied")
     doc = await db.candidate_documents.find_one({"candidate_id": cand_id})
     if not doc:
-        return {"candidate_id": cand_id, "aadhaar_front": False, "aadhaar_back": False, "pan_card": False}
+        return {"candidate_id": cand_id, "aadhaar_front": False, "aadhaar_back": False, "pan_card": False, "cv": False}
     return {
         "candidate_id": cand_id,
         "aadhaar_front": bool(doc.get("aadhaar_front")),
         "aadhaar_back": bool(doc.get("aadhaar_back")),
         "pan_card": bool(doc.get("pan_card")),
+        "cv": bool(doc.get("cv")),
+        "cv_file_name": (doc.get("cv") or {}).get("file_name") if doc.get("cv") else None,
     }
 
 
@@ -500,10 +502,10 @@ async def get_document_binary(
     doc_type: str,
     current_user: dict = Depends(get_current_user),
 ):
-    """Stream a document image. doc_type: aadhaar_front | aadhaar_back | pan_card."""
+    """Stream a document. doc_type: aadhaar_front | aadhaar_back | pan_card | cv."""
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
-    if doc_type not in {"aadhaar_front", "aadhaar_back", "pan_card"}:
+    if doc_type not in {"aadhaar_front", "aadhaar_back", "pan_card", "cv"}:
         raise HTTPException(status_code=400, detail="Invalid document type")
     doc = await db.candidate_documents.find_one({"candidate_id": cand_id})
     if not doc or not doc.get(doc_type):
@@ -513,10 +515,13 @@ async def get_document_binary(
         binary = base64.b64decode(asset["data"])
     except Exception:
         raise HTTPException(status_code=500, detail="Unable to decode document.")
+    headers = {"Cache-Control": "private, max-age=300"}
+    if doc_type == "cv" and asset.get("file_name"):
+        headers["Content-Disposition"] = f'inline; filename="{asset["file_name"]}"'
     return Response(
         content=binary,
         media_type=asset.get("mime", "image/jpeg"),
-        headers={"Cache-Control": "private, max-age=300"},
+        headers=headers,
     )
 
 
