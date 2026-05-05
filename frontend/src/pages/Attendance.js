@@ -3,6 +3,7 @@ import API from "../utils/api";
 import { Camera, MapPin, CheckCircle, AlertCircle, Clock, LogIn, LogOut, RefreshCw, Edit3, Plus, FileEdit, Search, Filter, Download } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { AdminRegulariseModal, EmployeeRegulariseRequestModal, PendingRequestsPanel, MyRequestsList } from "../components/attendance/Regularisation";
+import { FaceMismatchBadge, FaceMismatchModal } from "../components/attendance/FaceMismatch";
 
 function CameraCapture({ onCapture, onClose }) {
   const videoRef = useRef(null);
@@ -109,6 +110,7 @@ export default function Attendance() {
   const [regEditRecord, setRegEditRecord] = useState(null);   // record to edit
   const [regCreateOpen, setRegCreateOpen] = useState(false);  // admin add
   const [empReqOpen, setEmpReqOpen] = useState(false);        // employee request
+  const [faceReview, setFaceReview] = useState(null);         // {record, side}
   const [pendingReload, setPendingReload] = useState(0);
   const [employees, setEmployees] = useState([]);
   // Selfie+geofence required for everyone except management role per company policy
@@ -452,7 +454,10 @@ export default function Attendance() {
             <div className="max-h-48 overflow-y-auto space-y-1">
               {todaySummary.records?.slice(0, 10).map(r => (
                 <div key={r.id} className="flex items-center justify-between text-xs py-1.5 border-b border-slate-50">
-                  <span className="font-medium text-slate-700">{r.employee_id}</span>
+                  <span className="font-medium text-slate-700 flex items-center">
+                    {r.employee_id}
+                    <FaceMismatchBadge record={r} onOpen={(side) => setFaceReview({ record: r, side })} />
+                  </span>
                   <span className="text-slate-500">{r.punch_in_time ? new Date(r.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</span>
                   <span className={`px-2 py-0.5 rounded-full ${r.geofence_verified ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>
                     {r.geofence_verified ? "In Fence" : "Out Fence"}
@@ -513,6 +518,7 @@ export default function Attendance() {
                     <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
                       <td className="px-4 py-3 text-sm font-medium text-slate-700">
                         {r.date}{r.regularised && <span className="ml-1 text-[10px] text-amber-600 font-semibold">• REG</span>}
+                        <FaceMismatchBadge record={r} onOpen={(side) => setFaceReview({ record: r, side })} />
                       </td>
                       <td className="px-4 py-3 text-sm text-slate-600">{r.punch_in_time ? new Date(r.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</td>
                       <td className="px-4 py-3 text-sm text-slate-600">{r.punch_out_time ? new Date(r.punch_out_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</td>
@@ -588,6 +594,7 @@ export default function Attendance() {
                     </td>
                     <td className="px-4 py-3 text-sm font-medium text-slate-700">
                       {r.date}{r.regularised && <span className="ml-1 text-[10px] text-amber-600 font-semibold">• REG</span>}
+                      <FaceMismatchBadge record={r} onOpen={(side) => setFaceReview({ record: r, side })} />
                     </td>
                     <td className="px-4 py-3 text-sm text-slate-600">{r.punch_in_time ? new Date(r.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{r.punch_out_time ? new Date(r.punch_out_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</td>
@@ -629,6 +636,13 @@ export default function Attendance() {
       )}
 
       {showCamera && <CameraCapture onCapture={handleCapture} onClose={() => setShowCamera(false)} />}
+      {faceReview && (
+        <FaceMismatchModal
+          record={faceReview.record}
+          side={faceReview.side}
+          onClose={() => setFaceReview(null)}
+        />
+      )}
     </div>
   );
 }
