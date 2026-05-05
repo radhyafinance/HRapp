@@ -1,5 +1,5 @@
-import React, { useState } from "react";
-import { Sparkles, FileText, CheckCircle2, AlertCircle } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { Sparkles, FileText, CheckCircle2, AlertCircle, X } from "lucide-react";
 import { Modal } from "../shared/Modal";
 import { DocUploadCard } from "./DocUploadCard";
 import API from "../../utils/api";
@@ -10,7 +10,7 @@ const DEPARTMENTS = ["Accounts", "Administration", "Compliance", "Human Resource
 const INITIAL_FORM = {
   first_name: "", last_name: "", mobile: "", email: "",
   position: "", department: "",
-  interview_date: "", interview_time: "", interviewer: "", meet_link: "",
+  interview_date: "", interview_time: "", interviewer_ids: [], meet_link: "",
   status: "pending", rejection_reason: "", expected_joining_date: "", offered_ctc: "", notes: "",
   dob: "", gender: "", father_or_husband_name: "",
   aadhaar_number: "", pan_number: "",
@@ -28,6 +28,35 @@ export function AddCandidateModal({ onClose, onAdded }) {
   const [panOcrDone, setPanOcrDone] = useState(false);
   const [compressing, setCompressing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [interviewerOptions, setInterviewerOptions] = useState([]);
+  const [interviewerSearch, setInterviewerSearch] = useState("");
+  const [interviewerOpen, setInterviewerOpen] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await API.get("/candidates/interviewers/options");
+        setInterviewerOptions(res.data || []);
+      } catch (e) { /* quiet */ }
+    })();
+  }, []);
+
+  const toggleInterviewer = (empId) => {
+    setForm(f => {
+      const cur = new Set(f.interviewer_ids || []);
+      cur.has(empId) ? cur.delete(empId) : cur.add(empId);
+      return { ...f, interviewer_ids: Array.from(cur) };
+    });
+  };
+  const removeInterviewer = (empId) => {
+    setForm(f => ({ ...f, interviewer_ids: (f.interviewer_ids || []).filter(i => i !== empId) }));
+  };
+  const interviewerLookup = Object.fromEntries(interviewerOptions.map(o => [o.employee_id, o]));
+  const filteredInterviewers = interviewerOptions.filter(o => {
+    const q = interviewerSearch.trim().toLowerCase();
+    if (!q) return true;
+    return o.name.toLowerCase().includes(q) || o.employee_id.toLowerCase().includes(q) || (o.designation || "").toLowerCase().includes(q);
+  });
   const [error, setError] = useState("");
 
   const handleFilePick = async (setter, file) => {
@@ -247,10 +276,67 @@ export function AddCandidateModal({ onClose, onAdded }) {
               <input type="time" value={form.interview_time} onChange={e => setForm({ ...form, interview_time: e.target.value })}
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="form-interview-time" />
             </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">Interviewer</label>
-              <input value={form.interviewer} onChange={e => setForm({ ...form, interviewer: e.target.value })} placeholder="Name of interviewer"
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="form-interviewer" />
+            <div className="md:col-span-2 relative">
+              <label className="block text-xs font-semibold text-slate-700 mb-1">
+                Interviewer(s) <span className="text-slate-400 font-normal">— pick one or more managers / management / HR</span>
+              </label>
+              {/* Selected chips */}
+              {form.interviewer_ids?.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {form.interviewer_ids.map(empId => {
+                    const o = interviewerLookup[empId];
+                    return (
+                      <span key={empId}
+                        data-testid={`interviewer-chip-${empId}`}
+                        className="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 bg-[#E85B1E]/10 border border-[#E85B1E]/30 text-[#E85B1E] rounded-full text-xs font-medium">
+                        {o?.name || empId}
+                        <button type="button" onClick={() => removeInterviewer(empId)}
+                          className="rounded-full hover:bg-[#E85B1E]/20 p-0.5"
+                          aria-label="Remove interviewer"><X size={10} /></button>
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+              <button type="button" onClick={() => setInterviewerOpen(o => !o)}
+                data-testid="interviewer-picker-toggle"
+                className="w-full text-left border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white hover:border-[#E85B1E] focus:ring-2 focus:ring-[#E85B1E] outline-none">
+                <span className="text-slate-500">
+                  {form.interviewer_ids?.length
+                    ? `${form.interviewer_ids.length} interviewer${form.interviewer_ids.length > 1 ? "s" : ""} selected — click to add/remove`
+                    : "Select interviewers..."}
+                </span>
+              </button>
+              {interviewerOpen && (
+                <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-30 max-h-72 overflow-hidden flex flex-col"
+                  data-testid="interviewer-picker-list">
+                  <input autoFocus value={interviewerSearch} onChange={e => setInterviewerSearch(e.target.value)}
+                    placeholder="Search by name, ID or designation..."
+                    className="m-2 px-3 py-2 border border-slate-200 rounded-md text-xs focus:ring-2 focus:ring-[#E85B1E] outline-none"
+                    data-testid="interviewer-search-input" />
+                  <div className="overflow-y-auto flex-1 border-t border-slate-100">
+                    {filteredInterviewers.length === 0 ? (
+                      <p className="text-xs text-slate-400 text-center py-4">No matches</p>
+                    ) : filteredInterviewers.map(o => {
+                      const checked = form.interviewer_ids?.includes(o.employee_id);
+                      return (
+                        <label key={o.employee_id} data-testid={`interviewer-option-${o.employee_id}`}
+                          className={`flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-slate-50 ${checked ? "bg-orange-50" : ""}`}>
+                          <input type="checkbox" checked={checked}
+                            onChange={() => toggleInterviewer(o.employee_id)}
+                            className="rounded border-slate-300 text-[#E85B1E] focus:ring-[#E85B1E]" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-slate-700 truncate">{o.name}</p>
+                            <p className="text-[11px] text-slate-500">
+                              <span className="font-mono text-[#E85B1E]">{o.employee_id}</span> · {o.designation || "—"} · {o.role}
+                            </p>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">Google Meet Link <span className="text-slate-400 font-normal">(paste from Google Calendar)</span></label>

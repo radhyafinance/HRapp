@@ -1,11 +1,11 @@
-import React, { useState } from "react";
-import { AlertCircle, Copy, Send, Mail } from "lucide-react";
+import React, { useEffect, useState } from "react";
+import { AlertCircle, Copy, Send, Mail, X } from "lucide-react";
 import { Modal } from "../shared/Modal";
 import API from "../../utils/api";
 
 const STATUS_COLORS = { pending: "bg-amber-100 text-amber-700", selected: "bg-green-100 text-green-700", rejected: "bg-red-100 text-red-700", converted: "bg-blue-100 text-blue-700" };
 
-function buildInviteMessage({ first_name, last_name, position, interview_date, interview_time, interviewer, meet_link }) {
+function buildInviteMessage({ first_name, last_name, position, interview_date, interview_time, interviewer_names, meet_link }) {
   const fullName = `${first_name || ""} ${last_name || ""}`.trim();
   const lines = [
     `Hello ${fullName || "Candidate"},`,
@@ -15,7 +15,7 @@ function buildInviteMessage({ first_name, last_name, position, interview_date, i
     `Date: ${interview_date || "TBD"}`,
     `Time: ${interview_time || "TBD"} (IST)`,
   ];
-  if (interviewer) lines.push(`Interviewer: ${interviewer}`);
+  if (interviewer_names) lines.push(`Interviewer(s): ${interviewer_names}`);
   if (meet_link) {
     lines.push("");
     lines.push(`Google Meet link: ${meet_link}`);
@@ -28,13 +28,40 @@ function buildInviteMessage({ first_name, last_name, position, interview_date, i
 export function ScheduleInterviewModal({ candidate, onClose, onSaved }) {
   const [date, setDate] = useState(candidate.interview_date || "");
   const [time, setTime] = useState(candidate.interview_time || "");
-  const [interviewer, setInterviewer] = useState(candidate.interviewer || "");
+  const [interviewerIds, setInterviewerIds] = useState(candidate.interviewer_ids || []);
   const [meetLink, setMeetLink] = useState(candidate.meet_link || "");
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
   const [err, setErr] = useState("");
 
-  const message = buildInviteMessage({ first_name: candidate.first_name, last_name: candidate.last_name, position: candidate.position, interview_date: date, interview_time: time, interviewer, meet_link: meetLink });
+  // Interviewer pool
+  const [options, setOptions] = useState([]);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerSearch, setPickerSearch] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await API.get("/candidates/interviewers/options");
+        setOptions(res.data || []);
+      } catch (e) { /* quiet */ }
+    })();
+  }, []);
+
+  const lookup = Object.fromEntries(options.map(o => [o.employee_id, o]));
+  const selectedNames = interviewerIds.map(id => lookup[id]?.name || id).join(", ");
+  const filtered = options.filter(o => {
+    const q = pickerSearch.trim().toLowerCase();
+    if (!q) return true;
+    return o.name.toLowerCase().includes(q) || o.employee_id.toLowerCase().includes(q) || (o.designation || "").toLowerCase().includes(q);
+  });
+  const toggle = (id) => setInterviewerIds(arr => arr.includes(id) ? arr.filter(x => x !== id) : [...arr, id]);
+  const remove = (id) => setInterviewerIds(arr => arr.filter(x => x !== id));
+
+  const message = buildInviteMessage({
+    first_name: candidate.first_name, last_name: candidate.last_name, position: candidate.position,
+    interview_date: date, interview_time: time, interviewer_names: selectedNames, meet_link: meetLink,
+  });
   const cleanedMobile = (candidate.mobile || "").replace(/\D/g, "");
   const waNumber = cleanedMobile.length === 10 ? `91${cleanedMobile}` : cleanedMobile;
   const waUrl = waNumber ? `https://wa.me/${waNumber}?text=${encodeURIComponent(message)}` : null;
@@ -45,7 +72,12 @@ export function ScheduleInterviewModal({ candidate, onClose, onSaved }) {
     setSaving(true);
     setErr("");
     try {
-      const res = await API.put(`/candidates/${candidate.id}`, { interview_date: date || "", interview_time: time || "", interviewer: interviewer || "", meet_link: meetLink || "" });
+      const res = await API.put(`/candidates/${candidate.id}`, {
+        interview_date: date || "",
+        interview_time: time || "",
+        interviewer_ids: interviewerIds,
+        meet_link: meetLink || "",
+      });
       onSaved(res.data);
     } catch (e) {
       setErr(e.response?.data?.detail || "Failed to save");
@@ -84,9 +116,57 @@ export function ScheduleInterviewModal({ candidate, onClose, onSaved }) {
             <label className="block text-xs font-semibold text-slate-700 mb-1">Time</label>
             <input type="time" value={time} onChange={e => setTime(e.target.value)} data-testid="schedule-time" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
           </div>
-          <div className="col-span-2">
-            <label className="block text-xs font-semibold text-slate-700 mb-1">Interviewer</label>
-            <input value={interviewer} onChange={e => setInterviewer(e.target.value)} placeholder="Name of interviewer" className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="schedule-interviewer" />
+          <div className="col-span-2 relative">
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Interviewer(s) <span className="text-slate-400 font-normal">— pick from managers / management / HR</span>
+            </label>
+            {interviewerIds.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {interviewerIds.map(id => (
+                  <span key={id} data-testid={`schedule-interviewer-chip-${id}`}
+                    className="inline-flex items-center gap-1.5 pl-2.5 pr-1.5 py-1 bg-[#E85B1E]/10 border border-[#E85B1E]/30 text-[#E85B1E] rounded-full text-xs font-medium">
+                    {lookup[id]?.name || id}
+                    <button type="button" onClick={() => remove(id)}
+                      className="rounded-full hover:bg-[#E85B1E]/20 p-0.5"><X size={10} /></button>
+                  </span>
+                ))}
+              </div>
+            )}
+            <button type="button" onClick={() => setPickerOpen(o => !o)}
+              data-testid="schedule-interviewer-picker-toggle"
+              className="w-full text-left border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white hover:border-[#E85B1E]">
+              <span className="text-slate-500">
+                {interviewerIds.length
+                  ? `${interviewerIds.length} interviewer${interviewerIds.length > 1 ? "s" : ""} selected — click to add/remove`
+                  : "Select interviewers..."}
+              </span>
+            </button>
+            {pickerOpen && (
+              <div className="absolute left-0 right-0 top-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg z-30 max-h-72 overflow-hidden flex flex-col"
+                data-testid="schedule-interviewer-list">
+                <input autoFocus value={pickerSearch} onChange={e => setPickerSearch(e.target.value)}
+                  placeholder="Search by name, ID or designation..."
+                  className="m-2 px-3 py-2 border border-slate-200 rounded-md text-xs focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                <div className="overflow-y-auto flex-1 border-t border-slate-100">
+                  {filtered.length === 0 ? (
+                    <p className="text-xs text-slate-400 text-center py-4">No matches</p>
+                  ) : filtered.map(o => {
+                    const checked = interviewerIds.includes(o.employee_id);
+                    return (
+                      <label key={o.employee_id} data-testid={`schedule-interviewer-option-${o.employee_id}`}
+                        className={`flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-slate-50 ${checked ? "bg-orange-50" : ""}`}>
+                        <input type="checkbox" checked={checked} onChange={() => toggle(o.employee_id)}
+                          className="rounded border-slate-300 text-[#E85B1E] focus:ring-[#E85B1E]" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-slate-700 truncate">{o.name}</p>
+                          <p className="text-[11px] text-slate-500"><span className="font-mono text-[#E85B1E]">{o.employee_id}</span> · {o.designation || "—"} · {o.role}</p>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
           <div className="col-span-2">
             <label className="block text-xs font-semibold text-slate-700 mb-1">Google Meet Link <span className="text-slate-400 font-normal">(create one in Google Calendar and paste here)</span></label>

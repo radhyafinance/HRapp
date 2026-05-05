@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
+import NotificationBell from "./NotificationBell";
 import {
   LayoutDashboard, Users, UserPlus, CalendarCheck, FileText,
   CreditCard, TrendingUp, LogOut, Settings, Menu, X,
@@ -147,9 +148,7 @@ export default function Layout() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button className="p-2 rounded-lg hover:bg-slate-100 text-slate-500 relative">
-              <Bell size={18} />
-            </button>
+            <NotificationBell />
             <div className="w-8 h-8 rounded-full bg-[#E85B1E] flex items-center justify-center text-white text-sm font-bold">
               {user?.name?.charAt(0) || "U"}
             </div>

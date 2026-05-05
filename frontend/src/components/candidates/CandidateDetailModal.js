@@ -79,7 +79,11 @@ export function CandidateDetailModal({ candidate, onClose, onSchedule }) {
           {c.interview_date ? (
             <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 text-sm space-y-1">
               <p><span className="text-slate-500">Date & Time:</span> <span className="font-semibold text-[#0F172A]">{c.interview_date}{c.interview_time && ` • ${c.interview_time}`}</span></p>
-              {c.interviewer && <p><span className="text-slate-500">Interviewer:</span> <span className="font-medium">{c.interviewer}</span></p>}
+              {(c.interviewer_ids?.length > 0 || c.interviewer) && (
+                <p><span className="text-slate-500">Interviewer{c.interviewer_ids?.length > 1 ? "s" : ""}:</span>{" "}
+                  <span className="font-medium">{c.interviewer_names || c.interviewer_ids?.join(", ") || c.interviewer}</span>
+                </p>
+              )}
               {c.meet_link && (
                 <p className="break-all"><span className="text-slate-500">Meet:</span>{" "}
                   <a href={c.meet_link} target="_blank" rel="noopener noreferrer" className="text-[#E85B1E] hover:underline">{c.meet_link}</a>

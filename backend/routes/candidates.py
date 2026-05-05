@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Depends, Response
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from database import db
 from auth_utils import get_current_user
 from datetime import datetime, timezone
@@ -34,6 +34,7 @@ class CandidateCreate(BaseModel):
     interview_date: Optional[str] = None
     interview_time: Optional[str] = None  # HH:MM (24-hour)
     interviewer: Optional[str] = None
+    interviewer_ids: Optional[List[str]] = None  # employee_ids of assigned interviewers
     meet_link: Optional[str] = None
     status: str = "pending"  # pending, selected, rejected
     rejection_reason: Optional[str] = None
@@ -71,6 +72,7 @@ class CandidateUpdate(BaseModel):
     interview_date: Optional[str] = None
     interview_time: Optional[str] = None
     interviewer: Optional[str] = None
+    interviewer_ids: Optional[List[str]] = None
     meet_link: Optional[str] = None
     dob: Optional[str] = None
     gender: Optional[str] = None
@@ -127,12 +129,115 @@ async def list_candidates(
     return [cand_to_dict(c) for c in candidates]
 
 
+from routes.notifications import create_notification as _notify
+
+
+async def _notify_interviewers(candidate: dict, interviewer_ids: List[str], event: str):
+    """Send an in-app notification to each assigned interviewer.
+    `event` ∈ {'scheduled', 'updated'}."""
+    if not interviewer_ids:
+        return
+    cand_name = f"{candidate.get('first_name','')} {candidate.get('last_name','')}".strip() or "Candidate"
+    position = candidate.get("position", "")
+    date_str = candidate.get("interview_date") or "(date TBD)"
+    time_str = candidate.get("interview_time") or ""
+    cand_id = str(candidate.get("_id") or candidate.get("id") or "")
+    title = (
+        "Interview Assigned" if event == "scheduled" else "Interview Updated"
+    )
+    msg = f"{cand_name} ({position}) on {date_str}" + (f" at {time_str}" if time_str else "")
+    for emp_id in interviewer_ids:
+        await _notify(
+            employee_id=emp_id,
+            title=title,
+            message=msg,
+            type="interview",
+            link=f"/candidates?open={cand_id}",
+            meta={
+                "candidate_id": cand_id,
+                "candidate_name": cand_name,
+                "position": position,
+                "interview_date": candidate.get("interview_date"),
+                "interview_time": candidate.get("interview_time"),
+                "meet_link": candidate.get("meet_link"),
+            },
+        )
+
+
+@router.get("/interviewers/options")
+async def list_interviewer_options(current_user: dict = Depends(get_current_user)):
+    """Return the pool of users eligible to be assigned as interviewers.
+    Includes active employees with role in (managers, management, hr_admin)."""
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    cursor = db.employees.find(
+        {
+            "status": {"$in": ["active", "probation", "notice_period"]},
+            "role": {"$in": ["managers", "management", "hr_admin"]},
+        },
+        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "designation": 1, "role": 1, "department": 1},
+    ).sort("first_name", 1)
+    out = []
+    async for e in cursor:
+        out.append({
+            "employee_id": e["employee_id"],
+            "name": f"{e.get('first_name','')} {e.get('last_name','')}".strip() or e["employee_id"],
+            "designation": e.get("designation", ""),
+            "department": e.get("department", ""),
+            "role": e.get("role", ""),
+        })
+    return out
+
+
+@router.get("/my-interviews")
+async def my_interviews(
+    include_past_days: int = 1,
+    current_user: dict = Depends(get_current_user),
+):
+    """Interviews assigned to the current user — upcoming + recent past.
+    Used by the Dashboard widget."""
+    me = current_user.get("employee_id") or current_user.get("username")
+    if not me:
+        return []
+    from datetime import date as DateType, timedelta
+    cutoff = (DateType.today() - timedelta(days=max(0, include_past_days))).isoformat()
+    q = {
+        "interviewer_ids": me,
+        "interview_date": {"$gte": cutoff},
+    }
+    cursor = db.candidates.find(q, {
+        "_id": 1, "first_name": 1, "last_name": 1, "position": 1, "department": 1,
+        "mobile": 1, "email": 1,
+        "interview_date": 1, "interview_time": 1, "meet_link": 1,
+        "status": 1, "interviewer_ids": 1,
+    }).sort([("interview_date", 1), ("interview_time", 1)])
+    out = []
+    async for c in cursor:
+        out.append({
+            "id": str(c["_id"]),
+            "name": f"{c.get('first_name','')} {c.get('last_name','')}".strip(),
+            "position": c.get("position"),
+            "department": c.get("department"),
+            "mobile": c.get("mobile"),
+            "email": c.get("email"),
+            "interview_date": c.get("interview_date"),
+            "interview_time": c.get("interview_time"),
+            "meet_link": c.get("meet_link"),
+            "status": c.get("status"),
+        })
+    return out
+
+
 @router.post("")
 async def create_candidate(data: CandidateCreate, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
+    payload = data.model_dump()
+    # Normalise interviewer_ids — drop empties and dedupe
+    ivr_ids = [i.strip() for i in (payload.get("interviewer_ids") or []) if i and i.strip()]
+    payload["interviewer_ids"] = list(dict.fromkeys(ivr_ids))  # dedupe preserving order
     doc = {
-        **data.model_dump(),
+        **payload,
         "documents_checklist": {
             "aadhaar": bool(data.aadhaar_number),
             "pan": bool(data.pan_number),
@@ -148,6 +253,9 @@ async def create_candidate(data: CandidateCreate, current_user: dict = Depends(g
     result = await db.candidates.insert_one(doc)
     doc["id"] = str(result.inserted_id)
     doc.pop("_id", None)
+    # Send notifications to assigned interviewers
+    if doc.get("interviewer_ids") and doc.get("interview_date"):
+        await _notify_interviewers({**doc, "_id": result.inserted_id}, doc["interviewer_ids"], "scheduled")
     return doc
 
 
@@ -165,10 +273,33 @@ async def get_candidate(cand_id: str, current_user: dict = Depends(get_current_u
 async def update_candidate(cand_id: str, data: CandidateUpdate, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
+    existing = await db.candidates.find_one({"_id": ObjectId(cand_id)})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
     update_data = {k: v for k, v in data.model_dump().items() if v is not None}
+    if "interviewer_ids" in update_data:
+        cleaned = [i.strip() for i in update_data["interviewer_ids"] if i and i.strip()]
+        update_data["interviewer_ids"] = list(dict.fromkeys(cleaned))
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     await db.candidates.update_one({"_id": ObjectId(cand_id)}, {"$set": update_data})
     cand = await db.candidates.find_one({"_id": ObjectId(cand_id)})
+
+    # Notify — newly added interviewers get "scheduled"; existing ones get "updated"
+    # only when the date/time/link changed.
+    new_ids = set(cand.get("interviewer_ids") or [])
+    old_ids = set(existing.get("interviewer_ids") or [])
+    newly_added = list(new_ids - old_ids)
+    retained = list(new_ids & old_ids)
+    schedule_changed = any(
+        k in update_data and update_data[k] != existing.get(k)
+        for k in ("interview_date", "interview_time", "meet_link")
+    )
+    if newly_added:
+        await _notify_interviewers(cand, newly_added, "scheduled")
+    if retained and schedule_changed:
+        await _notify_interviewers(cand, retained, "updated")
+
     return cand_to_dict(cand)
 
 
