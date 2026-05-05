@@ -26,6 +26,28 @@ router = APIRouter()
 EXPIRY_DAYS = 90
 
 
+async def _notify_compoff_decision(grant: dict, status: str, remarks: str = None):
+    """Notify the employee when their comp-off is approved or rejected."""
+    try:
+        from routes.notifications import create_notification as _notify
+        title = "Comp-Off Approved" if status == "approved" else "Comp-Off Rejected"
+        msg = f"{grant.get('earn_reason', 'Worked on a non-working day')} — {grant.get('earn_date')}"
+        if status == "approved" and grant.get("expiry_date"):
+            msg += f". Use by {grant['expiry_date']}."
+        if remarks:
+            msg += f" · Note: {remarks}"
+        await _notify(
+            employee_id=grant["employee_id"],
+            title=title,
+            message=msg,
+            type="comp_off",
+            link="/leaves",
+            meta={"grant_id": str(grant.get("_id") or ""), "status": status},
+        )
+    except Exception:
+        pass
+
+
 class CompOffApproveBody(BaseModel):
     remarks: Optional[str] = None
 
@@ -274,6 +296,7 @@ async def approve_grant(
         }},
     )
     g = await db.comp_off_grants.find_one({"_id": ObjectId(grant_id)})
+    await _notify_compoff_decision(g, "approved", body.remarks)
     return _to_dict(g)
 
 
@@ -302,6 +325,7 @@ async def reject_grant(
         }},
     )
     g = await db.comp_off_grants.find_one({"_id": ObjectId(grant_id)})
+    await _notify_compoff_decision(g, "rejected", body.remarks)
     return _to_dict(g)
 
 

@@ -14,6 +14,69 @@ router = APIRouter()
 
 LEAVE_TYPES = ["CL", "SL", "EL", "Maternity", "Paternity", "Marriage", "Comp-Off", "LWP"]
 
+
+# ──────────────────────────────────────────────────────────────
+#  Notification helpers (fire-and-forget; never raise)
+# ──────────────────────────────────────────────────────────────
+async def _notify_leave_applied(leave: dict, employee_doc: dict):
+    """When an employee applies for leave, notify their reporting manager
+    (if set) plus all hr_admin / management users."""
+    try:
+        from routes.notifications import create_notification as _notify
+        targets = set()
+        rt = (employee_doc or {}).get("reporting_to")
+        if rt:
+            targets.add(rt)
+        hr_users = await db.users.find(
+            {"role": {"$in": ["hr_admin", "management"]}},
+            {"_id": 0, "employee_id": 1, "username": 1}
+        ).to_list(50)
+        for u in hr_users:
+            target = u.get("employee_id") or u.get("username")
+            if target:
+                targets.add(target)
+        # Don't notify the applicant themselves
+        targets.discard(leave["employee_id"])
+        name = f"{employee_doc.get('first_name','')} {employee_doc.get('last_name','')}".strip() or leave["employee_id"]
+        msg = f"{name} applied for {leave['leave_type']} ({leave.get('days',1)}d): {leave['start_date']} → {leave['end_date']}"
+        for emp_id in targets:
+            await _notify(
+                employee_id=emp_id,
+                title="Leave Application",
+                message=msg,
+                type="leave",
+                link="/leaves",
+                meta={"leave_id": str(leave.get("_id") or ""), "applicant": leave["employee_id"]},
+            )
+    except Exception:
+        pass
+
+
+async def _notify_leave_decision(leave: dict, status: str, remarks: str = None, approval_type: str = None):
+    """Notify the applicant when leave is approved/rejected."""
+    try:
+        from routes.notifications import create_notification as _notify
+        title = "Leave Approved" if status == "approved" else "Leave Rejected"
+        base = f"{leave['leave_type']} ({leave.get('days',1)}d): {leave['start_date']} → {leave['end_date']}"
+        if status == "approved" and approval_type == "el":
+            base += " · deducted from EL"
+        elif status == "approved" and approval_type == "salary_deduction":
+            base += " · salary deduction"
+        if remarks:
+            base += f" · Note: {remarks}"
+        await _notify(
+            employee_id=leave["employee_id"],
+            title=title,
+            message=base,
+            type="leave",
+            link="/leaves",
+            meta={"leave_id": str(leave.get("_id") or ""), "status": status},
+        )
+    except Exception:
+        pass
+
+
+
 LEAVE_BALANCE_TEMPLATE = {
     "CL":       {"total": 7,  "used": 0, "remaining": 7},
     "SL":       {"total": 15, "used": 0, "remaining": 15},
@@ -229,6 +292,7 @@ async def apply_leave(data: LeaveApplyRequest, current_user: dict = Depends(get_
     result = await db.leave_applications.insert_one(doc)
     doc["id"] = str(result.inserted_id)
     doc.pop("_id", None)
+    await _notify_leave_applied({**doc, "_id": result.inserted_id}, employee)
     return doc
 
 
@@ -506,6 +570,7 @@ async def approve_leave(leave_id: str, data: LeaveApproveRequest, current_user: 
         "el": "Approved — deducted from Earned Leave balance.",
         "salary_deduction": "Approved — salary deduction noted for payroll.",
     }
+    await _notify_leave_decision(leave, new_status, data.remarks, approval_type if new_status == "approved" else None)
     return {
         "message": msg_map.get(approval_type, f"Leave {new_status}"),
         "status": new_status,

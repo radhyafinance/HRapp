@@ -130,7 +130,12 @@ export default function NotificationBell() {
                   <button key={n.id} onClick={() => handleClick(n)}
                     data-testid={`notif-item-${n.id}`}
                     className={`w-full text-left px-4 py-3 border-b border-slate-100 last:border-b-0 flex gap-3 items-start transition-colors ${n.read ? "bg-white hover:bg-slate-50" : "bg-orange-50/50 hover:bg-orange-50"}`}>
-                    <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${n.type === "interview" ? "bg-violet-100 text-violet-600" : "bg-slate-100 text-slate-500"}`}>
+                    <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
+                      n.type === "interview" ? "bg-violet-100 text-violet-600" :
+                      n.type === "leave" ? "bg-amber-100 text-amber-700" :
+                      n.type === "comp_off" ? "bg-emerald-100 text-emerald-700" :
+                      "bg-slate-100 text-slate-500"
+                    }`}>
                       {n.type === "interview" ? <Users size={14} /> : <Calendar size={14} />}
                     </div>
                     <div className="flex-1 min-w-0">
