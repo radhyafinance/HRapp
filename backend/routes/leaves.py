@@ -614,10 +614,10 @@ async def credit_halfyear_leaves(current_user: dict = Depends(get_current_user))
         await db.leave_balances.update_one(
             {"employee_id": emp_id, "year": fy},
             {"$inc": {
-                "CL.total": 3,   # 3 CL per half (total 6 + 1 carry = 7 approx)
-                "CL.remaining": 3,
-                "SL.total": 7,   # 7 SL per half (total 14 + 1 = 15 approx)
-                "SL.remaining": 7,
+                "CL.total": 3.5,   # 3.5 CL per half (7 CL per FY)
+                "CL.remaining": 3.5,
+                "SL.total": 7.5,   # 7.5 SL per half (15 SL per FY)
+                "SL.remaining": 7.5,
             }, "$set": {flag_key: True}},
         )
         credited += 1

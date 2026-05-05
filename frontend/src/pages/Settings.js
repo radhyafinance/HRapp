@@ -353,8 +353,8 @@ export default function Settings() {
             </p>
             <div className="grid grid-cols-2 gap-3 mb-5">
               {[
-                { label: "H1 Credit", date: "1st April", detail: "+7 SL, +3 CL", color: "bg-green-50 border-green-200 text-green-700" },
-                { label: "H2 Credit", date: "1st October", detail: "+7 SL, +3 CL", color: "bg-blue-50 border-blue-200 text-blue-700" },
+                { label: "H1 Credit", date: "1st April", detail: "+7.5 SL, +3.5 CL", color: "bg-green-50 border-green-200 text-green-700" },
+                { label: "H2 Credit", date: "1st October", detail: "+7.5 SL, +3.5 CL", color: "bg-blue-50 border-blue-200 text-blue-700" },
               ].map(h => (
                 <div key={h.label} className={`rounded-xl border p-4 ${h.color}`}>
                   <p className="text-xs font-bold uppercase tracking-wider mb-1">{h.label}</p>
