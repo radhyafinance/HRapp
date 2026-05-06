@@ -197,8 +197,10 @@ export default function Payroll() {
     <div style={{ fontFamily: "'Work Sans', sans-serif" }}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Payroll</h1>
-          <p className="text-slate-500 text-sm">{records.length} records</p>
+          <h1 className="text-2xl font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>
+            {isManager ? "Payroll" : "My Payslips"}
+          </h1>
+          {isManager && <p className="text-slate-500 text-sm">{records.length} records</p>}
         </div>
         {isManager && (
           <div className="flex flex-wrap gap-2">
@@ -233,7 +235,8 @@ export default function Payroll() {
         )}
       </div>
 
-      {/* Filter */}
+      {/* Filter — manager only */}
+      {isManager && (
       <div className="flex gap-3 mb-4">
         <select value={filterPeriod} onChange={e => setFilterPeriod(e.target.value)}
           className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="payroll-period-filter">
@@ -243,6 +246,7 @@ export default function Payroll() {
           ))}
         </select>
       </div>
+      )}
 
       {/* Summary card — visible whenever the user has filtered to a single period */}
       {isManager && filterPeriod && records.length > 0 && (() => {
@@ -286,6 +290,8 @@ export default function Payroll() {
         );
       })()}
 
+      {/* Manager: full payroll table */}
+      {isManager && (
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="payroll-table">
@@ -341,6 +347,43 @@ export default function Payroll() {
           </table>
         </div>
       </div>
+      )}
+
+      {/* Employee / non-manager: salary slip cards only */}
+      {!isManager && (
+        <div className="space-y-3" data-testid="my-payslips">
+          {loading && <p className="text-slate-400 text-sm py-8 text-center">Loading your payslips...</p>}
+          {!loading && records.length === 0 && (
+            <div className="bg-white border border-slate-200 rounded-xl p-12 text-center text-slate-400 shadow-sm">
+              <FileText size={32} className="mx-auto mb-3 opacity-30" />
+              <p className="text-sm">No payslips yet. HR processes payroll each month.</p>
+            </div>
+          )}
+          {records.map(r => (
+            <div key={r.id} className="bg-white border border-slate-200 rounded-xl p-4 flex items-center justify-between shadow-sm hover:shadow-md transition-shadow" data-testid={`payslip-card-${r.id}`}>
+              <div>
+                <p className="font-bold text-[#1E2A47]">{r.period}</p>
+                <p className="text-xs text-slate-500 mt-0.5">{r.designation} • {r.department}</p>
+                <p className="text-green-700 font-bold text-lg mt-1">₹{r.net_salary?.toLocaleString("en-IN")}</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${r.status === "paid" ? "bg-green-100 text-green-700" : "bg-blue-100 text-blue-700"}`}>{r.status}</span>
+                <button onClick={() => openSlip(r)} data-testid={`view-slip-${r.id}`}
+                  className="p-2 rounded-lg hover:bg-slate-100 text-slate-500" title="View payslip">
+                  <Eye size={18} />
+                </button>
+                <button onClick={() => downloadPayslipPdf(r)} disabled={downloadingId === r.id}
+                  data-testid={`download-payslip-${r.id}`}
+                  className="p-2 rounded-lg hover:bg-[#E85B1E]/10 text-[#E85B1E] disabled:opacity-50" title="Download PDF">
+                  {downloadingId === r.id
+                    ? <div className="w-4 h-4 border-2 border-[#E85B1E] border-t-transparent rounded-full animate-spin" />
+                    : <FileText size={18} />}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {showSlip && (
         <Modal title={`Payslip — ${showSlip.employee_name}`} onClose={() => setShowSlip(null)}>
