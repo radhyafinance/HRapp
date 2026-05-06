@@ -165,7 +165,7 @@ export default function Employees() {
           <table className="w-full" data-testid="employees-table">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
-                {["Emp ID", "Name", "Designation", "Department", "Reports To", "Status", "Docs", "Actions"].map(h => (
+                {["Emp ID", "Name", "Designation", "Department", "Branch", "Reports To", "Status", "Docs", "Actions"].map(h => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
                 ))}
               </tr>
@@ -173,10 +173,10 @@ export default function Employees() {
             <tbody>
               {loading ? (
                 [...Array(5)].map((_, i) => (
-                  <tr key={i}><td colSpan={8} className="px-4 py-3"><div className="h-8 bg-slate-100 animate-pulse rounded"></div></td></tr>
+                  <tr key={i}><td colSpan={9} className="px-4 py-3"><div className="h-8 bg-slate-100 animate-pulse rounded"></div></td></tr>
                 ))
               ) : employees.length === 0 ? (
-                <tr><td colSpan={8} className="px-4 py-12 text-center text-slate-400">No employees found</td></tr>
+                <tr><td colSpan={9} className="px-4 py-12 text-center text-slate-400">No employees found</td></tr>
               ) : employees.map(emp => (
                 <tr key={emp.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
                   <td className="px-4 py-3 text-sm font-mono font-semibold text-[#E85B1E]">{emp.employee_id}</td>
@@ -193,6 +193,11 @@ export default function Employees() {
                   </td>
                   <td className="px-4 py-3 text-sm text-slate-600">{emp.designation}</td>
                   <td className="px-4 py-3 text-sm text-slate-600">{emp.department}</td>
+                  <td className="px-4 py-3 text-sm text-slate-600">
+                    {emp.branch
+                      ? <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-xs font-medium">{emp.branch}</span>
+                      : <span className="text-xs text-slate-400">—</span>}
+                  </td>
                   <td className="px-4 py-3">
                     {emp.reporting_to
                       ? <span className="font-mono text-xs px-2 py-1 bg-[#E85B1E]/10 text-[#E85B1E] rounded-full">{emp.reporting_to}</span>
