@@ -1,7 +1,8 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Outlet, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import NotificationBell from "./NotificationBell";
+import API from "../utils/api";
 import {
   LayoutDashboard, Users, UserPlus, CalendarCheck, FileText,
   CreditCard, TrendingUp, LogOut, Settings, Menu, X,
@@ -43,6 +44,45 @@ export default function Layout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [photoUrl, setPhotoUrl] = useState(null);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profileData, setProfileData] = useState(null);
+
+  // Load passport photo for employees
+  useEffect(() => {
+    if (!user?.employee_id) return;
+    let objectUrl = null;
+    API.get(`/employees/${user.employee_id}/documents`)
+      .then(res => {
+        if (res.data.documents?.passport_photo?.uploaded) {
+          return API.get(`/employees/${user.employee_id}/documents/passport_photo/file`, { responseType: "blob" });
+        }
+      })
+      .then(imgRes => {
+        if (imgRes) {
+          objectUrl = URL.createObjectURL(imgRes.data);
+          setPhotoUrl(objectUrl);
+        }
+      })
+      .catch(() => {});
+    return () => { if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [user?.employee_id]);
+
+  const openProfile = async () => {
+    setProfileOpen(true);
+    if (profileData || !user?.employee_id) return;
+    try {
+      const res = await API.get(`/employees/${user.employee_id}`);
+      const data = { ...res.data };
+      if (data.reporting_to) {
+        try {
+          const mgr = await API.get(`/employees/${data.reporting_to}`);
+          data._manager_name = `${mgr.data.first_name || ""} ${mgr.data.last_name || ""}`.trim();
+        } catch { /* no manager found */ }
+      }
+      setProfileData(data);
+    } catch { /* silently ignore */ }
+  };
 
   const filteredNav = NAV_ITEMS.filter(item => item.roles.includes(user?.role));
 
@@ -168,8 +208,15 @@ export default function Layout() {
           </div>
           <div className="flex items-center gap-2">
             <NotificationBell />
-            <div className="w-8 h-8 rounded-full bg-[#E85B1E] flex items-center justify-center text-white text-sm font-bold">
-              {user?.name?.charAt(0) || "U"}
+            <div className="w-8 h-8 rounded-full bg-[#E85B1E] flex items-center justify-center text-white text-sm font-bold overflow-hidden cursor-pointer ring-2 ring-transparent hover:ring-[#E85B1E]/40 transition-all"
+              onClick={openProfile}
+              data-testid="profile-avatar"
+              title="View profile"
+            >
+              {photoUrl
+                ? <img src={photoUrl} alt={user?.name} className="w-full h-full object-cover" />
+                : <span>{user?.name?.charAt(0) || "U"}</span>
+              }
             </div>
           </div>
         </header>
@@ -179,6 +226,68 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+
+      {/* Profile dropdown panel */}
+      {profileOpen && (
+        <div className="fixed inset-0 z-[80]" onClick={() => setProfileOpen(false)}>
+          <div
+            className="absolute top-14 right-4 w-72 bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden"
+            onClick={e => e.stopPropagation()}
+            data-testid="profile-panel"
+          >
+            {/* Header */}
+            <div className="bg-[#1E2A47] px-5 py-5 flex flex-col items-center gap-2">
+              <div className="w-20 h-20 rounded-full overflow-hidden bg-[#E85B1E] flex items-center justify-center text-white text-3xl font-bold border-4 border-white/20 shadow-lg">
+                {photoUrl
+                  ? <img src={photoUrl} alt={user?.name} className="w-full h-full object-cover" />
+                  : <span>{user?.name?.charAt(0) || "U"}</span>
+                }
+              </div>
+              <div className="text-center">
+                <p className="text-white font-bold text-base">{user?.name}</p>
+                {user?.employee_id && <p className="text-orange-300 text-sm font-mono">{user.employee_id}</p>}
+                <p className="text-slate-400 text-xs mt-0.5">{ROLE_LABELS[user?.role] || user?.role}</p>
+              </div>
+            </div>
+
+            {/* Employee details */}
+            {user?.employee_id && (
+              <div className="p-4">
+                {!profileData ? (
+                  <p className="text-slate-400 text-sm text-center py-3">Loading...</p>
+                ) : (
+                  <div className="space-y-2">
+                    {[
+                      ["Designation",     profileData.designation],
+                      ["Department",      profileData.department],
+                      ["Branch",          profileData.branch],
+                      ["Reports To",      profileData._manager_name || profileData.reporting_to],
+                      ["Date of Joining", profileData.joining_date],
+                      ["Blood Group",     profileData.blood_group],
+                      ["UAN",             profileData.uan_number],
+                      ["ESIC",            profileData.esi_number],
+                    ].filter(([, v]) => v).map(([label, val]) => (
+                      <div key={label} className="flex justify-between items-center text-xs border-b border-slate-50 pb-1.5">
+                        <span className="text-slate-400 font-medium">{label}</span>
+                        <span className="text-[#1E2A47] font-semibold text-right max-w-[60%]">{val}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Logout */}
+            <div className="p-3 border-t border-slate-100">
+              <button onClick={handleLogout}
+                className="w-full py-2 text-sm text-red-600 font-semibold hover:bg-red-50 rounded-lg flex items-center justify-center gap-2 transition-colors"
+                data-testid="profile-logout-btn">
+                <LogOut size={14} /> Sign Out
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Mobile Bottom Navigation */}
       <nav
