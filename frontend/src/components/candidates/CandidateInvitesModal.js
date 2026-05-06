@@ -25,6 +25,11 @@ export function CandidateInvitesModal({ onClose, onCandidateCreated }) {
   const [copiedId, setCopiedId] = useState(null);
   const [busyId, setBusyId] = useState(null);
 
+  // Always build the URL from the current window origin so it works correctly
+  // on both preview (micro-finance-hrms.preview.emergentagent.com) and
+  // production (hr.radhyafinance.com) without any backend env-var changes.
+  const inviteUrl = (inv) => `${window.location.origin}/apply/${inv.token}`;
+
   const fetchInvites = async () => {
     setLoading(true);
     try {
@@ -54,7 +59,7 @@ export function CandidateInvitesModal({ onClose, onCandidateCreated }) {
       setNote("");
       // Auto-copy the new link
       try {
-        await navigator.clipboard.writeText(r.data.public_url);
+        await navigator.clipboard.writeText(inviteUrl(r.data));
         setCopiedId(r.data.id);
         setTimeout(() => setCopiedId(null), 2500);
       } catch {}
@@ -67,12 +72,12 @@ export function CandidateInvitesModal({ onClose, onCandidateCreated }) {
 
   const copy = async (inv) => {
     try {
-      await navigator.clipboard.writeText(inv.public_url);
+      await navigator.clipboard.writeText(inviteUrl(inv));
       setCopiedId(inv.id);
       setTimeout(() => setCopiedId(null), 2500);
     } catch {
       // Fallback if clipboard API blocked (older mobile browsers)
-      window.prompt("Copy this link", inv.public_url);
+      window.prompt("Copy this link", inviteUrl(inv));
     }
   };
 
@@ -168,7 +173,7 @@ export function CandidateInvitesModal({ onClose, onCandidateCreated }) {
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
-                    <input readOnly value={inv.public_url} data-testid={`invite-url-${inv.id}`}
+                    <input readOnly value={inviteUrl(inv)} data-testid={`invite-url-${inv.id}`}
                       className="flex-1 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-mono text-slate-600 truncate" />
                     {inv.status === "active" && (
                       <>
