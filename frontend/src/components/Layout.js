@@ -5,7 +5,7 @@ import NotificationBell from "./NotificationBell";
 import {
   LayoutDashboard, Users, UserPlus, CalendarCheck, FileText,
   CreditCard, TrendingUp, LogOut, Settings, Menu, X,
-  DoorOpen, Award, MapPin, ChevronRight, Bell, User, Calendar
+  DoorOpen, Award, MapPin, Calendar
 } from "lucide-react";
 
 const NAV_ITEMS = [
@@ -24,6 +24,13 @@ const NAV_ITEMS = [
   { path: "/settings", label: "Settings", icon: Settings, roles: ["hr_admin"] },
 ];
 
+// Priority paths for mobile bottom navigation
+const MOBILE_NAV_PRIORITY = ["/dashboard", "/attendance", "/leaves", "/employees", "/payroll", "/calendar"];
+const MOBILE_LABELS = {
+  "/dashboard": "Home", "/attendance": "Attend", "/leaves": "Leaves",
+  "/employees": "Team", "/payroll": "Payroll", "/calendar": "Calendar",
+};
+
 const ROLE_LABELS = {
   hr_admin: "HR Admin",
   management: "Management",
@@ -38,6 +45,12 @@ export default function Layout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const filteredNav = NAV_ITEMS.filter(item => item.roles.includes(user?.role));
+
+  // Mobile bottom nav: top 4 priority items accessible to this role
+  const mobileNavItems = MOBILE_NAV_PRIORITY
+    .map(p => NAV_ITEMS.find(n => n.path === p))
+    .filter(item => item && item.roles.includes(user?.role))
+    .slice(0, 4);
 
   const handleLogout = () => {
     logout();
@@ -118,8 +131,14 @@ export default function Layout() {
 
       {/* Mobile Sidebar Overlay */}
       {sidebarOpen && (
-        <div className="lg:hidden fixed inset-0 z-50 flex">
-          <div className="w-64 bg-[#1E2A47] flex flex-col h-full shadow-2xl">
+        <div className="lg:hidden fixed inset-0 z-[80] flex">
+          <div className="w-72 bg-[#1E2A47] flex flex-col h-full shadow-2xl">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[#2A3A5E]">
+              <span className="text-white font-bold text-sm" style={{ fontFamily: "'Outfit', sans-serif" }}>Menu</span>
+              <button onClick={() => setSidebarOpen(false)} className="p-2 rounded-lg hover:bg-[#2A3A5E] text-slate-400">
+                <X size={18} />
+              </button>
+            </div>
             <SidebarContent />
           </div>
           <div className="flex-1 bg-black/50" onClick={() => setSidebarOpen(false)} />
@@ -156,10 +175,52 @@ export default function Layout() {
         </header>
 
         {/* Page Content */}
-        <main className="flex-1 overflow-y-auto p-4 lg:p-6">
+        <main className="flex-1 overflow-y-auto p-4 pb-24 lg:p-6 lg:pb-6">
           <Outlet />
         </main>
       </div>
+
+      {/* Mobile Bottom Navigation */}
+      <nav
+        className="lg:hidden fixed bottom-0 left-0 right-0 z-[60] bg-white border-t border-slate-200 flex items-stretch shadow-[0_-2px_12px_rgba(0,0,0,0.08)]"
+        style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+        data-testid="mobile-bottom-nav"
+      >
+        {mobileNavItems.map(({ path, label, icon: Icon }) => (
+          <NavLink
+            key={path}
+            to={path}
+            className={({ isActive }) =>
+              `flex flex-col items-center justify-center gap-1 flex-1 py-2 min-h-[56px] transition-colors ${
+                isActive ? "text-[#E85B1E]" : "text-slate-500 hover:text-slate-700"
+              }`
+            }
+            data-testid={`mobile-nav-${path.replace("/", "")}`}
+          >
+            {({ isActive }) => (
+              <>
+                <div className={`p-1.5 rounded-lg transition-colors ${isActive ? "bg-orange-50" : ""}`}>
+                  <Icon size={20} />
+                </div>
+                <span className="text-[10px] font-semibold leading-none">
+                  {MOBILE_LABELS[path] || label}
+                </span>
+              </>
+            )}
+          </NavLink>
+        ))}
+        {/* More button to open full menu */}
+        <button
+          onClick={() => setSidebarOpen(true)}
+          className="flex flex-col items-center justify-center gap-1 flex-1 py-2 min-h-[56px] text-slate-500 hover:text-slate-700 transition-colors"
+          data-testid="mobile-nav-more"
+        >
+          <div className="p-1.5 rounded-lg">
+            <Menu size={20} />
+          </div>
+          <span className="text-[10px] font-semibold leading-none">More</span>
+        </button>
+      </nav>
     </div>
   );
 }

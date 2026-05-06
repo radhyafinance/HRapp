@@ -54,7 +54,7 @@ function CameraCapture({ onCapture, onClose }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 p-4">
       <div className="bg-white rounded-xl p-5 w-full max-w-sm">
         <h3 className="text-lg font-bold text-[#1E2A47] mb-3" style={{ fontFamily: "'Outfit', sans-serif" }}>Take Selfie</h3>
         {error ? (
@@ -418,18 +418,18 @@ export default function Attendance() {
               onClick={() => startPunch("in")}
               disabled={alreadyIn || processing || !user?.employee_id}
               data-testid="punch-in-btn"
-              className="flex items-center justify-center gap-2 py-3 bg-green-500 text-white rounded-xl font-semibold text-sm hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="flex items-center justify-center gap-2 py-4 bg-green-500 text-white rounded-xl font-bold text-base hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm active:scale-95"
             >
-              {processing && punchType === "in" ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <LogIn size={18} />}
+              {processing && punchType === "in" ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <LogIn size={20} />}
               Punch In
             </button>
             <button
               onClick={() => startPunch("out")}
               disabled={!alreadyIn || alreadyOut || processing || !user?.employee_id}
               data-testid="punch-out-btn"
-              className="flex items-center justify-center gap-2 py-3 bg-[#E85B1E] text-white rounded-xl font-semibold text-sm hover:bg-[#D04A15] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="flex items-center justify-center gap-2 py-4 bg-[#E85B1E] text-white rounded-xl font-bold text-base hover:bg-[#D04A15] disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm active:scale-95"
             >
-              {processing && punchType === "out" ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <LogOut size={18} />}
+              {processing && punchType === "out" ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <LogOut size={20} />}
               Punch Out
             </button>
           </div>

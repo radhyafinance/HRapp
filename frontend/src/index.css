@@ -8,6 +8,29 @@ body {
   color: #0F172A;
 }
 
+/* =========================================================
+   Mobile / PWA: push "Made with Emergent" badge above bottom nav
+   ========================================================= */
+@media (max-width: 1023px) {
+  /* Target the Emergent platform badge injected outside #root */
+  body > div:not(#root),
+  body > a:not(#root) {
+    bottom: 64px !important;
+  }
+
+  /* Tables: ensure horizontal scroll works cleanly on mobile */
+  .overflow-x-auto table {
+    min-width: 480px;
+  }
+}
+
+/* Safe area inset support for iPhone X+ home indicator */
+@supports (padding-bottom: env(safe-area-inset-bottom)) {
+  .mobile-safe-bottom {
+    padding-bottom: calc(env(safe-area-inset-bottom) + 64px);
+  }
+}
+
 h1, h2, h3, h4, h5, h6 {
   font-family: 'Outfit', sans-serif;
 }

@@ -47,7 +47,7 @@ export function FaceMismatchModal({ record, side = "in", onClose }) {
   const time       = side === "out" ? record.punch_out_time : record.punch_in_time;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60" data-testid="face-mismatch-modal">
+    <div className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/60" data-testid="face-mismatch-modal">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[92vh] overflow-y-auto">
         <div className="flex items-center justify-between p-5 border-b sticky top-0 bg-white">
           <div className="flex items-center gap-3">
