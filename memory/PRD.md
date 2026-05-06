@@ -175,6 +175,7 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 - [x] Monthly Salary Register export ✅ Apr 2026
 - [x] Holiday Calendar (CRUD + India defaults seed) + Sun/1st-3rd-Sat rules + Comp-Off (auto-detect, HR approve, 90-day expiry) ✅ May 2026
 - [x] Payroll Deductions column + LOP-day deduction with auto pro-rata ✅ Feb 2026
+- [x] PWA Mobile-friendly UI: Bottom navigation bar, larger touch targets, modal z-index fix, Emergent badge overlap fix ✅ May 2026
 - [ ] Letter PDFs (Offer / Appointment / Warning etc.) with company letterhead
 35. **Background GPS Tracking via Traccar Client (May 2026)** - Field-staff background GPS tracking using the free open-source **Traccar Client** Android/iOS app (works 24/7 even when phone is locked — solving the fundamental PWA background-tracking limitation). New route `/app/backend/routes/tracker.py`:
     - `GET /api/tracker/osmand` — public OsmAnd-protocol endpoint accepting pings from Traccar Client. Validates `<emp_id>:<secret>` identifier against `employee_trackers` collection; unknown/invalid IDs silently dropped (still 200 OK). Writes to existing `location_logs` with `source:"traccar"` — admin field-tracking map automatically picks them up.

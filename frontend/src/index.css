@@ -12,10 +12,12 @@ body {
    Mobile / PWA: push "Made with Emergent" badge above bottom nav
    ========================================================= */
 @media (max-width: 1023px) {
-  /* Target the Emergent platform badge injected outside #root */
+  /* Target the Emergent platform badge injected outside #root.
+     z-index 65 = above bottom nav (60) but below our modals (70) and sidebar (80) */
   body > div:not(#root),
   body > a:not(#root) {
     bottom: 64px !important;
+    z-index: 65 !important;
   }
 
   /* Tables: ensure horizontal scroll works cleanly on mobile */
