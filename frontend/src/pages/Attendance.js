@@ -345,7 +345,8 @@ export default function Attendance() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
-        {/* Punch Card */}
+        {/* Punch Card — hidden for HR Admin (admin manages, doesn't punch) */}
+        {user?.role !== "hr_admin" && (
         <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
           <h3 className="font-bold text-[#1E2A47] text-lg mb-4" style={{ fontFamily: "'Outfit', sans-serif" }}>Mark Attendance</h3>
 
@@ -438,6 +439,7 @@ export default function Attendance() {
             <p className="text-xs text-amber-600 text-center mt-3">No employee linked to your account</p>
           )}
         </div>
+        )} {/* end hr_admin punch card conditional */}
 
         {/* Today's Summary (Manager) */}
         {isManager && todaySummary && (
