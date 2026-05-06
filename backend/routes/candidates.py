@@ -164,6 +164,52 @@ async def _notify_interviewers(candidate: dict, interviewer_ids: List[str], even
         )
 
 
+@router.get("/check-unique")
+async def check_unique_field(
+    field: str,
+    value: str,
+    exclude_candidate_id: Optional[str] = None,
+    exclude_employee_id: Optional[str] = None,
+):
+    """Public endpoint — checks if a field value is already in use across candidates + employees."""
+    ALLOWED = {"mobile", "email", "aadhaar_number", "pan_number"}
+    if field not in ALLOWED:
+        raise HTTPException(status_code=400, detail="Invalid field")
+
+    val = value.strip()
+    if not val:
+        return {"exists": False}
+
+    # Normalize
+    if field == "email":
+        val = val.lower()
+    elif field == "pan_number":
+        val = val.upper()
+
+    # Check employees first
+    emp_q = {field: val}
+    if exclude_employee_id:
+        emp_q["employee_id"] = {"$ne": exclude_employee_id}
+    emp = await db.employees.find_one(emp_q, {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1})
+    if emp:
+        name = f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip() or emp.get("employee_id", "Employee")
+        return {"exists": True, "conflict_in": "employee", "conflict_name": name, "conflict_id": emp.get("employee_id", "")}
+
+    # Check candidates
+    cand_q = {field: val}
+    if exclude_candidate_id:
+        try:
+            cand_q["_id"] = {"$ne": ObjectId(exclude_candidate_id)}
+        except Exception:
+            pass
+    cand = await db.candidates.find_one(cand_q, {"_id": 1, "first_name": 1, "last_name": 1})
+    if cand:
+        name = f"{cand.get('first_name', '')} {cand.get('last_name', '')}".strip() or "Candidate"
+        return {"exists": True, "conflict_in": "candidate", "conflict_name": name, "conflict_id": str(cand["_id"])}
+
+    return {"exists": False}
+
+
 @router.get("/interviewers/options")
 async def list_interviewer_options(current_user: dict = Depends(get_current_user)):
     """Return the pool of users eligible to be assigned as interviewers.

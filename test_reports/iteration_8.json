@@ -1,0 +1,37 @@
+{
+  "summary": "Tested uniqueness check feature for Aadhaar, Mobile, Email, PAN across candidates and employees. Backend endpoint GET /api/candidates/check-unique fully validated. Frontend uniqueness feedback tested in AddCandidateModal, EmployeeEditForm, and CandidateApply public page. All features working correctly end-to-end.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_check_unique.py",
+    "/app/test_reports/pytest/check_unique_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Backend GET /api/candidates/invite-links returns HTTP 500 (unrelated to current feature but worth investigating)",
+    "EmployeeEditForm initial load: email and mobile show 'Available' correctly with excludeEmployeeId — but aadhaar and PAN fields remain empty (no existing data for RMF0001), meaning those hints only appear after typing. This is expected behavior.",
+    "All four fields (mobile, email, aadhaar_number, pan_number) normalized correctly: email→lowercase, pan→uppercase",
+    "Debounce (600ms) works correctly - no excessive API calls during typing",
+    "useFieldUnique hook properly uses minLen thresholds: mobile=10, email=5, aadhaar=12, pan=10 — shorter values show no hint until threshold is met"
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_check_unique.py"
+  ],
+  "success_rate": {
+    "backend": "92% (12/13 passed, 1 skipped - excludeEmployeeId auth test)",
+    "frontend": "100%"
+  },
+  "test_credentials": "admin/Admin@123 used. Known conflict data: mobile 9999999999 belongs to candidate Sunita, email hr@radhyamfin.com belongs to employee Shivani Pathak (RMF0009)",
+  "seed_data_creation": "Generated a new candidate invite link via UI for CandidateApply testing: /apply/kc8EyMYJgknI88hs-2F2hXtEmElAMs9i",
+  "retest_needed": false,
+  "main_agent_can_self_test": false,
+  "context_for_next_testing_agent": "Uniqueness check feature fully tested and working. Backend: GET /api/candidates/check-unique is PUBLIC (no auth). Frontend: useFieldUnique hook with 600ms debounce shows red 'Already registered (conflict_in): Name' for duplicates and green 'Available' for unique values. All three UI entry points tested: AddCandidateModal, EmployeeEditForm (excludeEmployeeId works - own values show green), CandidateApply public page. NOTE: /api/candidates/invite-links returns 500 (pre-existing issue, unrelated to current feature).",
+  "rca_of_the_issue": "No bugs found. All uniqueness check flows work as specified: (1) Backend checks employees first, then candidates. (2) Returns conflict_in (employee/candidate), conflict_name, conflict_id. (3) excludeEmployeeId properly prevents own-value false conflicts in EmployeeEditForm. (4) Frontend shows inline red/green hint with 600ms debounce. (5) Save/Submit buttons disabled when hasConflict=true."
+}

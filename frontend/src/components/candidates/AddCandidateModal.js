@@ -4,6 +4,7 @@ import { Modal } from "../shared/Modal";
 import { DocUploadCard } from "./DocUploadCard";
 import API from "../../utils/api";
 import { compressImage, fileToBase64 } from "../../utils/imageCompression";
+import { useFieldUnique, UniqueHint, uniqueBorderClass } from "../../hooks/useFieldUnique";
 
 const DEPARTMENTS = ["Accounts", "Administration", "Compliance", "Human Resources", "IT", "Management", "Operations", "Risk and Credit"];
 
@@ -58,6 +59,13 @@ export function AddCandidateModal({ onClose, onAdded }) {
     return o.name.toLowerCase().includes(q) || o.employee_id.toLowerCase().includes(q) || (o.designation || "").toLowerCase().includes(q);
   });
   const [error, setError] = useState("");
+
+  // Uniqueness checks
+  const mobileCheck = useFieldUnique("mobile", form.mobile, {}, 10);
+  const emailCheck  = useFieldUnique("email",  form.email,  {}, 5);
+  const aadhaarCheck = useFieldUnique("aadhaar_number", form.aadhaar_number, {}, 12);
+  const panCheck     = useFieldUnique("pan_number",     form.pan_number,     {}, 10);
+  const hasConflict  = mobileCheck.exists === true || emailCheck.exists === true || aadhaarCheck.exists === true || panCheck.exists === true;
 
   const handleFilePick = async (setter, file) => {
     if (!file) { setter(null); return; }
@@ -209,18 +217,28 @@ export function AddCandidateModal({ onClose, onAdded }) {
               <div key={key}>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">{label}{req && <span className="text-red-500">*</span>}</label>
                 <input type={type} value={form[key]} onChange={e => setForm({ ...form, [key]: e.target.value })} required={req}
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid={`form-${key}`} />
+                  className={`w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none ${
+                    key === "mobile" ? uniqueBorderClass(mobileCheck, form.mobile, 10) :
+                    key === "email"  ? uniqueBorderClass(emailCheck,  form.email,  5)  : "border-slate-300"
+                  }`}
+                  data-testid={`form-${key}`} />
+                {key === "mobile" && <UniqueHint {...mobileCheck} value={form.mobile} minLen={10} />}
+                {key === "email"  && <UniqueHint {...emailCheck}  value={form.email}  minLen={5}  />}
               </div>
             ))}
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">Aadhaar Number (12 digits)</label>
               <input value={form.aadhaar_number} onChange={e => setForm({ ...form, aadhaar_number: e.target.value.replace(/\D/g, "").slice(0, 12) })}
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="form-aadhaar_number" />
+                className={`w-full border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none ${uniqueBorderClass(aadhaarCheck, form.aadhaar_number, 12)}`}
+                data-testid="form-aadhaar_number" />
+              <UniqueHint {...aadhaarCheck} value={form.aadhaar_number} minLen={12} />
             </div>
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">PAN Number</label>
               <input value={form.pan_number} onChange={e => setForm({ ...form, pan_number: e.target.value.toUpperCase().slice(0, 10) })}
-                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="form-pan_number" />
+                className={`w-full border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none ${uniqueBorderClass(panCheck, form.pan_number, 10)}`}
+                data-testid="form-pan_number" />
+              <UniqueHint {...panCheck} value={form.pan_number} minLen={10} />
             </div>
           </div>
         </section>
@@ -384,8 +402,9 @@ export function AddCandidateModal({ onClose, onAdded }) {
 
         <div className="flex gap-3 sticky bottom-0 bg-white pt-3 border-t border-slate-100">
           <button type="button" onClick={onClose} className="flex-1 px-4 py-2.5 border-2 border-slate-300 text-slate-600 rounded-lg text-sm font-medium">Cancel</button>
-          <button type="submit" disabled={saving} data-testid="save-candidate-btn" className="flex-1 px-4 py-2.5 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold disabled:opacity-60">
-            {saving ? "Saving..." : "Add Candidate"}
+          <button type="submit" disabled={saving || hasConflict} data-testid="save-candidate-btn"
+            className="flex-1 px-4 py-2.5 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold disabled:opacity-60">
+            {saving ? "Saving..." : hasConflict ? "Duplicate — Fix Fields" : "Add Candidate"}
           </button>
         </div>
       </form>

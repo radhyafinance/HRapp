@@ -14,6 +14,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import axios from "axios";
 import { CheckCircle2, AlertTriangle, Upload, FileText, Loader2 } from "lucide-react";
+import { useFieldUnique, UniqueHint, uniqueBorderClass } from "../hooks/useFieldUnique";
 
 const API = (process.env.REACT_APP_BACKEND_URL || "") + "/api";
 const MAX_BYTES = 1_000_000;       // 1 MB target after compression
@@ -122,6 +123,11 @@ export default function CandidateApply() {
   const [mobile, setMobile] = useState("");
   const [email, setEmail] = useState("");
 
+  // Real-time uniqueness checks
+  const mobileCheck = useFieldUnique("mobile", mobile, {}, 10);
+  const emailCheck  = useFieldUnique("email",  email,  {}, 5);
+  const hasConflict = mobileCheck.exists === true || emailCheck.exists === true;
+
   const [aadhaarFront, setAadhaarFront] = useState(null);
   const [aadhaarBack, setAadhaarBack] = useState(null);
   const [panCard, setPanCard] = useState(null);
@@ -140,7 +146,7 @@ export default function CandidateApply() {
     return () => { active = false; };
   }, [token]);
 
-  const valid = /^\d{10}$/.test(mobile.trim()) && /^\S+@\S+\.\S+$/.test(email.trim()) && aadhaarFront && aadhaarBack && panCard && cv;
+  const valid = /^\d{10}$/.test(mobile.trim()) && /^\S+@\S+\.\S+$/.test(email.trim()) && aadhaarFront && aadhaarBack && panCard && cv && !hasConflict;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -225,13 +231,15 @@ export default function CandidateApply() {
                 <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">Mobile* (10 digits)</label>
                 <input value={mobile} onChange={e => setMobile(e.target.value.replace(/\D/g, "").slice(0, 10))} data-testid="apply-mobile"
                   inputMode="numeric" placeholder="9876543210"
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                  className={`w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none ${uniqueBorderClass(mobileCheck, mobile, 10)}`} />
+                <UniqueHint {...mobileCheck} value={mobile} minLen={10} />
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1.5 uppercase tracking-wider">Email*</label>
                 <input type="email" value={email} onChange={e => setEmail(e.target.value)} data-testid="apply-email"
                   placeholder="you@example.com"
-                  className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                  className={`w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none ${uniqueBorderClass(emailCheck, email, 5)}`} />
+                <UniqueHint {...emailCheck} value={email} minLen={5} />
               </div>
             </div>
           </div>
@@ -271,7 +279,9 @@ export default function CandidateApply() {
             )}
           </button>
           {!submitting && !valid && (
-            <p className="text-[11px] text-slate-400 text-center">Fill in all fields and upload all four documents to enable submit.</p>
+            <p className="text-[11px] text-slate-400 text-center">
+              {hasConflict ? "This mobile or email is already registered. Please use a different one." : "Fill in all fields and upload all four documents to enable submit."}
+            </p>
           )}
         </form>
       </div>

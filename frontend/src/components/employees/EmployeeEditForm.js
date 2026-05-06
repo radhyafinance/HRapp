@@ -3,6 +3,7 @@ import { AlertCircle } from "lucide-react";
 import API from "../../utils/api";
 import { ReportingManagerInput } from "./ReportingManagerInput";
 import { SalaryBreakupForm } from "../shared/SalaryBreakupForm";
+import { useFieldUnique, UniqueHint, uniqueBorderClass } from "../../hooks/useFieldUnique";
 
 const ROLES = ["hr_admin", "management", "managers", "employee", "field_agent"];
 const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", managers: "Managers", employee: "HO Staff", field_agent: "Field Staff" };
@@ -42,6 +43,13 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
   const [branches, setBranches] = useState([]);
   const ifscValid = !form.ifsc_code || /^[A-Z]{4}0[A-Z0-9]{6}$/.test((form.ifsc_code || "").toUpperCase());
 
+  // Uniqueness checks (exclude current employee)
+  const mobileCheck  = useFieldUnique("mobile",         form.mobile,         { excludeEmployeeId: emp.employee_id }, 10);
+  const emailCheck   = useFieldUnique("email",           form.email,          { excludeEmployeeId: emp.employee_id }, 5);
+  const aadhaarCheck = useFieldUnique("aadhaar_number",  form.aadhaar_number, { excludeEmployeeId: emp.employee_id }, 12);
+  const panCheck     = useFieldUnique("pan_number",      form.pan_number,     { excludeEmployeeId: emp.employee_id }, 10);
+  const hasConflict  = mobileCheck.exists === true || emailCheck.exists === true || aadhaarCheck.exists === true || panCheck.exists === true;
+
   useEffect(() => {
     API.get("/locations")
       .then(r => setBranches(r.data.map(l => l.name).sort((a, b) => a.localeCompare(b))))
@@ -52,6 +60,7 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
     e.preventDefault();
     setErr("");
     if (form.ifsc_code && !ifscValid) { setErr("Invalid IFSC code format."); return; }
+    if (hasConflict) { setErr("Please fix duplicate entries (highlighted in red) before saving."); return; }
     setSaving(true);
     try {
       const payload = {};
@@ -99,14 +108,42 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
       <div className="grid grid-cols-2 gap-3">
         {F("first_name", "First Name")}
         {F("last_name", "Last Name")}
-        {F("email", "Email", "email")}
-        {F("mobile", "Mobile", "tel")}
+        {/* Email — uniqueness check */}
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Email</label>
+          <input type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })}
+            data-testid="edit-email"
+            className={`w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none ${uniqueBorderClass(emailCheck, form.email, 5)}`} />
+          <UniqueHint {...emailCheck} value={form.email} minLen={5} />
+        </div>
+        {/* Mobile — uniqueness check */}
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Mobile</label>
+          <input type="tel" value={form.mobile} onChange={e => setForm({ ...form, mobile: e.target.value })}
+            data-testid="edit-mobile"
+            className={`w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none ${uniqueBorderClass(mobileCheck, form.mobile, 10)}`} />
+          <UniqueHint {...mobileCheck} value={form.mobile} minLen={10} />
+        </div>
         {F("date_of_birth", "Date of Birth (DD/MM/YYYY)")}
         {F("gender", "Gender", "text", { options: [{ value: "", label: "Select" }, "Male", "Female", "Other"] })}
         {F("father_or_husband_name", "Father / Husband Name")}
         {F("blood_group", "Blood Group")}
-        {F("aadhaar_number", "Aadhaar #")}
-        {F("pan_number", "PAN")}
+        {/* Aadhaar — uniqueness check */}
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Aadhaar #</label>
+          <input value={form.aadhaar_number} onChange={e => setForm({ ...form, aadhaar_number: e.target.value.replace(/\D/g, "").slice(0, 12) })}
+            data-testid="edit-aadhaar_number"
+            className={`w-full border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none ${uniqueBorderClass(aadhaarCheck, form.aadhaar_number, 12)}`} />
+          <UniqueHint {...aadhaarCheck} value={form.aadhaar_number} minLen={12} />
+        </div>
+        {/* PAN — uniqueness check */}
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">PAN</label>
+          <input value={form.pan_number} onChange={e => setForm({ ...form, pan_number: e.target.value.toUpperCase().slice(0, 10) })}
+            data-testid="edit-pan_number"
+            className={`w-full border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none ${uniqueBorderClass(panCheck, form.pan_number, 10)}`} />
+          <UniqueHint {...panCheck} value={form.pan_number} minLen={10} />
+        </div>
       </div>
 
       <h4 className="font-bold text-[#1E2A47] text-sm pt-2 border-t">Job</h4>
@@ -178,8 +215,9 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
       )}
       <div className="flex gap-3 sticky bottom-0 bg-white pt-3 border-t">
         <button type="button" onClick={onCancel} className="flex-1 px-4 py-2.5 border-2 border-slate-300 text-slate-600 rounded-lg text-sm font-medium">Cancel</button>
-        <button type="submit" disabled={saving} data-testid="save-edit-btn" className="flex-1 px-4 py-2.5 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold disabled:opacity-60">
-          {saving ? "Saving..." : "Save Changes"}
+        <button type="submit" disabled={saving || hasConflict} data-testid="save-edit-btn"
+          className="flex-1 px-4 py-2.5 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold disabled:opacity-60">
+          {saving ? "Saving..." : hasConflict ? "Duplicate — Fix Fields" : "Save Changes"}
         </button>
       </div>
     </form>
