@@ -119,6 +119,9 @@ async def list_candidates(
     query = {}
     if status:
         query["status"] = status
+    else:
+        # By default, hide converted candidates (they are now employees)
+        query["status"] = {"$ne": "converted"}
     if search:
         query["$or"] = [
             {"first_name": {"$regex": search, "$options": "i"}},
