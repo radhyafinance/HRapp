@@ -150,9 +150,7 @@ export function AdminRegulariseModal({ mode, record, employees, onClose, onSaved
 // ---------- EMPLOYEE: Request regularisation ----------
 export function EmployeeRegulariseRequestModal({ onClose, onSaved }) {
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
-  const [punchIn, setPunchIn] = useState("");
-  const [punchOut, setPunchOut] = useState("");
-  const [status, setStatus] = useState("");
+  const [attendance, setAttendance] = useState("present"); // "present" | "half_day"
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -160,14 +158,13 @@ export function EmployeeRegulariseRequestModal({ onClose, onSaved }) {
   const submit = async () => {
     setErr("");
     if (!reason.trim()) return setErr("Please explain why you're requesting this change.");
-    if (!punchIn && !punchOut && !status) return setErr("Set at least one of: punch-in, punch-out, or status.");
     setSaving(true);
     try {
       await API.post("/attendance/regularisation-requests", {
         date,
-        requested_punch_in_time: punchIn || null,
-        requested_punch_out_time: punchOut || null,
-        requested_status: status || null,
+        requested_punch_in_time: null,
+        requested_punch_out_time: null,
+        requested_status: attendance,
         reason,
       });
       onSaved?.();
@@ -179,44 +176,54 @@ export function EmployeeRegulariseRequestModal({ onClose, onSaved }) {
 
   return (
     <BaseModal title="Request Attendance Regularisation" onClose={onClose}>
-      <div className="space-y-3 text-sm">
+      <div className="space-y-4 text-sm">
         <div className="bg-blue-50 border border-blue-100 text-blue-800 rounded-lg p-3 text-xs">
-          Your request will be sent to HR for approval. You'll see the status update here.
+          Your request will be reviewed by HR. You'll be notified once it's processed.
         </div>
+
+        {/* Date */}
         <div>
-          <label className="block text-xs font-semibold text-slate-600 mb-1">Date</label>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">Date <span className="text-red-500">*</span></label>
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} data-testid="empreg-date"
             max={new Date().toISOString().slice(0, 10)}
             className="w-full border border-slate-300 rounded-lg px-3 py-2" />
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Punch In</label>
-            <input type="time" value={punchIn} onChange={(e) => setPunchIn(e.target.value)} data-testid="empreg-in"
-              className="w-full border border-slate-300 rounded-lg px-3 py-2" />
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Punch Out</label>
-            <input type="time" value={punchOut} onChange={(e) => setPunchOut(e.target.value)} data-testid="empreg-out"
-              className="w-full border border-slate-300 rounded-lg px-3 py-2" />
-          </div>
-        </div>
+
+        {/* Attendance Type — two clear buttons */}
         <div>
-          <label className="block text-xs font-semibold text-slate-600 mb-1">Status (optional)</label>
-          <select value={status} onChange={(e) => setStatus(e.target.value)} data-testid="empreg-status"
-            className="w-full border border-slate-300 rounded-lg px-3 py-2">
-            <option value="">— keep current —</option>
-            {STATUS_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
-          </select>
+          <label className="block text-xs font-semibold text-slate-600 mb-2">Mark As <span className="text-red-500">*</span></label>
+          <div className="grid grid-cols-2 gap-3">
+            <button type="button" data-testid="empreg-full-day"
+              onClick={() => setAttendance("present")}
+              className={`py-3 rounded-xl border-2 font-semibold text-sm transition-all ${
+                attendance === "present"
+                  ? "border-green-500 bg-green-50 text-green-700"
+                  : "border-slate-200 text-slate-500 hover:border-slate-300"
+              }`}>
+              Full Day Present
+            </button>
+            <button type="button" data-testid="empreg-half-day"
+              onClick={() => setAttendance("half_day")}
+              className={`py-3 rounded-xl border-2 font-semibold text-sm transition-all ${
+                attendance === "half_day"
+                  ? "border-amber-500 bg-amber-50 text-amber-700"
+                  : "border-slate-200 text-slate-500 hover:border-slate-300"
+              }`}>
+              Half Day Present
+            </button>
+          </div>
         </div>
+
+        {/* Reason */}
         <div>
           <label className="block text-xs font-semibold text-slate-600 mb-1">Reason <span className="text-red-500">*</span></label>
           <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3} data-testid="empreg-reason"
-            placeholder="e.g. Forgot to punch out, was on field visit"
+            placeholder="e.g. Forgot to punch, was on field visit"
             className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" />
         </div>
+
         {err && <div className="bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-lg text-xs">{err}</div>}
-        <div className="flex gap-2 pt-2">
+        <div className="flex gap-2 pt-1">
           <button onClick={onClose} className="flex-1 px-3 py-2 border border-slate-300 text-slate-600 rounded-lg text-sm">Cancel</button>
           <button onClick={submit} disabled={saving} data-testid="empreg-submit-btn"
             className="flex-1 px-3 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold disabled:opacity-60">
