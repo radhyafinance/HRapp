@@ -261,15 +261,17 @@ export default function Layout() {
                       ["Designation",     profileData.designation],
                       ["Department",      profileData.department],
                       ["Branch",          profileData.branch],
-                      ["Reports To",      profileData._manager_name || profileData.reporting_to],
+                      ["Reporting Manager", profileData._manager_name || profileData.reporting_to],
                       ["Date of Joining", profileData.joining_date],
                       ["Blood Group",     profileData.blood_group],
                       ["UAN",             profileData.uan_number],
                       ["ESIC",            profileData.esi_number],
-                    ].filter(([, v]) => v).map(([label, val]) => (
+                    ].map(([label, val]) => (
                       <div key={label} className="flex justify-between items-center text-xs border-b border-slate-50 pb-1.5">
                         <span className="text-slate-400 font-medium">{label}</span>
-                        <span className="text-[#1E2A47] font-semibold text-right max-w-[60%]">{val}</span>
+                        <span className={`font-semibold text-right max-w-[60%] ${val ? "text-[#1E2A47]" : "text-slate-300"}`}>
+                          {val || "—"}
+                        </span>
                       </div>
                     ))}
                   </div>
