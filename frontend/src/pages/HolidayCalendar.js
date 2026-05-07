@@ -26,6 +26,9 @@ const DEFAULT_LEAVE_THEME = { bg: "bg-slate-50", border: "border-slate-300", lab
 
 const ABSENT_THEME   = { bg: "bg-red-100",    border: "border-red-400",    label: "text-red-800",    pill: "bg-red-600 text-white" };
 const HALF_DAY_THEME = { bg: "bg-orange-50",  border: "border-orange-400", label: "text-orange-800", pill: "bg-orange-500 text-white" };
+const PRESENT_THEME  = { bg: "bg-green-50",   border: "border-green-400",  label: "text-green-800",  pill: "bg-green-600 text-white" };
+// Implied absent = working day in the past with no record & no leave (lighter dashed style)
+const IMPLIED_ABSENT_THEME = { bg: "bg-red-50", border: "border-red-300 border-dashed", label: "text-red-600", pill: "bg-red-400 text-white" };
 
 export default function HolidayCalendar() {
   const { user } = useAuth();
@@ -40,7 +43,11 @@ export default function HolidayCalendar() {
   const canSeeTeamOverlay = ["hr_admin", "management", "managers"].includes(role);
   const [leaves, setLeaves] = useState([]);
   const [myAttendance, setMyAttendance] = useState([]);
+  const [myJoiningDate, setMyJoiningDate] = useState(null);
   const [hoveredCell, setHoveredCell] = useState(null);
+
+  // Today as local ISO (YYYY-MM-DD) for implied-absent boundary
+  const todayISO = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
 
   const fetchData = async () => {
     setLoading(true);
@@ -74,8 +81,18 @@ export default function HolidayCalendar() {
     } catch (e) { console.error(e); setMyAttendance([]); }
   };
 
+  // Fetch employee joining date once (to avoid marking pre-joining days as absent)
+  const fetchMyEmployee = async () => {
+    if (!meId) { setMyJoiningDate(null); return; }
+    try {
+      const res = await API.get(`/employees/${meId}`);
+      setMyJoiningDate(res.data.joining_date || null);
+    } catch (e) { setMyJoiningDate(null); }
+  };
+
   useEffect(() => { fetchData(); }, [year, role]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { fetchLeaves(); fetchMyAttendance(); }, [year, month, meId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchMyEmployee(); }, [meId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Map { 'YYYY-MM-DD': dayInfo } for fast lookup
   const dayMap = useMemo(() => {
@@ -166,6 +183,26 @@ export default function HolidayCalendar() {
     return Object.values(myAttendanceByDay).filter(r => r.status === "half_day").length;
   }, [myAttendanceByDay]);
 
+  const myMonthPresentDays = useMemo(() => {
+    return Object.values(myAttendanceByDay).filter(r => r.status === "present").length;
+  }, [myAttendanceByDay]);
+
+  // Implied absent: working days in the past (before today) with no attendance record and no approved leave
+  const myMonthImpliedAbsentDays = useMemo(() => {
+    if (!meId) return 0;
+    return monthGrid.filter(cell => {
+      if (!cell) return false;
+      // Must be a working day (no holiday/sunday/saturday_off marker)
+      if (cell.info) return false;
+      // Must be strictly before today
+      if (cell.iso >= todayISO) return false;
+      // Must be on or after joining date
+      if (myJoiningDate && cell.iso < myJoiningDate) return false;
+      // No attendance record and no approved leave
+      return !myAttendanceByDay[cell.iso] && !myLeaveByDay[cell.iso];
+    }).length;
+  }, [monthGrid, myAttendanceByDay, myLeaveByDay, todayISO, myJoiningDate, meId]);
+
   const prev = () => {
     if (month === 0) { setMonth(11); setYear(y => y - 1); }
     else setMonth(m => m - 1);
@@ -221,12 +258,13 @@ export default function HolidayCalendar() {
                 const myAtt = myAttendanceByDay[cell.iso];
                 const isMyAbsent = myAtt?.status === "absent";
                 const isMyHalfDay = myAtt?.status === "half_day";
+                const isMyPresent = myAtt?.status === "present";
+                // Implied absent: working day, strictly before today, after joining date, no record, no leave
+                const isImpliedAbsent = meId && !myLeave && !myAtt && !cell.info
+                  && cell.iso < todayISO
+                  && (!myJoiningDate || cell.iso >= myJoiningDate);
 
-                // Pick the cell tint:
-                //   Holiday/Sunday/Sat-off (from base) wins ONLY when the user has nothing personal that day.
-                //   My own approved leave → leave-type tint.
-                //   My absent → red tint.
-                //   My half-day → orange tint.
+                // Cell tint priority: leave > absent(DB) > half_day > present > implied_absent > base > default
                 let cellBg = "bg-white border-slate-100";
                 let cellLabel = "text-slate-700";
                 if (myLeave) {
@@ -239,6 +277,12 @@ export default function HolidayCalendar() {
                 } else if (isMyHalfDay) {
                   cellBg = `${HALF_DAY_THEME.bg} ${HALF_DAY_THEME.border}`;
                   cellLabel = HALF_DAY_THEME.label;
+                } else if (isMyPresent) {
+                  cellBg = `${PRESENT_THEME.bg} ${PRESENT_THEME.border}`;
+                  cellLabel = PRESENT_THEME.label;
+                } else if (isImpliedAbsent) {
+                  cellBg = `${IMPLIED_ABSENT_THEME.bg} ${IMPLIED_ABSENT_THEME.border}`;
+                  cellLabel = IMPLIED_ABSENT_THEME.label;
                 } else if (baseStyle) {
                   cellBg = `${baseStyle.bg} ${baseStyle.border}`;
                   cellLabel = baseStyle.label;
@@ -253,7 +297,7 @@ export default function HolidayCalendar() {
                   <div key={cell.iso}
                     onMouseEnter={() => (teamOnLeave.length || myLeave) && setHoveredCell(cell.iso)}
                     onMouseLeave={() => setHoveredCell(null)}
-                    onClick={() => (teamOnLeave.length || myLeave || isMyAbsent || isMyHalfDay) && setHoveredCell(c => c === cell.iso ? null : cell.iso)}
+                    onClick={() => (teamOnLeave.length || myLeave || isMyAbsent || isMyHalfDay || isMyPresent || isImpliedAbsent) && setHoveredCell(c => c === cell.iso ? null : cell.iso)}
                     title={cell.info ? `${cell.info.label}` : ""}
                     data-testid={`cal-cell-${cell.iso}`}
                     className={`aspect-square p-1 sm:p-2 rounded-md sm:rounded-lg border text-xs sm:text-sm relative overflow-hidden
@@ -262,7 +306,7 @@ export default function HolidayCalendar() {
                       flex flex-col justify-between transition-all hover:shadow-md sm:hover:scale-[1.02]`}>
                     <div className="flex items-start justify-between gap-0.5 min-w-0">
                       <span className={`font-semibold leading-none ${cellLabel}`}>{cell.day}</span>
-                      {/* Top-right corner marker priority: my-leave > absent > half-day > base */}
+                      {/* Top-right corner marker priority: leave > absent > half-day > present > implied-absent > base */}
                       {myLeave ? (
                         <span
                           data-testid={`my-leave-${cell.iso}`}
@@ -284,12 +328,26 @@ export default function HolidayCalendar() {
                         >
                           ½D
                         </span>
+                      ) : isMyPresent ? (
+                        <span
+                          data-testid={`my-present-${cell.iso}`}
+                          className={`text-[7px] sm:text-[8px] font-bold px-1 sm:px-1.5 py-0.5 rounded-full leading-none flex-shrink-0 ${PRESENT_THEME.pill}`}
+                        >
+                          ✓
+                        </span>
+                      ) : isImpliedAbsent ? (
+                        <span
+                          data-testid={`my-implied-absent-${cell.iso}`}
+                          className={`text-[7px] sm:text-[8px] font-bold px-1 sm:px-1.5 py-0.5 rounded-full leading-none flex-shrink-0 ${IMPLIED_ABSENT_THEME.pill}`}
+                        >
+                          ABS
+                        </span>
                       ) : baseStyle ? (
                         <span className={`w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full flex-shrink-0 ${baseStyle.badge}`} />
                       ) : null}
                     </div>
 
-                    {cell.info?.type === "holiday" && !myLeave && !isMyAbsent && (
+                    {cell.info?.type === "holiday" && !myLeave && !isMyAbsent && !isMyPresent && !isMyHalfDay && (
                       <p className="hidden sm:block text-[10px] leading-tight font-semibold text-red-700 line-clamp-2">{cell.info.label}</p>
                     )}
 
@@ -404,13 +462,21 @@ export default function HolidayCalendar() {
                       <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-teal-500/90 text-white">CO</span>
                       <span className="text-slate-600">Comp-Off</span>
                     </div>
-                    <div className="flex items-center gap-1.5 text-[11px] col-span-2">
+                    <div className="flex items-center gap-1.5 text-[11px]">
+                      <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-green-600 text-white">✓</span>
+                      <span className="text-slate-600">Present</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[11px]">
                       <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-orange-500 text-white">½D</span>
                       <span className="text-slate-600">Half Day</span>
                     </div>
-                    <div className="flex items-center gap-1.5 text-[11px] col-span-2">
+                    <div className="flex items-center gap-1.5 text-[11px]">
                       <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white">ABS</span>
-                      <span className="text-slate-600">Marked Absent</span>
+                      <span className="text-slate-600">Absent (marked)</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[11px] col-span-2">
+                      <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-red-400 text-white">ABS</span>
+                      <span className="text-slate-600">Absent (no record)</span>
                     </div>
                   </div>
                 </div>
@@ -451,8 +517,14 @@ export default function HolidayCalendar() {
             <p className="text-xs opacity-80 mt-1">
               {monthHolidayCount} {monthHolidayCount === 1 ? "holiday" : "holidays"} this month
             </p>
-            {meId && (myMonthLeaveDays > 0 || myMonthAbsentDays > 0 || myMonthHalfDays > 0) && (
-              <div className="mt-3 pt-3 border-t border-white/10 flex gap-4 text-xs">
+            {meId && (myMonthLeaveDays > 0 || myMonthAbsentDays > 0 || myMonthHalfDays > 0 || myMonthPresentDays > 0 || myMonthImpliedAbsentDays > 0) && (
+              <div className="mt-3 pt-3 border-t border-white/10 flex flex-wrap gap-4 text-xs">
+                {myMonthPresentDays > 0 && (
+                  <div data-testid="my-month-present-count">
+                    <p className="opacity-70">Present</p>
+                    <p className="text-lg font-bold text-green-300">{myMonthPresentDays}d</p>
+                  </div>
+                )}
                 {myMonthLeaveDays > 0 && (
                   <div data-testid="my-month-leave-count">
                     <p className="opacity-70">On Leave</p>
@@ -465,10 +537,10 @@ export default function HolidayCalendar() {
                     <p className="text-lg font-bold text-orange-300">{myMonthHalfDays}d</p>
                   </div>
                 )}
-                {myMonthAbsentDays > 0 && (
+                {(myMonthAbsentDays + myMonthImpliedAbsentDays) > 0 && (
                   <div data-testid="my-month-absent-count">
                     <p className="opacity-70">Absent</p>
-                    <p className="text-lg font-bold text-red-300">{myMonthAbsentDays}d</p>
+                    <p className="text-lg font-bold text-red-300">{myMonthAbsentDays + myMonthImpliedAbsentDays}d</p>
                   </div>
                 )}
               </div>
