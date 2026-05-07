@@ -195,15 +195,15 @@ export default function HolidayCalendar() {
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
         {/* Calendar grid */}
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-100 grid grid-cols-7 gap-1">
+          <div className="px-2 sm:px-4 py-2 sm:py-3 border-b border-slate-100 grid grid-cols-7 gap-1 sm:gap-1.5">
             {DAY_LABELS.map(d => (
-              <div key={d} className="text-center text-[11px] font-bold uppercase tracking-wider text-slate-500">{d}</div>
+              <div key={d} className="text-center text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-500">{d}</div>
             ))}
           </div>
           {loading ? (
             <div className="p-12 text-center text-slate-400 text-sm">Loading...</div>
           ) : (
-            <div className="p-2 grid grid-cols-7 gap-1.5">
+            <div className="p-1.5 sm:p-2 grid grid-cols-7 gap-1 sm:gap-1.5">
               {monthGrid.map((cell, i) => {
                 if (!cell) return <div key={`pad-${i}`} className="aspect-square" />;
 
@@ -243,45 +243,62 @@ export default function HolidayCalendar() {
                   <div key={cell.iso}
                     onMouseEnter={() => (teamOnLeave.length || myLeave) && setHoveredCell(cell.iso)}
                     onMouseLeave={() => setHoveredCell(null)}
+                    onClick={() => (teamOnLeave.length || myLeave || isMyAbsent) && setHoveredCell(c => c === cell.iso ? null : cell.iso)}
                     title={cell.info ? `${cell.info.label}` : ""}
                     data-testid={`cal-cell-${cell.iso}`}
-                    className={`aspect-square p-2 rounded-lg border text-sm relative
+                    className={`aspect-square p-1 sm:p-2 rounded-md sm:rounded-lg border text-xs sm:text-sm relative overflow-hidden
                       ${cellBg}
                       ${isToday ? "ring-2 ring-[#E85B1E]" : ""}
-                      flex flex-col justify-between transition-all hover:scale-[1.02] hover:shadow-md`}>
-                    <div className="flex items-start justify-between gap-1">
-                      <span className={`font-semibold ${cellLabel}`}>{cell.day}</span>
+                      flex flex-col justify-between transition-all hover:shadow-md sm:hover:scale-[1.02]`}>
+                    <div className="flex items-start justify-between gap-0.5 min-w-0">
+                      <span className={`font-semibold leading-none ${cellLabel}`}>{cell.day}</span>
                       {/* Top-right corner marker priority: my-leave > absent > base */}
                       {myLeave ? (
                         <span
                           data-testid={`my-leave-${cell.iso}`}
-                          className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${(LEAVE_THEMES[myLeave.leave_type] || DEFAULT_LEAVE_THEME).pill}`}
+                          className={`text-[7px] sm:text-[8px] font-bold px-1 sm:px-1.5 py-0.5 rounded-full leading-none flex-shrink-0 ${(LEAVE_THEMES[myLeave.leave_type] || DEFAULT_LEAVE_THEME).pill}`}
                         >
                           {myLeave.leave_type || "LV"}
                         </span>
                       ) : isMyAbsent ? (
                         <span
                           data-testid={`my-absent-${cell.iso}`}
-                          className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full ${ABSENT_THEME.pill}`}
+                          className={`text-[7px] sm:text-[8px] font-bold px-1 sm:px-1.5 py-0.5 rounded-full leading-none flex-shrink-0 ${ABSENT_THEME.pill}`}
                         >
                           ABS
                         </span>
                       ) : baseStyle ? (
-                        <span className={`w-2 h-2 rounded-full ${baseStyle.badge}`} />
+                        <span className={`w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full flex-shrink-0 ${baseStyle.badge}`} />
                       ) : null}
                     </div>
 
                     {cell.info?.type === "holiday" && !myLeave && !isMyAbsent && (
-                      <p className="text-[10px] leading-tight font-semibold text-red-700 line-clamp-2">{cell.info.label}</p>
+                      <p className="hidden sm:block text-[10px] leading-tight font-semibold text-red-700 line-clamp-2">{cell.info.label}</p>
                     )}
 
                     {/* Team overlay — initials avatars (managers/hr_admin only, OTHER employees) */}
                     {teamOnLeave.length > 0 && (
-                      <div className="flex flex-wrap items-end gap-0.5 mt-auto" data-testid={`cell-leaves-${cell.iso}`}>
-                        {teamOnLeave.slice(0, 3).map((lv, idx) => (
-                          <span key={`${lv.id}-${idx}`}
+                      <div className="flex items-end gap-0.5 mt-auto min-w-0 flex-nowrap overflow-hidden" data-testid={`cell-leaves-${cell.iso}`}>
+                        {/* Mobile: show only 1; Desktop: show 3 */}
+                        {teamOnLeave.slice(0, 1).map((lv, idx) => (
+                          <span key={`${lv.id}-${idx}-m`}
                             title={`${lv.employee_name} • ${lv.leave_type} (${lv.from_date} → ${lv.to_date})`}
-                            className={`inline-flex items-center justify-center text-[8px] font-bold rounded-full w-4 h-4 ${
+                            className={`sm:hidden inline-flex items-center justify-center text-[7px] font-bold rounded-full w-3.5 h-3.5 flex-shrink-0 ${
+                              lv.leave_type === "SL" ? "bg-rose-200 text-rose-800" :
+                              lv.leave_type === "CL" ? "bg-amber-200 text-amber-800" :
+                              lv.leave_type === "EL" ? "bg-violet-200 text-violet-800" :
+                              "bg-slate-200 text-slate-700"
+                            }`}>
+                            {lv.initials}
+                          </span>
+                        ))}
+                        {teamOnLeave.length > 1 && (
+                          <span className="sm:hidden text-[7px] font-bold text-slate-500 leading-none">+{teamOnLeave.length - 1}</span>
+                        )}
+                        {teamOnLeave.slice(0, 3).map((lv, idx) => (
+                          <span key={`${lv.id}-${idx}-d`}
+                            title={`${lv.employee_name} • ${lv.leave_type} (${lv.from_date} → ${lv.to_date})`}
+                            className={`hidden sm:inline-flex items-center justify-center text-[8px] font-bold rounded-full w-4 h-4 flex-shrink-0 ${
                               lv.leave_type === "SL" ? "bg-rose-200 text-rose-800" :
                               lv.leave_type === "CL" ? "bg-amber-200 text-amber-800" :
                               lv.leave_type === "EL" ? "bg-violet-200 text-violet-800" :
@@ -291,15 +308,15 @@ export default function HolidayCalendar() {
                           </span>
                         ))}
                         {teamOnLeave.length > 3 && (
-                          <span className="text-[8px] font-bold text-slate-500">+{teamOnLeave.length - 3}</span>
+                          <span className="hidden sm:inline text-[8px] font-bold text-slate-500">+{teamOnLeave.length - 3}</span>
                         )}
                       </div>
                     )}
 
-                    {/* Hover popover with details */}
+                    {/* Hover/click popover with details */}
                     {hoveredCell === cell.iso && (teamOnLeave.length > 0 || myLeave) && (
-                      <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-30 pointer-events-none">
-                        <div className="bg-white border border-slate-200 shadow-xl rounded-lg p-2.5 min-w-[200px] text-left">
+                      <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-30 pointer-events-none max-w-[90vw]">
+                        <div className="bg-white border border-slate-200 shadow-xl rounded-lg p-2.5 min-w-[180px] sm:min-w-[200px] text-left">
                           <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
                             {cell.iso}
                           </p>
