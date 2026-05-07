@@ -11,7 +11,7 @@ from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image as RLImage
 )
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
 from reportlab.pdfbase import pdfmetrics
@@ -20,23 +20,35 @@ from reportlab.pdfbase.ttfonts import TTFont
 
 # ----- Devanagari font registration (one-shot at import) --------------------
 _FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
-# Nirmala UI (original doc font) is proprietary; NotoSans Devanagari Medium
-# is the closest open-source match — same clean sans-serif with moderately
-# heavier strokes than Regular.
-_HINDI_FONT_PATH = os.path.join(_FONT_DIR, "NotoSansDevanagari-Medium.ttf")
+# Nirmala UI (original doc font) is proprietary; NotoSans Devanagari Medium is
+# the closest open-source match for body text, SemiBold for bold/heading text.
+_HINDI_MED_PATH  = os.path.join(_FONT_DIR, "NotoSansDevanagari-Medium.ttf")
+_HINDI_SEMI_PATH = os.path.join(_FONT_DIR, "NotoSansDevanagari-SemiBold.ttf")
 _HINDI_FONT = "Helvetica"
 try:
-    if os.path.exists(_HINDI_FONT_PATH):
-        pdfmetrics.registerFont(TTFont("Hindi", _HINDI_FONT_PATH))
+    if os.path.exists(_HINDI_MED_PATH):
+        pdfmetrics.registerFont(TTFont("Hindi", _HINDI_MED_PATH))
         _HINDI_FONT = "Hindi"
+        # Register SemiBold as the bold variant so H1/H2 headings (which inherit
+        # bold from Heading1/Heading2) render all Devanagari glyphs consistently.
+        if os.path.exists(_HINDI_SEMI_PATH):
+            pdfmetrics.registerFont(TTFont("HindiB", _HINDI_SEMI_PATH))
+        else:
+            pdfmetrics.registerFont(TTFont("HindiB", _HINDI_MED_PATH))  # fallback
+        pdfmetrics.registerFontFamily(
+            "Hindi",
+            normal="Hindi",
+            bold="HindiB",
+            italic="Hindi",
+            boldItalic="HindiB",
+        )
     else:
-        # Fallback chain: Serif → Sans Regular → Helvetica
-        for fallback in ["NotoSerifDevanagari-Regular.ttf", "NotoSansDevanagari-Regular.ttf"]:
-            fp = os.path.join(_FONT_DIR, fallback)
-            if os.path.exists(fp):
-                pdfmetrics.registerFont(TTFont("Hindi", fp))
-                _HINDI_FONT = "Hindi"
-                break
+        # Fallback chain: Sans Regular → Helvetica
+        _SANS_PATH = os.path.join(_FONT_DIR, "NotoSansDevanagari-Regular.ttf")
+        if os.path.exists(_SANS_PATH):
+            pdfmetrics.registerFont(TTFont("Hindi", _SANS_PATH))
+            pdfmetrics.registerFontFamily("Hindi", normal="Hindi", bold="Hindi", italic="Hindi", boldItalic="Hindi")
+            _HINDI_FONT = "Hindi"
 except Exception:
     pass
 
@@ -72,8 +84,62 @@ NOTE = ParagraphStyle("NOTE", parent=_styles["Italic"], fontSize=8, leading=10,
 CENTER_BOLD = ParagraphStyle("CB", parent=_styles["Normal"], fontSize=10, leading=12,
                              alignment=TA_CENTER, fontName="Helvetica-Bold")
 
+# Dedicated Hindi heading styles: fontName set directly → no Helvetica-Bold inheritance
+# so ALL Devanagari glyphs render with a consistent weight (SemiBold for headings).
+HINDI_H1    = ParagraphStyle("HH1", fontName="HindiB", fontSize=13, leading=18,
+                              textColor=colors.black, alignment=TA_CENTER, spaceBefore=4, spaceAfter=4)
+HINDI_H2    = ParagraphStyle("HH2", fontName="HindiB", fontSize=11, leading=16,
+                              textColor=colors.black, spaceBefore=6, spaceAfter=4)
+HINDI_SUB   = ParagraphStyle("HSUB", fontName="Hindi", fontSize=9, leading=12,
+                              alignment=TA_CENTER, textColor=colors.black, spaceAfter=4)
+
 
 _BORDER = colors.black
+
+
+def _hindi_heading_image(text: str, font_size: int = 14, width_mm: float = 170.0) -> RLImage:
+    """Render a Hindi heading using Pillow (proper OpenType shaping) at 300 DPI
+    and embed as a crisp image centred on the page. This avoids ReportLab's missing
+    Devanagari GSUB/GPOS support which causes inconsistent ligature rendering."""
+    try:
+        from PIL import Image as PILImage, ImageDraw, ImageFont
+        font_path = _HINDI_MED_PATH if os.path.exists(_HINDI_MED_PATH) else _HINDI_SEMI_PATH
+
+        # Render at 3× oversample for crispness, then display at natural point size.
+        # 1pt = 1/72 inch; at 300 DPI that is 300/72 ≈ 4.17 px/pt.
+        DPI = 300
+        px_per_pt = DPI / 72.0
+        oversample = 3
+        pil_pt = int(font_size * px_per_pt * oversample)  # e.g. 14pt → 175px
+
+        font = ImageFont.truetype(font_path, pil_pt)
+        dummy = PILImage.new("RGB", (1, 1))
+        bbox = ImageDraw.Draw(dummy).textbbox((0, 0), text, font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        pad_x = int(pil_pt * 0.08)
+        pad_y = int(pil_pt * 0.06)
+        img_w, img_h = tw + pad_x * 2, th + pad_y * 2
+
+        img = PILImage.new("RGBA", (img_w, img_h), (255, 255, 255, 0))
+        ImageDraw.Draw(img).text(
+            (pad_x - bbox[0], pad_y - bbox[1]), text, font=font, fill=(0, 0, 0, 255)
+        )
+        buf = BytesIO()
+        img.save(buf, format="PNG", optimize=False, compress_level=1)
+        buf.seek(0)
+
+        # Display at natural text size (not stretched to full page width)
+        eff_dpi = DPI * oversample
+        rl_w = (img_w / (eff_dpi / 25.4)) * mm   # convert px → mm → PDF points
+        rl_h = (img_h / (eff_dpi / 25.4)) * mm
+        rl_img = RLImage(buf, width=rl_w, height=rl_h)
+        rl_img.hAlign = "CENTER"
+        return rl_img
+    except Exception:
+        return Paragraph(f'<font name="HindiB">{text}</font>',
+                         ParagraphStyle("_hfb", fontName="HindiB", fontSize=font_size,
+                                        leading=font_size + 4, alignment=TA_CENTER,
+                                        textColor=colors.black))
 
 
 def _kv_table(rows, label_w=60 * mm, value_w=110 * mm):
@@ -355,7 +421,8 @@ def _section_3_undertaking(story, c):
 def _section_4_insurance(story, c):
     story.append(PageBreak())
     story.append(_para("EMPLOYEE'S INSURANCE FORM", H1))
-    story.append(_para(_hi("(कर्मचारी के बीमा पत्र)"), SUBTITLE))
+    story.append(_hindi_heading_image("(कर्मचारी के बीमा पत्र)", font_size=10, width_mm=120.0))
+    story.append(Spacer(1, 2))
     story.append(_para("(Group Medical Insurance, Group Personal Accident &amp; Group Term Life)", SUBTITLE))
     story.append(Spacer(1, 4))
 
@@ -677,7 +744,8 @@ def _section_8_esi(story, c):
 
 def _section_9_notice(story, c):
     story.append(PageBreak())
-    story.append(_para(_hi("घोषणा पत्र"), H1))
+    story.append(_hindi_heading_image("घोषणा पत्र", font_size=12))
+    story.append(Spacer(1, 2))
 
     name = _full_name(c) or "_______________"
     fhn = c.get("father_or_husband_name") or "_______________"
@@ -703,7 +771,7 @@ def _section_9_notice(story, c):
         [["1", "Trainee", "15 Days"],
          ["2", "Probation", "30 Days"],
          ["3", "Up to Sr. Officer", "60 Days"],
-         ["4", "Asst. Manager &amp; Above", "90 Days"]],
+         ["4", "Asst. Manager & Above", "90 Days"]],
         col_widths=[20 * mm, 80 * mm, 70 * mm],
     ))
     story.append(Spacer(1, 6))
