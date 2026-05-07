@@ -201,6 +201,22 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
     - Manager/HR-Admin team-overlay (initials avatars) is preserved but filters out the user's own leaves to avoid double rendering.
     - Backend endpoints reused as-is: `GET /api/leaves/calendar-overlay` (already scopes per role) and `GET /api/attendance/my?month=&year=`.
     - HR Admin (no `employee_id`) gracefully shows team overlay only — personal sections are hidden.
+    - **Mobile (PWA) polish (Feb 2026)**: cells now use `overflow-hidden`, responsive padding/text sizes, smaller pills (`text-[7px]` on mobile), `flex-shrink-0` on pills/avatars, hidden holiday text on mobile, single team initial + "+N" indicator on mobile (3 + "+N" on desktop), tap-to-toggle popover for touch users, `max-w-[90vw]` cap on hover popover.
+
+37. **Auto Half-Day from Shift Rules (Feb 2026)** -
+    Per-role office hours and automatic half-day computation now run on every punch:
+    - **Field Staff (`field_agent`) + Managers (`managers`)** → 07:00 – 16:00 IST
+    - **Management + HO Staff (`employee`)** → 09:30 – 18:30 IST
+    - **HR Admin** → no shift; doesn't punch
+    - **Half-Day triggers**:
+      1. Punched in **> 30 min** after shift start → status `half_day` with reason `late_punch_in` (also stores `late_minutes`).
+      2. Total `hours_worked` **< 6** at punch-out → status `half_day` with reason `short_hours`.
+      3. Once a day is half-day for being late, it **cannot recover** to `present` — penalty stands even if the user later works ≥ 6 hours.
+    - **HR override locks the day** — `_apply_regularisation` now sets `regularised: True`; subsequent `punch_in` / `punch_out` skip the auto-rule and preserve HR-edited status.
+    - **New helper module** `/app/backend/services/shift_rules.py` exposes `compute_punch_in_status()` and `compute_status_after_punch_out()`. Constants `LATE_GRACE_MINUTES = 30` and `MIN_FULL_DAY_HOURS = 6.0`.
+    - **API responses** for `/api/attendance/punch-in` and `/punch-out` now include `status`, `late_minutes`, `auto_status_reason` and a friendly suffix in `message` (e.g. *"— marked Half Day (late by 45 min)"*).
+    - **Frontend** `<AttendanceStatusBadge>` (new component at `/app/frontend/src/components/attendance/StatusBadge.js`) shows the actual status pill (Present / Half Day / Outside Fence / Leave / etc.) plus a subtle reason chip — `Late 45m` (amber) for late half-day or `<6h` (orange) for short-hours half-day. Used in personal Attendance History, Today's Summary (managers), and the team attendance table.
+    - **Test coverage**: 14 unit tests in `/app/backend/tests/test_shift_rules.py` covering on-time/early/within-grace/late, both shift cohorts, late-locks-on-long-hours, short-hours, and unmapped roles. All pass.
 
 - [ ] Employee confirmation letter after probation
 - [ ] Leave encashment calculation

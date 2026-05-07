@@ -4,6 +4,7 @@ import { Camera, MapPin, CheckCircle, AlertCircle, Clock, LogIn, LogOut, Refresh
 import { useAuth } from "../contexts/AuthContext";
 import { AdminRegulariseModal, EmployeeRegulariseRequestModal, PendingRequestsPanel, MyRequestsList } from "../components/attendance/Regularisation";
 import { FaceMismatchBadge, FaceMismatchModal } from "../components/attendance/FaceMismatch";
+import { AttendanceStatusBadge } from "../components/attendance/StatusBadge";
 
 function CameraCapture({ onCapture, onClose }) {
   const videoRef = useRef(null);
@@ -461,9 +462,7 @@ export default function Attendance() {
                     <FaceMismatchBadge record={r} onOpen={(side) => setFaceReview({ record: r, side })} />
                   </span>
                   <span className="text-slate-500">{r.punch_in_time ? new Date(r.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</span>
-                  <span className={`px-2 py-0.5 rounded-full ${r.geofence_verified ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>
-                    {r.geofence_verified ? "In Fence" : "Out Fence"}
-                  </span>
+                  <AttendanceStatusBadge record={r} />
                   {canRegulariseAdmin && (
                     <button onClick={() => setRegEditRecord(r)} data-testid={`edit-attendance-${r.id}`}
                       title="Regularise this record"
@@ -526,7 +525,7 @@ export default function Attendance() {
                       <td className="px-4 py-3 text-sm text-slate-600">{r.punch_out_time ? new Date(r.punch_out_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</td>
                       <td className="px-4 py-3 text-sm text-slate-600">{r.hours_worked ? `${r.hours_worked}h` : "-"}</td>
                       <td className="px-4 py-3 text-xs text-slate-500">{r.location_name || "-"}</td>
-                      <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${r.geofence_verified ? "bg-green-100 text-green-700" : "bg-amber-100 text-amber-700"}`}>{r.punch_in_time ? (r.geofence_verified ? "Present" : "Outside Fence") : (r.status || "Absent")}</span></td>
+                      <td className="px-4 py-3"><AttendanceStatusBadge record={r} /></td>
                     </tr>
                   ))}
               </tbody>
@@ -602,7 +601,7 @@ export default function Attendance() {
                     <td className="px-4 py-3 text-sm text-slate-600">{r.punch_out_time ? new Date(r.punch_out_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{r.hours_worked ? `${r.hours_worked}h` : "-"}</td>
                     <td className="px-4 py-3 text-xs text-slate-500">{r.location_name || "-"}</td>
-                    <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${r.geofence_verified ? "bg-green-100 text-green-700" : r.status === "absent" ? "bg-red-100 text-red-700" : r.status === "leave" ? "bg-amber-100 text-amber-700" : r.punch_in_time ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>{r.punch_in_time ? (r.geofence_verified ? "Present" : "Outside Fence") : (r.status || "Absent")}</span></td>
+                    <td className="px-4 py-3"><AttendanceStatusBadge record={r} /></td>
                     {canRegulariseAdmin && (
                       <td className="px-4 py-3 text-right">
                         <button onClick={() => setRegEditRecord(r)} data-testid={`edit-team-${r.id}`}

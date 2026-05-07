@@ -4,6 +4,11 @@ from typing import Optional
 from database import db
 from auth_utils import get_current_user
 from services.face_match import compare_face_with_reference, DEFAULT_TOLERANCE
+from services.shift_rules import (
+    compute_punch_in_status,
+    compute_status_after_punch_out,
+    shift_for_role,
+)
 from datetime import datetime, timezone, date
 import math
 import os
@@ -139,12 +144,26 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
             raise HTTPException(status_code=400, detail=face_result["reason"])
 
     now = datetime.now(timezone.utc)
+    punch_in_iso = now.isoformat()
+
+    # Auto status from shift rules — skip if HR has already locked the day via regularisation.
+    locked_by_hr = bool(existing and existing.get("regularised"))
+    if locked_by_hr:
+        auto_status = existing.get("status") or "present"
+        late_minutes = existing.get("late_minutes", 0)
+        auto_reason = existing.get("auto_status_reason")
+    else:
+        rule = compute_punch_in_status(current_user.get("role"), punch_in_iso, today)
+        auto_status = rule["status"]
+        late_minutes = rule["late_minutes"]
+        auto_reason = rule["reason"]
+
     # Only persist the selfie if face match failed/flagged — saves DB space when matched
     keep_photo = data.photo_base64 if face_result.get("matched") == False else None
     record = {
         "employee_id": data.employee_id,
         "date": today,
-        "punch_in_time": now.isoformat(),
+        "punch_in_time": punch_in_iso,
         "punch_in_location": {"lat": data.latitude, "lon": data.longitude, "name": location_name},
         "punch_in_photo": keep_photo,
         "punch_in_face_matched": face_result.get("matched"),
@@ -153,23 +172,31 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
         "geofence_verified": in_fence,
         "distance_from_office": round(distance, 2) if distance else None,
         "location_name": location_name,
-        "status": "present",
+        "status": auto_status,
+        "late_minutes": late_minutes,
+        "auto_status_reason": auto_reason,
         "punch_out_time": None,
     }
     if existing:
         await db.attendance_records.update_one({"_id": existing["_id"]}, {"$set": record})
     else:
         await db.attendance_records.insert_one(record)
+    half_day_msg = ""
+    if auto_status == "half_day" and auto_reason == "late_punch_in":
+        half_day_msg = f" — marked Half Day (late by {late_minutes} min)"
     return {
         "success": True,
         "geofence_verified": in_fence,
         "location_name": location_name,
         "distance_meters": round(distance, 2) if distance else None,
         "punch_in_time": now.isoformat(),
+        "status": auto_status,
+        "late_minutes": late_minutes,
+        "auto_status_reason": auto_reason,
         "face_matched": face_result.get("matched"),
         "face_distance": face_result.get("distance"),
         "face_warning": face_result.get("reason") if face_result.get("matched") == False else None,
-        "message": f"Punched in {'within geofence' if in_fence else 'OUTSIDE geofence'}" + (f" at {location_name}" if location_name else ""),
+        "message": f"Punched in {'within geofence' if in_fence else 'OUTSIDE geofence'}" + (f" at {location_name}" if location_name else "") + half_day_msg,
     }
 
 
@@ -195,7 +222,23 @@ async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current
     now = datetime.now(timezone.utc)
     punch_in_time = datetime.fromisoformat(record["punch_in_time"])
     hours_worked = (now - punch_in_time).total_seconds() / 3600
+    hours_rounded = round(hours_worked, 2)
     keep_photo = data.photo_base64 if face_result.get("matched") == False else None
+
+    # Recompute status — skipped if HR has regularised the day.
+    locked_by_hr = bool(record.get("regularised"))
+    if locked_by_hr:
+        new_status = record.get("status") or "present"
+        new_reason = record.get("auto_status_reason")
+    else:
+        rule = compute_status_after_punch_out(
+            current_status=record.get("status"),
+            current_reason=record.get("auto_status_reason"),
+            hours_worked=hours_rounded,
+        )
+        new_status = rule["status"]
+        new_reason = rule["reason"]
+
     await db.attendance_records.update_one(
         {"_id": record["_id"]},
         {"$set": {
@@ -205,14 +248,23 @@ async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current
             "punch_out_face_matched": face_result.get("matched"),
             "punch_out_face_distance": face_result.get("distance"),
             "punch_out_face_warning": face_result.get("reason") if face_result.get("matched") == False else None,
-            "hours_worked": round(hours_worked, 2),
+            "hours_worked": hours_rounded,
+            "status": new_status,
+            "auto_status_reason": new_reason,
         }},
     )
+    msg_extra = ""
+    if new_status == "half_day" and new_reason == "short_hours":
+        msg_extra = " — marked Half Day (worked < 6 hours)"
+    elif new_status == "half_day" and new_reason == "late_punch_in":
+        msg_extra = " — marked Half Day (late punch-in)"
     return {
         "success": True,
-        "hours_worked": round(hours_worked, 2),
+        "hours_worked": hours_rounded,
         "punch_out_time": now.isoformat(),
-        "message": f"Punched out. Total hours: {round(hours_worked, 2)}",
+        "status": new_status,
+        "auto_status_reason": new_reason,
+        "message": f"Punched out. Total hours: {hours_rounded}{msg_extra}",
         "face_matched": face_result.get("matched"),
         "face_distance": face_result.get("distance"),
         "face_warning": face_result.get("reason") if face_result.get("matched") == False else None,
@@ -633,6 +685,9 @@ async def _apply_regularisation(
                 pass
 
     before = {k: (existing or {}).get(k) for k in ["punch_in_time", "punch_out_time", "status", "hours_worked"]}
+
+    # Mark as HR-locked so subsequent auto-rules (punch-out, etc.) won't override.
+    changes["regularised"] = True
 
     if existing:
         await db.attendance_records.update_one({"_id": existing["_id"]}, {"$set": changes})
