@@ -350,7 +350,7 @@ export default function Leaves() {
     { key: "CL", label: "Casual", color: "text-blue-600" },
     { key: "SL", label: "Sick", color: "text-purple-600" },
     { key: "EL", label: "Earned", color: "text-green-600" },
-    { key: "Marriage", label: "Marriage", color: "text-pink-600" },
+    { key: "Comp-Off", label: "Comp-Off", color: "text-orange-600" },
   ];
 
   return (
@@ -383,9 +383,6 @@ export default function Leaves() {
                   style={{ width: `${Math.min(100, ((balance[key]?.used || 0) / Math.max(balance[key]?.total || 1, 1)) * 100)}%` }} />
               </div>
               <p className="text-xs text-slate-400 mt-1">{balance[key]?.used || 0} used / {balance[key]?.total || 0} total</p>
-              {key === "Marriage" && (balance[key]?.remaining ?? 5) === 0 && (
-                <p className="text-xs text-red-500 mt-1 font-medium">Already availed</p>
-              )}
             </div>
           ))}
         </div>

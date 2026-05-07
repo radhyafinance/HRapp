@@ -503,17 +503,25 @@ async def all_leave_balances(current_user: dict = Depends(get_current_user)):
 
 
 
+@router.get("/balance/my")
 async def my_leave_balance(current_user: dict = Depends(get_current_user)):
     emp_id = current_user.get("employee_id")
     if not emp_id:
-        return LEAVE_BALANCE_TEMPLATE
+        return {**LEAVE_BALANCE_TEMPLATE, "Comp-Off": {"total": 0, "used": 0, "remaining": 0}}
     balance = await db.leave_balances.find_one(
         {"employee_id": emp_id, "year": get_financial_year()}
     )
     if not balance:
-        return LEAVE_BALANCE_TEMPLATE
-    balance.pop("_id", None)
-    return balance
+        bal = dict(LEAVE_BALANCE_TEMPLATE)
+    else:
+        balance.pop("_id", None)
+        bal = balance
+    # Include live Comp-Off count (approved, not used, not expired)
+    comp_off_remaining = await db.comp_off_grants.count_documents(
+        {"employee_id": emp_id, "status": "approved"}
+    )
+    bal["Comp-Off"] = {"total": comp_off_remaining, "used": 0, "remaining": comp_off_remaining}
+    return bal
 
 
 @router.get("/balance/{employee_id}")
