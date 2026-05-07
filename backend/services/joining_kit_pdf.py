@@ -20,12 +20,23 @@ from reportlab.pdfbase.ttfonts import TTFont
 
 # ----- Devanagari font registration (one-shot at import) --------------------
 _FONT_DIR = os.path.join(os.path.dirname(__file__), "fonts")
-_HINDI_FONT_PATH = os.path.join(_FONT_DIR, "NotoSansDevanagari-Regular.ttf")
-_HINDI_FONT = "Helvetica"  # fallback
+# Nirmala UI (original doc font) is proprietary; NotoSans Devanagari Medium
+# is the closest open-source match — same clean sans-serif with moderately
+# heavier strokes than Regular.
+_HINDI_FONT_PATH = os.path.join(_FONT_DIR, "NotoSansDevanagari-Medium.ttf")
+_HINDI_FONT = "Helvetica"
 try:
     if os.path.exists(_HINDI_FONT_PATH):
         pdfmetrics.registerFont(TTFont("Hindi", _HINDI_FONT_PATH))
         _HINDI_FONT = "Hindi"
+    else:
+        # Fallback chain: Serif → Sans Regular → Helvetica
+        for fallback in ["NotoSerifDevanagari-Regular.ttf", "NotoSansDevanagari-Regular.ttf"]:
+            fp = os.path.join(_FONT_DIR, fallback)
+            if os.path.exists(fp):
+                pdfmetrics.registerFont(TTFont("Hindi", fp))
+                _HINDI_FONT = "Hindi"
+                break
 except Exception:
     pass
 
