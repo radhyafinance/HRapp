@@ -192,6 +192,8 @@ def _section_1(story, c, company):
         ("10", "PF Proof Document", False, ""),
         ("11", "ESIC Proof Document", False, ""),
         ("12", "PAN Card Copy", has_pan, "Already provided" if has_pan else ""),
+        ("13", "Consent Form — Original Documents Submission", True, "Included below"),
+        ("14", "POSH Declaration &amp; BGV Consent Form", True, "Included below"),
     ]
     rows = [[sr, p, _checkbox(checked), remark] for sr, p, checked, remark in items]
     story.append(_grid_table(
@@ -881,6 +883,146 @@ def _section_12_asset_form(story, c):
     ))
 
 
+def _section_13_consent_docs(story, c):
+    """Consent Form for Submission of Original Educational Documents."""
+    story.append(PageBreak())
+    story.append(_para("CONSENT FORM FOR SUBMISSION OF ORIGINAL EDUCATIONAL DOCUMENTS", H1))
+    story.append(Spacer(1, 6))
+
+    name = _full_name(c) or "_______________"
+    fhn = c.get("father_or_husband_name") or "_______________"
+    doj = _fmt_date(c.get("expected_joining_date")) or "_______________"
+
+    story.append(_para(
+        f"I, <b>{name}</b>, son/daughter of <b>{fhn}</b>, hereby give my free consent to submit my original "
+        "10th and 12th mark sheets to Radhya Micro Finance Pvt. Ltd. at the time of my joining.",
+        BODY))
+    story.append(Spacer(1, 6))
+    story.append(_para("I understand and agree that:", BODYL))
+    clauses = [
+        "I am voluntarily submitting my original educational documents (10th &amp; 12th mark sheets) to the company for official verification and record purposes.",
+        "The company will retain my above-mentioned original documents for a period of one (1) month from my date of joining.",
+        "After one month of joining, I will collect my original documents from the company.",
+        "The company shall keep my documents in safe custody during the retention period.",
+        "I confirm that I am submitting these documents without any pressure or coercion and with full understanding of the terms mentioned above.",
+        "I agree to abide by the above terms and conditions.",
+    ]
+    for clause in clauses:
+        story.append(_para(f"• {clause}", BODY))
+    story.append(Spacer(1, 6))
+
+    story.append(_para("<b>DOCUMENTS SUBMITTED:</b>", BODYL))
+    story.append(_para("• ORIGINAL 10TH &amp; 12TH MARK SHEETS", BODY))
+    story.append(Spacer(1, 6))
+
+    story.append(_kv_table([
+        [_para("<b>Date of Joining</b>", BODYL), _para(doj, BODYL)],
+        [_para("<b>Date of Submission</b>", BODYL), _para("", BODYL)],
+        [_para("<b>Submitted By (Candidate Name)</b>", BODYL), _para(name, BODYL)],
+        [_para("<b>Signature of Candidate</b>", BODYL), _para("", BODYL)],
+    ]))
+    story.append(Spacer(1, 10))
+
+    story.append(_para("<b>DOCUMENT RECEIVING DETAILS (AFTER 1 MONTH)</b>", H2))
+    story.append(_kv_table([
+        [_para("<b>Date of Receiving Documents</b>", BODYL), _para("", BODYL)],
+        [_para("<b>Received By (Candidate Name)</b>", BODYL), _para("", BODYL)],
+        [_para("<b>Signature of Receiver</b>", BODYL), _para("", BODYL)],
+        [_para("<b>Documents Given By (Employee Name)</b>", BODYL), _para("", BODYL)],
+        [_para("<b>Documents Given By (Employee Signature)</b>", BODYL), _para("", BODYL)],
+    ]))
+    story.append(Spacer(1, 10))
+
+    story.append(_para("<b>For Office Use Only</b>", H2))
+    story.append(_kv_table([
+        [_para("<b>Authorized Signatory Name</b>", BODYL), _para("", BODYL)],
+        [_para("<b>Designation</b>", BODYL), _para("", BODYL)],
+        [_para("<b>Signature &amp; Stamp</b>", BODYL), _para("", BODYL)],
+        [_para("<b>Date</b>", BODYL), _para("", BODYL)],
+    ]))
+
+
+def _section_14_posh_bgv(story, c):
+    """POSH Declaration + Background Verification Consent Form."""
+    story.append(PageBreak())
+    name = _full_name(c) or "_______________"
+    emp_id = c.get("employee_id") or "_______________"
+    designation = c.get("position") or "_______________"
+    addr = _addr_line(c) or "_______________"
+
+    # ---- POSH ----
+    story.append(_para("POSH DECLARATION", H1))
+    story.append(_para("(Prevention of Sexual Harassment at Workplace)", SUBTITLE))
+    story.append(Spacer(1, 4))
+
+    story.append(_para(f"I, <b>{name}</b>, hereby declare that:", BODY))
+    posh_clauses = [
+        "I have read and understood the company's POSH (Prevention of Sexual Harassment) Policy.",
+        "I am aware of the members of the internal complaints committee and the process to report complaints.",
+        "I agree to comply with the policy and maintain a respectful and safe workplace.",
+        "I understand that any form of sexual harassment is strictly prohibited and may lead to disciplinary action.",
+        "I will report any incident of harassment that I experience or witness, as per the company's guidelines.",
+        "I agree to cooperate in any inquiry related to such complaints.",
+        "I acknowledge that maintaining dignity, respect, and safety at the workplace is my responsibility.",
+    ]
+    for clause in posh_clauses:
+        story.append(_para(f"• {clause}", BODY))
+    story.append(Spacer(1, 8))
+
+    story.append(_kv_table([
+        [_para("<b>Employee Name</b>", BODYL), _para(name, BODYL)],
+        [_para("<b>Employee ID</b>", BODYL), _para(emp_id, BODYL)],
+        [_para("<b>Designation</b>", BODYL), _para(designation, BODYL)],
+        [_para("<b>Signature</b>", BODYL), _para("", BODYL)],
+        [_para("<b>Date</b>", BODYL), _para("", BODYL)],
+    ]))
+    story.append(Spacer(1, 14))
+
+    # ---- BGV ----
+    story.append(_para("BACKGROUND VERIFICATION CONSENT FORM", H1))
+    story.append(Spacer(1, 4))
+
+    story.append(_para(
+        f"I, <b>{name}</b>, hereby give my consent to Radhya Micro Finance Pvt. Ltd. to conduct background "
+        "verification as part of my employment.",
+        BODY))
+    story.append(Spacer(1, 4))
+    story.append(_para("I understand and agree that the verification process may include:", BODYL))
+    bgv_checks = [
+        "Residence / House Verification (physical visit by company representative)",
+        "Identity &amp; Address Verification",
+        "Previous Employment Verification (if applicable)",
+        "Police Verification (only if required under specific circumstances)",
+        "Bank Statement or Financial Details (if required for official purposes)",
+        "Any other verification deemed necessary by the company",
+    ]
+    for chk in bgv_checks:
+        story.append(_para(f"• {chk}", BODY))
+    story.append(Spacer(1, 4))
+
+    story.append(_para("I further declare that:", BODYL))
+    declarations = [
+        "All information provided by me is true, correct, and complete.",
+        "I authorise the company to verify my details through internal teams or third-party agencies.",
+        "I understand that any false information, misrepresentation, or non-disclosure may result in withdrawal of the offer or termination of employment.",
+        "I agree to cooperate fully during the verification process.",
+        "All information collected will be kept confidential and used strictly for official purposes.",
+        "I hereby release the company from any liability arising out of such verification process.",
+    ]
+    for d in declarations:
+        story.append(_para(f"• {d}", BODY))
+    story.append(Spacer(1, 8))
+
+    story.append(_kv_table([
+        [_para("<b>Employee Name</b>", BODYL), _para(name, BODYL)],
+        [_para("<b>Employee ID</b>", BODYL), _para(emp_id, BODYL)],
+        [_para("<b>Designation</b>", BODYL), _para(designation, BODYL)],
+        [_para("<b>Current Address</b>", BODYL), _para(addr, BODYL)],
+        [_para("<b>Signature</b>", BODYL), _para("", BODYL)],
+        [_para("<b>Date</b>", BODYL), _para("", BODYL)],
+    ]))
+
+
 # ----- Public API -----------------------------------------------------------
 
 
@@ -913,6 +1055,8 @@ def build_joining_kit_pdf(candidate: dict, company: dict | None = None,
     _section_10_assets(story, candidate)
     _section_11_nda(story, candidate, company)
     _section_12_asset_form(story, candidate)
+    _section_13_consent_docs(story, candidate)
+    _section_14_posh_bgv(story, candidate)
     doc.build(story)
     buffer.seek(0)
     return buffer.getvalue()
