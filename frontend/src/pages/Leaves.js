@@ -158,6 +158,17 @@ export default function Leaves() {
     e.preventDefault();
     setSaving(true);
     setFormError("");
+    // Client-side policy checks
+    if (form.leave_type === "SL" && days > 3) {
+      setFormError("Sick Leave (SL) cannot exceed 3 consecutive days. For longer illness, apply for EL or LWP.");
+      setSaving(false);
+      return;
+    }
+    if (form.leave_type === "CL" && days > 2) {
+      setFormError("Casual Leave (CL) cannot exceed 2 consecutive days.");
+      setSaving(false);
+      return;
+    }
     try {
       await API.post("/leaves", { ...form, employee_id: form.employee_id || user.employee_id });
       setShowApply(false);
@@ -744,10 +755,16 @@ export default function Leaves() {
             {days > 0 && (
               <p className="text-sm text-[#E85B1E] font-medium">{days} day{days > 1 ? "s" : ""}</p>
             )}
-            {form.leave_type === "SL" && days > 2 && (
+            {form.leave_type === "SL" && days > 3 && (
+              <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-xs text-red-700">
+                <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+                <span><strong>Not allowed:</strong> SL cannot exceed 3 consecutive days. Apply for EL or LWP for longer illness.</span>
+              </div>
+            )}
+            {form.leave_type === "SL" && days > 2 && days <= 3 && (
               <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 text-xs text-amber-700">
                 <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
-                <span><strong>Medical certificate required</strong> for SL exceeding 2 days. You can upload it now or after the leave from your Leave History. If not uploaded, leave will be converted to EL or salary will be deducted.</span>
+                <span><strong>Medical certificate required</strong> for SL exceeding 2 days. You can upload it after the leave from your Leave History.</span>
               </div>
             )}
             <div>

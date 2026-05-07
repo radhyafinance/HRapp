@@ -136,8 +136,13 @@ async def validate_leave_application(data, employee: dict):
             "Additional days will be treated as Earned Leave (EL) or unauthorised leave."
         )
 
-    # Rule 4: SL > 2 consecutive days — certificate CAN be uploaded later; just enforce it's noted
-    # (Certificate upload is via POST /leaves/{id}/certificate endpoint, not required at application time)
+    # Rule 3: SL max 3 consecutive days
+    if data.leave_type == "SL" and days > 3:
+        raise HTTPException(
+            400,
+            "Sick Leave (SL) cannot exceed 3 consecutive days. "
+            "For longer illness, please apply for Earned Leave (EL) or LWP."
+        )
 
     # Rule 5: SL and CL cannot be clubbed together
     if data.leave_type in ["SL", "CL"]:
