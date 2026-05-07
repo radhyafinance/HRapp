@@ -24,7 +24,8 @@ const LEAVE_THEMES = {
 };
 const DEFAULT_LEAVE_THEME = { bg: "bg-slate-50", border: "border-slate-300", label: "text-slate-700", pill: "bg-slate-500/90 text-white", name: "Leave" };
 
-const ABSENT_THEME = { bg: "bg-red-100", border: "border-red-400", label: "text-red-800", pill: "bg-red-600 text-white" };
+const ABSENT_THEME   = { bg: "bg-red-100",    border: "border-red-400",    label: "text-red-800",    pill: "bg-red-600 text-white" };
+const HALF_DAY_THEME = { bg: "bg-orange-50",  border: "border-orange-400", label: "text-orange-800", pill: "bg-orange-500 text-white" };
 
 export default function HolidayCalendar() {
   const { user } = useAuth();
@@ -161,6 +162,10 @@ export default function HolidayCalendar() {
     return Object.values(myAttendanceByDay).filter(r => r.status === "absent").length;
   }, [myAttendanceByDay]);
 
+  const myMonthHalfDays = useMemo(() => {
+    return Object.values(myAttendanceByDay).filter(r => r.status === "half_day").length;
+  }, [myAttendanceByDay]);
+
   const prev = () => {
     if (month === 0) { setMonth(11); setYear(y => y - 1); }
     else setMonth(m => m - 1);
@@ -215,11 +220,13 @@ export default function HolidayCalendar() {
                 const myLeave = myLeaveByDay[cell.iso];
                 const myAtt = myAttendanceByDay[cell.iso];
                 const isMyAbsent = myAtt?.status === "absent";
+                const isMyHalfDay = myAtt?.status === "half_day";
 
                 // Pick the cell tint:
                 //   Holiday/Sunday/Sat-off (from base) wins ONLY when the user has nothing personal that day.
                 //   My own approved leave → leave-type tint.
                 //   My absent → red tint.
+                //   My half-day → orange tint.
                 let cellBg = "bg-white border-slate-100";
                 let cellLabel = "text-slate-700";
                 if (myLeave) {
@@ -229,6 +236,9 @@ export default function HolidayCalendar() {
                 } else if (isMyAbsent) {
                   cellBg = `${ABSENT_THEME.bg} ${ABSENT_THEME.border}`;
                   cellLabel = ABSENT_THEME.label;
+                } else if (isMyHalfDay) {
+                  cellBg = `${HALF_DAY_THEME.bg} ${HALF_DAY_THEME.border}`;
+                  cellLabel = HALF_DAY_THEME.label;
                 } else if (baseStyle) {
                   cellBg = `${baseStyle.bg} ${baseStyle.border}`;
                   cellLabel = baseStyle.label;
@@ -243,7 +253,7 @@ export default function HolidayCalendar() {
                   <div key={cell.iso}
                     onMouseEnter={() => (teamOnLeave.length || myLeave) && setHoveredCell(cell.iso)}
                     onMouseLeave={() => setHoveredCell(null)}
-                    onClick={() => (teamOnLeave.length || myLeave || isMyAbsent) && setHoveredCell(c => c === cell.iso ? null : cell.iso)}
+                    onClick={() => (teamOnLeave.length || myLeave || isMyAbsent || isMyHalfDay) && setHoveredCell(c => c === cell.iso ? null : cell.iso)}
                     title={cell.info ? `${cell.info.label}` : ""}
                     data-testid={`cal-cell-${cell.iso}`}
                     className={`aspect-square p-1 sm:p-2 rounded-md sm:rounded-lg border text-xs sm:text-sm relative overflow-hidden
@@ -252,7 +262,7 @@ export default function HolidayCalendar() {
                       flex flex-col justify-between transition-all hover:shadow-md sm:hover:scale-[1.02]`}>
                     <div className="flex items-start justify-between gap-0.5 min-w-0">
                       <span className={`font-semibold leading-none ${cellLabel}`}>{cell.day}</span>
-                      {/* Top-right corner marker priority: my-leave > absent > base */}
+                      {/* Top-right corner marker priority: my-leave > absent > half-day > base */}
                       {myLeave ? (
                         <span
                           data-testid={`my-leave-${cell.iso}`}
@@ -266,6 +276,13 @@ export default function HolidayCalendar() {
                           className={`text-[7px] sm:text-[8px] font-bold px-1 sm:px-1.5 py-0.5 rounded-full leading-none flex-shrink-0 ${ABSENT_THEME.pill}`}
                         >
                           ABS
+                        </span>
+                      ) : isMyHalfDay ? (
+                        <span
+                          data-testid={`my-halfday-${cell.iso}`}
+                          className={`text-[7px] sm:text-[8px] font-bold px-1 sm:px-1.5 py-0.5 rounded-full leading-none flex-shrink-0 ${HALF_DAY_THEME.pill}`}
+                        >
+                          ½D
                         </span>
                       ) : baseStyle ? (
                         <span className={`w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full flex-shrink-0 ${baseStyle.badge}`} />
@@ -388,6 +405,10 @@ export default function HolidayCalendar() {
                       <span className="text-slate-600">Comp-Off</span>
                     </div>
                     <div className="flex items-center gap-1.5 text-[11px] col-span-2">
+                      <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-orange-500 text-white">½D</span>
+                      <span className="text-slate-600">Half Day</span>
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[11px] col-span-2">
                       <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-red-600 text-white">ABS</span>
                       <span className="text-slate-600">Marked Absent</span>
                     </div>
@@ -430,12 +451,18 @@ export default function HolidayCalendar() {
             <p className="text-xs opacity-80 mt-1">
               {monthHolidayCount} {monthHolidayCount === 1 ? "holiday" : "holidays"} this month
             </p>
-            {meId && (myMonthLeaveDays > 0 || myMonthAbsentDays > 0) && (
+            {meId && (myMonthLeaveDays > 0 || myMonthAbsentDays > 0 || myMonthHalfDays > 0) && (
               <div className="mt-3 pt-3 border-t border-white/10 flex gap-4 text-xs">
                 {myMonthLeaveDays > 0 && (
                   <div data-testid="my-month-leave-count">
                     <p className="opacity-70">On Leave</p>
                     <p className="text-lg font-bold">{myMonthLeaveDays}d</p>
+                  </div>
+                )}
+                {myMonthHalfDays > 0 && (
+                  <div data-testid="my-month-halfday-count">
+                    <p className="opacity-70">Half Days</p>
+                    <p className="text-lg font-bold text-orange-300">{myMonthHalfDays}d</p>
                   </div>
                 )}
                 {myMonthAbsentDays > 0 && (
