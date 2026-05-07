@@ -589,6 +589,11 @@ export default function Leaves() {
                         <td className="px-4 py-3 text-sm text-slate-600">{l.branch || <span className="text-slate-300">—</span>}</td>
                         <td className="px-4 py-3">
                           <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">{l.leave_type}</span>
+                          {l.remaining_balance !== null && l.remaining_balance !== undefined && (
+                            <p className={`text-[11px] mt-1 font-medium ${l.remaining_balance < l.days ? "text-red-500" : "text-slate-500"}`}>
+                              Balance: {l.remaining_balance}d left
+                            </p>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-sm text-slate-600">{l.start_date} → {l.end_date}</td>
                         <td className="px-4 py-3 text-sm font-medium text-slate-700">{l.days}d</td>

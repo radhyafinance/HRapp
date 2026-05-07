@@ -436,7 +436,23 @@ async def pending_leaves(current_user: dict = Depends(get_current_user)):
         query["employee_id"] = {"$in": list(scope)}
 
     leaves = await db.leave_applications.find(query).sort("applied_at", -1).to_list(500)
-    return await _enrich_leaves_with_employee(leaves)
+    enriched = await _enrich_leaves_with_employee(leaves)
+
+    # Attach remaining balance for the requested leave type so approvers can see it
+    fy = get_financial_year()
+    emp_ids = list({l["employee_id"] for l in leaves})
+    balances = await db.leave_balances.find(
+        {"employee_id": {"$in": emp_ids}, "year": fy}
+    ).to_list(500)
+    bal_map = {b["employee_id"]: b for b in balances}
+    for l in enriched:
+        bal = bal_map.get(l["employee_id"], {})
+        lt = l.get("leave_type", "")
+        if lt in bal and isinstance(bal[lt], dict):
+            l["remaining_balance"] = bal[lt].get("remaining")
+        else:
+            l["remaining_balance"] = None
+    return enriched
 
 
 @router.get("/approved")
@@ -634,8 +650,19 @@ async def approve_leave(leave_id: str, data: LeaveApproveRequest, current_user: 
     # Deduct balance
     BALANCE_TRACKED = ["CL", "SL", "EL", "Marriage"]
     if new_status == "approved" and deduct_type in BALANCE_TRACKED:
+        fy = get_financial_year()
+        # Ensure balance document exists — auto-initialize if missing
+        bal_exists = await db.leave_balances.find_one(
+            {"employee_id": leave["employee_id"], "year": fy}, {"_id": 1}
+        )
+        if not bal_exists:
+            await db.leave_balances.insert_one({
+                "employee_id": leave["employee_id"],
+                "year": fy,
+                **{k: dict(v) for k, v in LEAVE_BALANCE_TEMPLATE.items()},
+            })
         await db.leave_balances.update_one(
-            {"employee_id": leave["employee_id"], "year": get_financial_year()},
+            {"employee_id": leave["employee_id"], "year": fy},
             {"$inc": {
                 f"{deduct_type}.used": leave["days"],
                 f"{deduct_type}.remaining": -leave["days"],
