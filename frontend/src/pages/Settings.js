@@ -3,6 +3,7 @@ import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
 import { MapPin, Plus, Edit, Trash2, X } from "lucide-react";
 import HolidaysAndCompOffTab from "./HolidaysAndCompOffTab";
+import ShiftsTab from "./ShiftsTab";
 
 function Modal({ title, onClose, children }) {
   return (
@@ -170,7 +171,7 @@ export default function Settings() {
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 border-b border-slate-200">
-        {[["locations", "Office Locations"], ["company", "Company / Bank"], ["attendance", "Attendance"], ["leaves", "Leave Management"], ["holidays", "Holidays & Comp-Off"], ["users", "User Management"]].map(([val, label]) => (
+        {[["locations", "Office Locations"], ["company", "Company / Bank"], ["attendance", "Attendance"], ["shifts", "Shifts"], ["leaves", "Leave Management"], ["holidays", "Holidays & Comp-Off"], ["users", "User Management"]].map(([val, label]) => (
           <button key={val} onClick={() => setActiveTab(val)} data-testid={`settings-tab-${val}`}
             className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${activeTab === val ? "border-[#E85B1E] text-[#E85B1E]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             {label}
@@ -342,6 +343,8 @@ export default function Settings() {
           </p>
         </div>
       )}
+
+      {activeTab === "shifts" && <ShiftsTab />}
 
       {activeTab === "leaves" && (
         <div className="space-y-6 max-w-2xl">

@@ -12,7 +12,7 @@ from auth_utils import hash_password
 
 from routes import auth, employees, candidates, attendance, leaves, payroll
 from routes import performance, exit_routes, letters, locations, dashboard, gratuity, settings as app_settings
-from routes import employee_documents, tracker, holidays, comp_offs, notifications
+from routes import employee_documents, tracker, holidays, comp_offs, notifications, shifts
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -73,6 +73,7 @@ app.include_router(tracker.router, prefix="/api/tracker", tags=["Tracker"])
 app.include_router(holidays.router, prefix="/api/holidays", tags=["Holidays"])
 app.include_router(comp_offs.router, prefix="/api/comp-offs", tags=["Comp-Offs"])
 app.include_router(notifications.router, prefix="/api/notifications", tags=["Notifications"])
+app.include_router(shifts.router, prefix="/api/shifts", tags=["Shifts"])
 
 from routes import candidate_invites
 app.include_router(candidate_invites.router, prefix="/api/candidate-invites", tags=["Candidate Invites"])
@@ -120,6 +121,20 @@ async def startup():
         await db.otp_codes.create_index("username")
     except Exception:
         pass
+
+    # Shifts — index + seed default shifts on first run
+    try:
+        await db.shifts.create_index("id", unique=True)
+        await db.shifts.create_index("assigned_roles")
+    except Exception:
+        pass
+    try:
+        from routes.shifts import seed_default_shifts_if_empty
+        seeded = await seed_default_shifts_if_empty()
+        if seeded:
+            logger.info(f"Seeded {seeded} default shifts")
+    except Exception as e:
+        logger.warning(f"Shift seeding skipped: {e}")
 
     # Seed / migrate admin user — login by username "admin" (no longer email-based)
     admin_username = os.environ.get("ADMIN_USERNAME", "admin")

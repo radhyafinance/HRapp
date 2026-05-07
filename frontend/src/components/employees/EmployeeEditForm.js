@@ -37,10 +37,12 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
     bank_name: emp.bank_details?.bank_name || "", account_number: emp.bank_details?.account_number || "",
     ifsc_code: emp.bank_details?.ifsc_code || "",
     uan_number: emp.uan_number || "", esi_number: emp.esi_number || "",
+    shift_id: emp.shift_id || "",
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
   const [branches, setBranches] = useState([]);
+  const [shifts, setShifts] = useState([]);
   const ifscValid = !form.ifsc_code || /^[A-Z]{4}0[A-Z0-9]{6}$/.test((form.ifsc_code || "").toUpperCase());
 
   // Uniqueness checks (exclude current employee)
@@ -54,6 +56,9 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
     API.get("/locations")
       .then(r => setBranches(r.data.map(l => l.name).sort((a, b) => a.localeCompare(b))))
       .catch(() => setBranches([]));
+    API.get("/shifts")
+      .then(r => setShifts(r.data || []))
+      .catch(() => setShifts([]));
   }, []);
 
   const save = async (e) => {
@@ -66,6 +71,11 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
       const payload = {};
       Object.keys(form).forEach((k) => {
         const v = form[k];
+        // shift_id is special — empty string means "clear override"; we need to send it.
+        if (k === "shift_id") {
+          if (v !== emp.shift_id) payload[k] = v ?? "";
+          return;
+        }
         if (v === "" || v === null || v === undefined) return;
         if (["basic", "hra", "special_allowance", "canteen_allowance", "conveyance_allowance", "ctc_monthly"].includes(k)) {
           const n = parseFloat(v);
@@ -165,6 +175,21 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
         })}
       </div>
       <ReportingManagerInput value={form.reporting_to} onChange={(val) => setForm({ ...form, reporting_to: val })} />
+
+      <div>
+        <label className="block text-xs font-semibold text-slate-700 mb-1">Shift Override</label>
+        <select value={form.shift_id} onChange={e => setForm({ ...form, shift_id: e.target.value })}
+          data-testid="edit-shift_id"
+          className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none bg-white">
+          <option value="">— Use role default —</option>
+          {shifts.map(s => (
+            <option key={s.id} value={s.id}>
+              {s.name} · {String(s.start_hour).padStart(2,"0")}:{String(s.start_minute).padStart(2,"0")} – {String(s.end_hour).padStart(2,"0")}:{String(s.end_minute).padStart(2,"0")}
+            </option>
+          ))}
+        </select>
+        <p className="text-[10px] text-slate-400 mt-1">Optional. Overrides the role-based shift for this specific employee.</p>
+      </div>
 
       <h4 className="font-bold text-[#1E2A47] text-sm pt-2 border-t">Statutory Numbers</h4>
       <div className="grid grid-cols-2 gap-3">

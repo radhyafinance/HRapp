@@ -128,6 +128,7 @@ class EmployeeCreate(BaseModel):
     create_user_account: bool = True
     password: Optional[str] = None
     branch: Optional[str] = None
+    shift_id: Optional[str] = None
 
 
 class EmployeeUpdate(BaseModel):
@@ -164,6 +165,7 @@ class EmployeeUpdate(BaseModel):
     pincode: Optional[str] = None
     joining_location: Optional[str] = None
     branch: Optional[str] = None
+    shift_id: Optional[str] = None
     status: Optional[str] = None
     uan_number: Optional[str] = None
     esi_number: Optional[str] = None
@@ -303,6 +305,11 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
         raise HTTPException(status_code=404, detail="Employee not found")
     update_data = {k: v for k, v in data.model_dump().items() if v is not None}
 
+    # shift_id == "" means "clear override" (use role default).
+    if update_data.get("shift_id") == "":
+        update_data.pop("shift_id")
+        update_data["__unset_shift_id"] = True
+
     # Validate IFSC
     if update_data.get("ifsc_code"):
         import re as _re_ifsc
@@ -384,7 +391,11 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
         await db.users.update_one({"employee_id": employee_id}, {"$set": {"role": update_data["role"]}})
 
     update_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-    await db.employees.update_one({"employee_id": employee_id}, {"$set": update_data})
+    unset_shift = update_data.pop("__unset_shift_id", False)
+    mongo_update = {"$set": update_data}
+    if unset_shift:
+        mongo_update["$unset"] = {"shift_id": ""}
+    await db.employees.update_one({"employee_id": employee_id}, mongo_update)
     emp = await db.employees.find_one({"employee_id": employee_id})
     return emp_to_dict(emp)
 

@@ -5,9 +5,9 @@ from database import db
 from auth_utils import get_current_user
 from services.face_match import compare_face_with_reference, DEFAULT_TOLERANCE
 from services.shift_rules import (
-    compute_punch_in_status,
-    compute_status_after_punch_out,
-    shift_for_role,
+    compute_punch_in_status_with_shift,
+    compute_status_after_punch_out_with_shift,
+    resolve_shift_for,
 )
 from datetime import datetime, timezone, date
 import math
@@ -152,8 +152,10 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
         auto_status = existing.get("status") or "present"
         late_minutes = existing.get("late_minutes", 0)
         auto_reason = existing.get("auto_status_reason")
+        shift_used = None
     else:
-        rule = compute_punch_in_status(current_user.get("role"), punch_in_iso, today)
+        shift_used = await resolve_shift_for(current_user.get("role"), data.employee_id, db)
+        rule = compute_punch_in_status_with_shift(shift_used, punch_in_iso, today)
         auto_status = rule["status"]
         late_minutes = rule["late_minutes"]
         auto_reason = rule["reason"]
@@ -175,6 +177,8 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
         "status": auto_status,
         "late_minutes": late_minutes,
         "auto_status_reason": auto_reason,
+        "shift_id": (shift_used or {}).get("id") if not locked_by_hr else existing.get("shift_id"),
+        "shift_name": (shift_used or {}).get("name") if not locked_by_hr else existing.get("shift_name"),
         "punch_out_time": None,
     }
     if existing:
@@ -231,7 +235,10 @@ async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current
         new_status = record.get("status") or "present"
         new_reason = record.get("auto_status_reason")
     else:
-        rule = compute_status_after_punch_out(
+        # Re-resolve in case the shift assignment was changed between punch-in and punch-out.
+        shift_used = await resolve_shift_for(current_user.get("role"), data.employee_id, db)
+        rule = compute_status_after_punch_out_with_shift(
+            shift_used,
             current_status=record.get("status"),
             current_reason=record.get("auto_status_reason"),
             hours_worked=hours_rounded,
