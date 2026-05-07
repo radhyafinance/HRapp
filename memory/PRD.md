@@ -191,6 +191,17 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
       - **Rotate Secret** action (destructive, confirms first)
       - Step-by-step install instructions incl. battery-optimisation disable guide
     - Default interval: 60s. Security: unique `secrets.token_urlsafe(12)` per employee, stored in `employee_trackers.secret`.
+
+36. **Employee Calendar — Personal Leave & Absent Markers (Feb 2026)** - `HolidayCalendar.js` now overlays the logged-in employee's own data on top of the existing holiday grid:
+    - Approved leaves render as a **full-cell tint** (per leave type: SL=rose, CL=amber, EL=violet, CO=teal, ML=pink, PL=indigo, LOP=slate) with a coloured pill in the top-right showing the leave code (e.g. `CL`, `EL`).
+    - Days marked `absent` in `attendance_records` render as a **red tint** with an `ABS` pill.
+    - Self markers take priority over base holiday/Sunday/Saturday-off styling, so the user immediately sees their gaps.
+    - New "Your markers" legend section + "My approved leaves" side panel listing the visible month's leaves (start→end · days).
+    - Stats card augments `non-working` count with personal "On Leave" and "Absent" day totals.
+    - Manager/HR-Admin team-overlay (initials avatars) is preserved but filters out the user's own leaves to avoid double rendering.
+    - Backend endpoints reused as-is: `GET /api/leaves/calendar-overlay` (already scopes per role) and `GET /api/attendance/my?month=&year=`.
+    - HR Admin (no `employee_id`) gracefully shows team overlay only — personal sections are hidden.
+
 - [ ] Employee confirmation letter after probation
 - [ ] Leave encashment calculation
 
