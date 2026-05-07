@@ -231,6 +231,20 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
     - **Employee Edit Form** new "Shift Override" dropdown (`edit-shift_id`) — listing all active shifts; "— Use role default —" clears the override.
     - **Tests**: 15 new pytest cases for the API + role-exclusivity + default-exclusivity + override clear behaviour. 23 existing rule-engine tests still pass. Total 38/38 green.
 
+39. **Multi-Session Attendance (Feb 2026)** -
+    Per-employee toggle to allow punching in/out multiple times in one day (e.g., field staff who leave for client visits and return).
+    - **Data model**: `attendance_records.sessions: [{punch_in_time, punch_out_time, hours_worked, punch_in_location, punch_in_face_*, punch_out_location, punch_out_face_*}]` — top-level `punch_in_time` mirrors first session's in, `punch_out_time` mirrors last session's out, `hours_worked` = sum of every closed session.
+    - **Per-employee toggle** `multi_session_attendance: bool` on the Employee model. Default `false` keeps the legacy single-session UX intact. PUT `/api/employees/{id}` honours the boolean.
+    - **Backend** `routes/attendance.py`:
+      - **punch-in**: rejects with 400 "Already punched in today" when flag is OFF; rejects with 400 "A session is already open. Punch out first." when flag is ON and last session is unclosed; otherwise appends a new session.
+      - **punch-out**: closes the latest open session; recomputes total = sum of all closed sessions; re-evaluates short-hours rule against `min_full_day_hours`. Has a legacy migration path for pre-feature single-session records.
+      - **Late-rule** evaluated against the FIRST punch-in only — subsequent sessions never downgrade `present` back to `half_day`.
+    - **Frontend**:
+      - `Attendance.js` fetches the flag via `/api/employees/{me}` on mount. Banner shows green "Punched In: 3:30 am · 3 sessions · MULTI-SESSION", a `<details>` with all sessions, and a hint "Multi-session is enabled — you can punch in again". The button label switches to **"Punch In Again"** while a session is closed.
+      - New `<SessionsBadge>` component (`/components/attendance/SessionsBadge.js`) renders a violet `N sessions` pill next to the date in the attendance table that expands a popover listing each session's in/out/hours. Hidden for the common single-session case.
+      - `EmployeeEditForm` has a new "Allow multiple punch in / out per day" checkbox (`edit-multi_session_attendance`) with a clear description.
+    - **Tests**: 8 new pytest cases (`tests/test_multi_session_attendance.py`) covering flag persistence, OFF-mode rejection, ON-mode session append, "session already open" error, "no open session" error, top-level mirror correctness, late-locks survival across long total, and short-hours half-day on summed totals. 23 existing rule-engine tests still pass — total **31/31** green.
+
 - [ ] Employee confirmation letter after probation
 - [ ] Leave encashment calculation
 
