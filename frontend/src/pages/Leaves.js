@@ -469,13 +469,13 @@ export default function Leaves() {
           <div className="overflow-x-auto">
             <table className="w-full" data-testid="all-balances-table">
               <thead><tr className="bg-slate-50 border-b">
-                {["Employee", "Department", "CL", "SL", "EL", "Marriage", ""].map(h => (
+                {["Employee", "Department", "CL", "SL", "EL", "Marriage", "Comp-Off", ""].map(h => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
                 ))}
               </tr></thead>
               <tbody>
                 {loading
-                  ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                  ? <tr><td colSpan={8} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
                   : allBalances
                       .filter(e => !balSearch || e.employee_id.toLowerCase().includes(balSearch.toLowerCase()) || e.name.toLowerCase().includes(balSearch.toLowerCase()))
                       .map(e => (
@@ -491,6 +491,9 @@ export default function Leaves() {
                           <span className="text-xs text-slate-400"> / {e[k]?.total ?? 0}</span>
                         </td>
                       ))}
+                      <td className="px-4 py-3" data-testid={`comp-off-balance-${e.employee_id}`}>
+                        <span className="text-sm font-bold text-violet-700">{e["Comp-Off"]?.remaining ?? 0}</span>
+                      </td>
                       <td className="px-4 py-3">
                         <div className="flex gap-2">
                           <button onClick={() => openEmpLeaves(e)}

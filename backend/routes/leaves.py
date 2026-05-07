@@ -490,10 +490,19 @@ async def all_leave_balances(current_user: dict = Depends(get_current_user)):
     ).to_list(1000)
     bal_map = {b["employee_id"]: b for b in balances}
 
+    # Live Comp-Off counts (approved, not used, not expired) — one aggregation, not N queries
+    comp_off_pipeline = [
+        {"$match": {"employee_id": {"$in": emp_ids}, "status": "approved"}},
+        {"$group": {"_id": "$employee_id", "count": {"$sum": 1}}},
+    ]
+    co_rows = await db.comp_off_grants.aggregate(comp_off_pipeline).to_list(1000)
+    co_map = {r["_id"]: r["count"] for r in co_rows}
+
     result = []
     for emp_id in emp_ids:
         emp = emp_map[emp_id]
         bal = bal_map.get(emp_id, LEAVE_BALANCE_TEMPLATE)
+        co_remaining = co_map.get(emp_id, 0)
         result.append({
             "employee_id": emp_id,
             "name": f"{emp.get('first_name','')} {emp.get('last_name','')}".strip(),
@@ -503,6 +512,7 @@ async def all_leave_balances(current_user: dict = Depends(get_current_user)):
             "SL": bal.get("SL", {"total": 15, "used": 0, "remaining": 15}),
             "EL": bal.get("EL", {"total": 0, "used": 0, "remaining": 0}),
             "Marriage": bal.get("Marriage", {"total": 5, "used": 0, "remaining": 5}),
+            "Comp-Off": {"total": co_remaining, "used": 0, "remaining": co_remaining},
         })
     return result
 
