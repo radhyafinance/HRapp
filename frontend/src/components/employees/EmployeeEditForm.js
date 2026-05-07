@@ -38,6 +38,7 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
     ifsc_code: emp.bank_details?.ifsc_code || "",
     uan_number: emp.uan_number || "", esi_number: emp.esi_number || "",
     shift_id: emp.shift_id || "",
+    multi_session_attendance: !!emp.multi_session_attendance,
   });
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -74,6 +75,11 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
         // shift_id is special — empty string means "clear override"; we need to send it.
         if (k === "shift_id") {
           if (v !== emp.shift_id) payload[k] = v ?? "";
+          return;
+        }
+        // Booleans: always send them so a toggle-off persists.
+        if (typeof v === "boolean") {
+          payload[k] = v;
           return;
         }
         if (v === "" || v === null || v === undefined) return;
@@ -190,6 +196,20 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
         </select>
         <p className="text-[10px] text-slate-400 mt-1">Optional. Overrides the role-based shift for this specific employee.</p>
       </div>
+
+      <label className="flex items-start gap-2 px-3 py-2 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-50">
+        <input type="checkbox" checked={!!form.multi_session_attendance}
+          onChange={e => setForm({ ...form, multi_session_attendance: e.target.checked })}
+          data-testid="edit-multi_session_attendance"
+          className="mt-0.5 accent-[#E85B1E]" />
+        <div className="flex-1">
+          <p className="text-sm font-medium text-slate-700">Allow multiple punch in / out per day</p>
+          <p className="text-[10px] text-slate-400 mt-0.5">
+            Useful for field staff who leave the office mid-day and return. Total hours are summed across all sessions.
+            Late-arrival half-day rule still uses the first punch-in of the day.
+          </p>
+        </div>
+      </label>
 
       <h4 className="font-bold text-[#1E2A47] text-sm pt-2 border-t">Statutory Numbers</h4>
       <div className="grid grid-cols-2 gap-3">

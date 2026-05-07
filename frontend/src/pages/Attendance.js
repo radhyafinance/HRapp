@@ -5,6 +5,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { AdminRegulariseModal, EmployeeRegulariseRequestModal, PendingRequestsPanel, MyRequestsList } from "../components/attendance/Regularisation";
 import { FaceMismatchBadge, FaceMismatchModal } from "../components/attendance/FaceMismatch";
 import { AttendanceStatusBadge } from "../components/attendance/StatusBadge";
+import { SessionsBadge } from "../components/attendance/SessionsBadge";
 
 function CameraCapture({ onCapture, onClose }) {
   const videoRef = useRef(null);
@@ -114,8 +115,17 @@ export default function Attendance() {
   const [faceReview, setFaceReview] = useState(null);         // {record, side}
   const [pendingReload, setPendingReload] = useState(0);
   const [employees, setEmployees] = useState([]);
+  const [multiSessionEnabled, setMultiSessionEnabled] = useState(false);
   // Selfie+geofence required for everyone except management role per company policy
   const skipSelfieAndGeofence = user?.role === "management";
+
+  // Fetch the employee's multi-session flag on mount (used for the punch-card UX)
+  useEffect(() => {
+    if (!user?.employee_id) return;
+    API.get(`/employees/${user.employee_id}`)
+      .then(r => setMultiSessionEnabled(!!r.data?.multi_session_attendance))
+      .catch(() => setMultiSessionEnabled(false));
+  }, [user?.employee_id]);
 
   const fetchData = async () => {
     setLoading(true);
@@ -217,8 +227,17 @@ export default function Attendance() {
   };
 
   const today = new Date().toISOString().split("T")[0];
-  const alreadyIn = !!todayRecord?.punch_in_time;
-  const alreadyOut = !!todayRecord?.punch_out_time;
+  const sessions = todayRecord?.sessions || [];
+  const lastSessionOpen = sessions.length > 0 && !sessions[sessions.length - 1]?.punch_out_time;
+  // Has at least one punch-in today
+  const hasPunchedToday = !!todayRecord?.punch_in_time;
+  // Whether the user can punch IN right now
+  const canPunchIn = !hasPunchedToday || (multiSessionEnabled && !lastSessionOpen);
+  // Whether the user can punch OUT right now
+  const canPunchOut = hasPunchedToday && (multiSessionEnabled ? lastSessionOpen : !todayRecord?.punch_out_time);
+  // Legacy mirrors used by the existing UI labels below
+  const alreadyIn = hasPunchedToday;
+  const alreadyOut = !!todayRecord?.punch_out_time && !lastSessionOpen;
 
   // Continuous GPS tracking (every 2 min) between punch-in and punch-out
   // PWA strategy:
@@ -383,16 +402,54 @@ export default function Attendance() {
 
           {/* Today Status */}
           {alreadyIn && (
-            <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-4 text-sm text-green-700">
-              <p className="font-semibold">Punched In: {new Date(todayRecord.punch_in_time).toLocaleTimeString("en-IN")}</p>
+            <div className="bg-green-50 border border-green-200 rounded-lg p-3 mb-4 text-sm text-green-700" data-testid="today-punched-in-banner">
+              <div className="flex items-center justify-between gap-2">
+                <p className="font-semibold">
+                  Punched In: {new Date(todayRecord.punch_in_time).toLocaleTimeString("en-IN")}
+                  {sessions.length > 1 && (
+                    <span className="ml-2 inline-flex items-center text-[11px] px-2 py-0.5 rounded-full bg-green-200 text-green-800 font-bold" data-testid="session-count-badge">
+                      {sessions.length} sessions
+                    </span>
+                  )}
+                </p>
+                {multiSessionEnabled && (
+                  <span className="text-[10px] uppercase tracking-wide text-green-600 font-bold">Multi-session</span>
+                )}
+              </div>
               {todayRecord.location_name && <p className="text-xs mt-0.5">at {todayRecord.location_name}</p>}
               {!todayRecord.geofence_verified && <p className="text-xs text-amber-600 mt-0.5">Note: Outside geofence</p>}
+              {sessions.length > 1 && (
+                <details className="mt-2 text-xs">
+                  <summary className="cursor-pointer text-green-800 font-semibold select-none">View all sessions</summary>
+                  <div className="mt-1.5 space-y-1">
+                    {sessions.map((s, i) => (
+                      <div key={i} className="flex items-center gap-1.5 text-[11px]">
+                        <span className="font-mono text-green-900">#{i + 1}</span>
+                        <span>{new Date(s.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>
+                        <span className="text-green-600">→</span>
+                        {s.punch_out_time ? (
+                          <>
+                            <span>{new Date(s.punch_out_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>
+                            <span className="text-green-600">·</span>
+                            <span className="font-semibold">{s.hours_worked}h</span>
+                          </>
+                        ) : (
+                          <span className="italic text-amber-700">open</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
             </div>
           )}
           {alreadyOut && (
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 text-sm text-blue-700">
               <p className="font-semibold">Punched Out: {new Date(todayRecord.punch_out_time).toLocaleTimeString("en-IN")}</p>
-              <p className="text-xs mt-0.5">Hours worked: {todayRecord.hours_worked}h</p>
+              <p className="text-xs mt-0.5">Total hours worked: {todayRecord.hours_worked}h{sessions.length > 1 ? ` across ${sessions.length} sessions` : ""}</p>
+              {multiSessionEnabled && (
+                <p className="text-xs mt-1 text-blue-600">Multi-session is enabled — you can punch in again for another session.</p>
+              )}
             </div>
           )}
 
@@ -418,16 +475,16 @@ export default function Attendance() {
           <div className="grid grid-cols-2 gap-3">
             <button
               onClick={() => startPunch("in")}
-              disabled={alreadyIn || processing || !user?.employee_id}
+              disabled={!canPunchIn || processing || !user?.employee_id}
               data-testid="punch-in-btn"
               className="flex items-center justify-center gap-2 py-4 bg-green-500 text-white rounded-xl font-bold text-base hover:bg-green-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm active:scale-95"
             >
               {processing && punchType === "in" ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <LogIn size={20} />}
-              Punch In
+              {hasPunchedToday && multiSessionEnabled && !lastSessionOpen ? "Punch In Again" : "Punch In"}
             </button>
             <button
               onClick={() => startPunch("out")}
-              disabled={!alreadyIn || alreadyOut || processing || !user?.employee_id}
+              disabled={!canPunchOut || processing || !user?.employee_id}
               data-testid="punch-out-btn"
               className="flex items-center justify-center gap-2 py-4 bg-[#E85B1E] text-white rounded-xl font-bold text-base hover:bg-[#D04A15] disabled:opacity-40 disabled:cursor-not-allowed transition-colors shadow-sm active:scale-95"
             >
@@ -519,6 +576,7 @@ export default function Attendance() {
                     <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
                       <td className="px-4 py-3 text-sm font-medium text-slate-700">
                         {r.date}{r.regularised && <span className="ml-1 text-[10px] text-amber-600 font-semibold">• REG</span>}
+                        <SessionsBadge record={r} />
                         <FaceMismatchBadge record={r} onOpen={(side) => setFaceReview({ record: r, side })} />
                       </td>
                       <td className="px-4 py-3 text-sm text-slate-600">{r.punch_in_time ? new Date(r.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</td>
@@ -595,6 +653,7 @@ export default function Attendance() {
                     </td>
                     <td className="px-4 py-3 text-sm font-medium text-slate-700">
                       {r.date}{r.regularised && <span className="ml-1 text-[10px] text-amber-600 font-semibold">• REG</span>}
+                      <SessionsBadge record={r} />
                       <FaceMismatchBadge record={r} onOpen={(side) => setFaceReview({ record: r, side })} />
                     </td>
                     <td className="px-4 py-3 text-sm text-slate-600">{r.punch_in_time ? new Date(r.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</td>

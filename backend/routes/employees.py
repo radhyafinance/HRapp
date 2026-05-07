@@ -166,6 +166,7 @@ class EmployeeUpdate(BaseModel):
     joining_location: Optional[str] = None
     branch: Optional[str] = None
     shift_id: Optional[str] = None
+    multi_session_attendance: Optional[bool] = None
     status: Optional[str] = None
     uan_number: Optional[str] = None
     esi_number: Optional[str] = None

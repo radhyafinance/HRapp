@@ -132,8 +132,23 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
     existing = await db.attendance_records.find_one(
         {"employee_id": data.employee_id, "date": today}
     )
+
+    # Multi-session attendance — opt-in per employee
+    emp_doc = await db.employees.find_one(
+        {"employee_id": data.employee_id},
+        {"_id": 0, "multi_session_attendance": 1},
+    ) or {}
+    multi_session = bool(emp_doc.get("multi_session_attendance"))
+
+    sessions = list((existing or {}).get("sessions") or [])
+    last_session_open = bool(sessions and not sessions[-1].get("punch_out_time"))
+
     if existing and existing.get("punch_in_time"):
-        raise HTTPException(status_code=400, detail="Already punched in today")
+        if not multi_session:
+            raise HTTPException(status_code=400, detail="Already punched in today")
+        if last_session_open:
+            raise HTTPException(status_code=400, detail="A session is already open. Punch out first.")
+
     in_fence, location_name, distance = await check_geofence(data.latitude, data.longitude)
 
     # Face match (skipped for management role)
@@ -145,10 +160,18 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
 
     now = datetime.now(timezone.utc)
     punch_in_iso = now.isoformat()
+    is_first_session = not sessions
 
     # Auto status from shift rules — skip if HR has already locked the day via regularisation.
+    # Late-rule is evaluated against the FIRST punch-in of the day only.
     locked_by_hr = bool(existing and existing.get("regularised"))
     if locked_by_hr:
+        auto_status = existing.get("status") or "present"
+        late_minutes = existing.get("late_minutes", 0)
+        auto_reason = existing.get("auto_status_reason")
+        shift_used = None
+    elif not is_first_session:
+        # Subsequent session — keep whatever status the first punch-in produced.
         auto_status = existing.get("status") or "present"
         late_minutes = existing.get("late_minutes", 0)
         auto_reason = existing.get("auto_status_reason")
@@ -162,38 +185,62 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
 
     # Only persist the selfie if face match failed/flagged — saves DB space when matched
     keep_photo = data.photo_base64 if face_result.get("matched") == False else None
-    record = {
-        "employee_id": data.employee_id,
-        "date": today,
+
+    new_session = {
         "punch_in_time": punch_in_iso,
         "punch_in_location": {"lat": data.latitude, "lon": data.longitude, "name": location_name},
-        "punch_in_photo": keep_photo,
         "punch_in_face_matched": face_result.get("matched"),
         "punch_in_face_distance": face_result.get("distance"),
         "punch_in_face_warning": face_result.get("reason") if face_result.get("matched") == False else None,
+        "punch_in_photo": keep_photo,
         "geofence_verified": in_fence,
         "distance_from_office": round(distance, 2) if distance else None,
         "location_name": location_name,
+        "punch_out_time": None,
+    }
+    sessions.append(new_session)
+
+    record_set = {
+        "sessions": sessions,
+        # Top-level mirrors first session's punch-in (and is reset on day re-open)
+        "punch_in_time": sessions[0]["punch_in_time"],
+        "punch_in_location": sessions[0]["punch_in_location"],
+        "punch_in_photo": sessions[0]["punch_in_photo"],
+        "punch_in_face_matched": sessions[0]["punch_in_face_matched"],
+        "punch_in_face_distance": sessions[0]["punch_in_face_distance"],
+        "punch_in_face_warning": sessions[0]["punch_in_face_warning"],
+        "geofence_verified": sessions[0]["geofence_verified"],
+        "distance_from_office": sessions[0]["distance_from_office"],
+        "location_name": sessions[0]["location_name"],
         "status": auto_status,
         "late_minutes": late_minutes,
         "auto_status_reason": auto_reason,
-        "shift_id": (shift_used or {}).get("id") if not locked_by_hr else existing.get("shift_id"),
-        "shift_name": (shift_used or {}).get("name") if not locked_by_hr else existing.get("shift_name"),
-        "punch_out_time": None,
+        "punch_out_time": None,  # day re-opened
+        "session_count": len(sessions),
     }
+    if is_first_session:
+        record_set["shift_id"] = (shift_used or {}).get("id") if not locked_by_hr else (existing or {}).get("shift_id")
+        record_set["shift_name"] = (shift_used or {}).get("name") if not locked_by_hr else (existing or {}).get("shift_name")
+        record_set["employee_id"] = data.employee_id
+        record_set["date"] = today
+
     if existing:
-        await db.attendance_records.update_one({"_id": existing["_id"]}, {"$set": record})
+        await db.attendance_records.update_one({"_id": existing["_id"]}, {"$set": record_set})
     else:
-        await db.attendance_records.insert_one(record)
+        await db.attendance_records.insert_one(record_set)
+
     half_day_msg = ""
     if auto_status == "half_day" and auto_reason == "late_punch_in":
         half_day_msg = f" — marked Half Day (late by {late_minutes} min)"
+    elif not is_first_session:
+        half_day_msg = f" — session #{len(sessions)} started"
     return {
         "success": True,
         "geofence_verified": in_fence,
         "location_name": location_name,
         "distance_meters": round(distance, 2) if distance else None,
         "punch_in_time": now.isoformat(),
+        "session_count": len(sessions),
         "status": auto_status,
         "late_minutes": late_minutes,
         "auto_status_reason": auto_reason,
@@ -212,8 +259,47 @@ async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current
     )
     if not record:
         raise HTTPException(status_code=400, detail="No punch-in found for today")
-    if record.get("punch_out_time"):
+
+    sessions = list(record.get("sessions") or [])
+    # Migrate legacy single-session record into the new schema on the fly
+    if not sessions and record.get("punch_in_time"):
+        sessions = [{
+            "punch_in_time": record.get("punch_in_time"),
+            "punch_in_location": record.get("punch_in_location"),
+            "punch_in_face_matched": record.get("punch_in_face_matched"),
+            "punch_in_face_distance": record.get("punch_in_face_distance"),
+            "punch_in_face_warning": record.get("punch_in_face_warning"),
+            "punch_in_photo": record.get("punch_in_photo"),
+            "geofence_verified": record.get("geofence_verified"),
+            "distance_from_office": record.get("distance_from_office"),
+            "location_name": record.get("location_name"),
+            "punch_out_time": record.get("punch_out_time"),
+            "punch_out_location": record.get("punch_out_location"),
+            "punch_out_face_matched": record.get("punch_out_face_matched"),
+            "punch_out_face_distance": record.get("punch_out_face_distance"),
+            "punch_out_face_warning": record.get("punch_out_face_warning"),
+            "punch_out_photo": record.get("punch_out_photo"),
+            "hours_worked": record.get("hours_worked"),
+        }]
+
+    # Find the last open session (no punch_out_time)
+    open_idx = None
+    for i in range(len(sessions) - 1, -1, -1):
+        if not sessions[i].get("punch_out_time"):
+            open_idx = i
+            break
+
+    # Only block if the multi-session-disabled employee has already closed their single session.
+    emp_doc = await db.employees.find_one(
+        {"employee_id": data.employee_id},
+        {"_id": 0, "multi_session_attendance": 1},
+    ) or {}
+    multi_session = bool(emp_doc.get("multi_session_attendance"))
+    if open_idx is None:
+        if multi_session:
+            raise HTTPException(status_code=400, detail="No open session to punch out. Punch in first.")
         raise HTTPException(status_code=400, detail="Already punched out today")
+
     in_fence, location_name, distance = await check_geofence(data.latitude, data.longitude)
 
     # Face match (skipped for management role)
@@ -224,10 +310,29 @@ async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current
             raise HTTPException(status_code=400, detail=face_result["reason"])
 
     now = datetime.now(timezone.utc)
-    punch_in_time = datetime.fromisoformat(record["punch_in_time"])
-    hours_worked = (now - punch_in_time).total_seconds() / 3600
-    hours_rounded = round(hours_worked, 2)
     keep_photo = data.photo_base64 if face_result.get("matched") == False else None
+
+    # Close the open session
+    open_session = sessions[open_idx]
+    try:
+        sess_in_dt = datetime.fromisoformat(open_session["punch_in_time"])
+    except (TypeError, ValueError):
+        sess_in_dt = now
+    session_hours = round((now - sess_in_dt).total_seconds() / 3600, 2)
+    open_session["punch_out_time"] = now.isoformat()
+    open_session["punch_out_location"] = {"lat": data.latitude, "lon": data.longitude, "name": location_name}
+    open_session["punch_out_photo"] = keep_photo
+    open_session["punch_out_face_matched"] = face_result.get("matched")
+    open_session["punch_out_face_distance"] = face_result.get("distance")
+    open_session["punch_out_face_warning"] = face_result.get("reason") if face_result.get("matched") == False else None
+    open_session["hours_worked"] = session_hours
+    sessions[open_idx] = open_session
+
+    # Total hours = sum of every closed session
+    total_hours = round(
+        sum((s.get("hours_worked") or 0) for s in sessions if s.get("punch_out_time")),
+        2,
+    )
 
     # Recompute status — skipped if HR has regularised the day.
     locked_by_hr = bool(record.get("regularised"))
@@ -235,13 +340,12 @@ async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current
         new_status = record.get("status") or "present"
         new_reason = record.get("auto_status_reason")
     else:
-        # Re-resolve in case the shift assignment was changed between punch-in and punch-out.
         shift_used = await resolve_shift_for(current_user.get("role"), data.employee_id, db)
         rule = compute_status_after_punch_out_with_shift(
             shift_used,
             current_status=record.get("status"),
             current_reason=record.get("auto_status_reason"),
-            hours_worked=hours_rounded,
+            hours_worked=total_hours,
         )
         new_status = rule["status"]
         new_reason = rule["reason"]
@@ -249,29 +353,36 @@ async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current
     await db.attendance_records.update_one(
         {"_id": record["_id"]},
         {"$set": {
+            "sessions": sessions,
+            "session_count": len(sessions),
             "punch_out_time": now.isoformat(),
             "punch_out_location": {"lat": data.latitude, "lon": data.longitude, "name": location_name},
             "punch_out_photo": keep_photo,
             "punch_out_face_matched": face_result.get("matched"),
             "punch_out_face_distance": face_result.get("distance"),
             "punch_out_face_warning": face_result.get("reason") if face_result.get("matched") == False else None,
-            "hours_worked": hours_rounded,
+            "hours_worked": total_hours,
             "status": new_status,
             "auto_status_reason": new_reason,
         }},
     )
+
     msg_extra = ""
     if new_status == "half_day" and new_reason == "short_hours":
-        msg_extra = " — marked Half Day (worked < 6 hours)"
+        msg_extra = " — marked Half Day (worked < min hours)"
     elif new_status == "half_day" and new_reason == "late_punch_in":
         msg_extra = " — marked Half Day (late punch-in)"
+    if multi_session and len(sessions) > 1:
+        msg_extra += f" · session #{open_idx + 1} of {len(sessions)} closed"
     return {
         "success": True,
-        "hours_worked": hours_rounded,
+        "hours_worked": total_hours,
+        "session_hours": session_hours,
+        "session_count": len(sessions),
         "punch_out_time": now.isoformat(),
         "status": new_status,
         "auto_status_reason": new_reason,
-        "message": f"Punched out. Total hours: {hours_rounded}{msg_extra}",
+        "message": f"Punched out. Total hours: {total_hours}{msg_extra}",
         "face_matched": face_result.get("matched"),
         "face_distance": face_result.get("distance"),
         "face_warning": face_result.get("reason") if face_result.get("matched") == False else None,
