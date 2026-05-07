@@ -78,6 +78,7 @@ lightdsa==0.0.3
 lightecc==0.0.6
 lightphe==0.0.24
 litellm==1.80.0
+lxml==6.1.0
 lz4==4.4.5
 markdown-it-py==4.0.0
 MarkupSafe==3.0.3
@@ -127,6 +128,7 @@ pypdfium2==5.8.0
 PySocks==1.7.1
 pytest==9.0.3
 python-dateutil==2.9.0.post0
+python-docx==1.2.0
 python-dotenv==1.2.2
 python-jose==3.5.0
 python-multipart==0.0.24
