@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { FileText, CheckCircle2, AlertCircle, UserCheck } from "lucide-react";
+import { FileText, FileType2, CheckCircle2, AlertCircle, UserCheck } from "lucide-react";
 import API from "../../utils/api";
 import { SalaryBreakupForm } from "../shared/SalaryBreakupForm";
 
@@ -10,6 +10,7 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
   const [savingMeta, setSavingMeta] = useState(false);
   const [suggestionLoading, setSuggestionLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [downloadingDocx, setDownloadingDocx] = useState(false);
   const [err, setErr] = useState("");
   const [showConvert, setShowConvert] = useState(false);
   const [converting, setConverting] = useState(false);
@@ -109,6 +110,31 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
     }
   };
 
+  const downloadKitDocx = async () => {
+    setErr("");
+    setDownloadingDocx(true);
+    try {
+      const res = await API.get(`/candidates/${candidate.id}/joining-kit-docx`, { responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `JoiningKit_${candidate.first_name || ""}_${candidate.last_name || ""}.docx`.replace(/\s+/g, "_");
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 500);
+    } catch (e) {
+      try {
+        const text = await e.response.data.text();
+        setErr(JSON.parse(text).detail || "Failed to generate Word document");
+      } catch (_) {
+        setErr("Failed to generate Word document");
+      }
+    } finally {
+      setDownloadingDocx(false);
+    }
+  };
+
   const ready = !!(candidate.employee_id && candidate.expected_joining_date) && !dirty;
   const isConverted = candidate.status === "converted";
 
@@ -184,6 +210,14 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
             <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Generating...</>
           ) : (
             <><FileText size={14} /> Download Joining Kit (PDF)</>
+          )}
+        </button>
+        <button type="button" onClick={downloadKitDocx} disabled={downloadingDocx || !ready} data-testid="download-joining-kit-docx-btn"
+          className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-[#1E5BA8] text-white rounded-lg text-sm font-semibold hover:bg-[#16498A] disabled:opacity-50">
+          {downloadingDocx ? (
+            <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Generating...</>
+          ) : (
+            <><FileType2 size={14} /> Download Joining Kit (Word)</>
           )}
         </button>
       </div>
@@ -313,7 +347,7 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
       </div>
 
       {!ready && (empId.trim() === "" || !joiningDate) && (
-        <p className="text-[11px] text-amber-700">Set both <strong>Employee ID</strong> and <strong>Tentative Joining Date</strong> (then click Save Details) to enable the PDF download.</p>
+        <p className="text-[11px] text-amber-700">Set both <strong>Employee ID</strong> and <strong>Tentative Joining Date</strong> (then click Save Details) to enable PDF / Word download.</p>
       )}
       {dirty && <p className="text-[11px] text-amber-700">You have unsaved changes — click Save Details before downloading.</p>}
       {err && (

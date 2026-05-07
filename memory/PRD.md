@@ -248,6 +248,13 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 - [ ] Employee confirmation letter after probation
 - [ ] Leave encashment calculation
 
+40. **Joining Kit Word Download (Feb 2026)** -
+    HR can now download the Joining Kit in editable `.docx` format alongside the existing PDF.
+    - **New service** `/app/backend/services/joining_kit_docx.py` (~750 LOC) builds the same 14-section bilingual layout as `joining_kit_pdf.py`. Uses `python-docx==1.2.0`. Word natively shapes Devanagari (Nirmala UI) so no Pillow workaround needed.
+    - **New endpoint** `GET /api/candidates/{cand_id}/joining-kit-docx` (HR / management only). Same pre-conditions as the PDF: `status=selected`, `employee_id` set, `expected_joining_date` set.
+    - **Frontend** `JoiningKitPanel.js` — added a second blue "Download Joining Kit (Word)" button next to the orange PDF button. Disabled until Employee ID + Joining Date are saved. `data-testid="download-joining-kit-docx-btn"`.
+    - **Verified** via curl: HTTP 200, mime `application/vnd.openxmlformats-officedocument.wordprocessingml.document`, 44 KB output, 14 sections, 26 tables, Hindi text rendered.
+
 ## P1 Backlog
 - [ ] GPS location map view for field agent tracking
 - [ ] Mobile-optimized attendance view
