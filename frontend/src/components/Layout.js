@@ -258,14 +258,16 @@ export default function Layout() {
                 ) : (
                   <div className="space-y-2">
                     {[
-                      ["Designation",     profileData.designation],
-                      ["Department",      profileData.department],
-                      ["Branch",          profileData.branch],
+                      ["Designation",       profileData.designation],
+                      ["Department",        profileData.department],
+                      ["Branch",            profileData.branch],
                       ["Reporting Manager", profileData._manager_name || profileData.reporting_to],
-                      ["Date of Joining", profileData.joining_date],
-                      ["Blood Group",     profileData.blood_group],
-                      ["UAN",             profileData.uan_number],
-                      ["ESIC",            profileData.esi_number],
+                      ["Date of Joining",   profileData.joining_date],
+                      ["Blood Group",       profileData.blood_group],
+                      ["UAN",               profileData.uan_number],
+                      ["ESIC",              profileData.esi_number],
+                      ["Bank Account",      profileData.bank_details?.account_number],
+                      ["IFSC",              profileData.bank_details?.ifsc_code],
                     ].map(([label, val]) => (
                       <div key={label} className="flex justify-between items-center text-xs border-b border-slate-50 pb-1.5">
                         <span className="text-slate-400 font-medium">{label}</span>
