@@ -9,7 +9,7 @@ from services.shift_rules import (
     compute_status_after_punch_out_with_shift,
     resolve_shift_for,
 )
-from datetime import datetime, timezone, date
+from datetime import datetime, timezone, date, timedelta
 import math
 import os
 import logging
@@ -765,6 +765,54 @@ def _normalise_time(date_str: str, time_str: Optional[str]) -> Optional[str]:
         raise HTTPException(status_code=400, detail=f"Could not parse time '{time_str}'. Use HH:MM or full ISO.")
 
 
+async def _auto_create_compoff_if_holiday(employee_id: str, date_str: str, status: str):
+    """After a regularisation, if the date is a non-working day and the employee
+    worked (present/half_day), auto-create a pending comp-off grant — idempotent."""
+    if status not in ("present", "half_day"):
+        return
+    try:
+        from routes.holidays import is_non_working_saturday, get_holiday_dates
+        d = date.fromisoformat(date_str)
+        reason = None
+        if d.weekday() == 6:
+            reason = "Sunday"
+        else:
+            # Determine role for Saturday rule
+            emp = await db.employees.find_one({"employee_id": employee_id}, {"_id": 0, "role": 1}) or {}
+            role = emp.get("role", "employee")
+            if is_non_working_saturday(d, role):
+                reason = "1st/3rd Saturday Off"
+            else:
+                holiday = await db.holidays.find_one({"date": date_str}, {"_id": 0, "name": 1})
+                if holiday:
+                    reason = f"Holiday: {holiday['name']}"
+        if not reason:
+            return  # It's a regular working day — no comp-off needed
+        # Idempotent: skip if already tracked for this employee/date
+        existing = await db.comp_off_grants.find_one({
+            "employee_id": employee_id,
+            "earn_date": date_str,
+            "status": {"$in": ["pending", "approved", "used"]},
+        })
+        if existing:
+            return
+        # Fetch hours_worked from the attendance record
+        rec = await db.attendance_records.find_one(
+            {"employee_id": employee_id, "date": date_str}, {"_id": 0, "hours_worked": 1}
+        ) or {}
+        await db.comp_off_grants.insert_one({
+            "employee_id": employee_id,
+            "earn_date": date_str,
+            "earn_reason": reason,
+            "hours_worked": rec.get("hours_worked"),
+            "status": "pending",
+            "source": "regularisation",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as e:
+        logger.warning(f"_auto_create_compoff_if_holiday failed for {employee_id}/{date_str}: {e}")
+
+
 async def _apply_regularisation(
     record_id: Optional[str],
     employee_id: str,
@@ -836,6 +884,10 @@ async def _apply_regularisation(
         "acted_at": datetime.now(timezone.utc).isoformat(),
         "type": "direct_edit",
     })
+
+    # Auto-create comp-off if this date is a non-working day and employee worked
+    await _auto_create_compoff_if_holiday(employee_id, date_str, result.get("status", ""))
+
     return att_to_dict(result)
 
 

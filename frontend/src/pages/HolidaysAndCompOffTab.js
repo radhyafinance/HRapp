@@ -214,7 +214,7 @@ export default function HolidaysAndCompOffTab() {
         <div className="p-5 border-b border-slate-100 flex flex-wrap items-center gap-3">
           <div className="flex-1 min-w-[200px]">
             <h3 className="text-base font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Compensatory Off — Pending Approvals</h3>
-            <p className="text-xs text-slate-500">Auto-detected from punch-ins on holidays / Sundays / non-working Saturdays · Approved comp-offs expire in 90 days</p>
+            <p className="text-xs text-slate-500">Auto-detected from punch-ins on holidays / Sundays / non-working Saturdays, and from regularised attendance on holidays · Approved comp-offs expire in 90 days</p>
           </div>
           <button onClick={scanCandidates} disabled={scanBusy} data-testid="scan-compoff-btn"
             className="flex items-center gap-1.5 px-3 py-2 bg-[#1E2A47] text-white rounded-lg text-xs font-semibold hover:bg-[#2a3a5c] disabled:opacity-60">
@@ -230,7 +230,7 @@ export default function HolidaysAndCompOffTab() {
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="compoff-table">
             <thead><tr className="bg-slate-50 border-b">
-              {["Employee", "Earn Date", "Reason", "Hours Worked", "Action"].map(h => (
+              {["Employee", "Earn Date", "Reason", "Hours Worked", "Source", "Action"].map(h => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
               ))}
             </tr></thead>
@@ -238,7 +238,7 @@ export default function HolidaysAndCompOffTab() {
               {pendingLoading ? (
                 <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
               ) : pending.length === 0 ? (
-                <tr><td colSpan={5} className="px-4 py-12 text-center text-sm text-slate-400">
+                <tr><td colSpan={6} className="px-4 py-12 text-center text-sm text-slate-400">
                   No pending comp-off candidates. <button onClick={scanCandidates} className="underline hover:text-[#E85B1E]">Run a scan</button> to detect any.
                 </td></tr>
               ) : pending.map(g => {
@@ -255,6 +255,12 @@ export default function HolidaysAndCompOffTab() {
                     </td>
                     <td className="px-4 py-3 text-sm text-slate-600">{g.earn_reason}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{g.hours_worked ? `${g.hours_worked.toFixed(1)} h` : "—"}</td>
+                    <td className="px-4 py-3">
+                      {g.source === "regularisation"
+                        ? <span className="px-2 py-1 rounded-full text-[10px] font-semibold bg-violet-100 text-violet-700">Regularised</span>
+                        : <span className="px-2 py-1 rounded-full text-[10px] font-semibold bg-slate-100 text-slate-600">Punch-in</span>
+                      }
+                    </td>
                     <td className="px-4 py-3">
                       <div className="flex gap-1">
                         <button onClick={() => approve(g)} disabled={actBusy === g.id} data-testid={`approve-compoff-${g.id}`}

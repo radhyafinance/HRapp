@@ -63,6 +63,7 @@ def _to_dict(g: dict) -> dict:
         "earn_date": g.get("earn_date"),
         "earn_reason": g.get("earn_reason"),
         "status": g.get("status"),
+        "source": g.get("source", "punch_in"),  # "punch_in" | "regularisation"
         "expiry_date": g.get("expiry_date"),
         "approved_at": g.get("approved_at"),
         "approved_by": g.get("approved_by"),
