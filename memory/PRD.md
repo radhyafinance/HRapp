@@ -205,18 +205,31 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 
 37. **Auto Half-Day from Shift Rules (Feb 2026)** -
     Per-role office hours and automatic half-day computation now run on every punch:
-    - **Field Staff (`field_agent`) + Managers (`managers`)** → 07:00 – 16:00 IST
-    - **Management + HO Staff (`employee`)** → 09:30 – 18:30 IST
+    - **Field Staff (`field_agent`) + Managers (`managers`)** → 07:00 – 16:00 IST (default seed)
+    - **Management + HO Staff (`employee`)** → 09:30 – 18:30 IST (default seed)
     - **HR Admin** → no shift; doesn't punch
     - **Half-Day triggers**:
-      1. Punched in **> 30 min** after shift start → status `half_day` with reason `late_punch_in` (also stores `late_minutes`).
-      2. Total `hours_worked` **< 6** at punch-out → status `half_day` with reason `short_hours`.
-      3. Once a day is half-day for being late, it **cannot recover** to `present` — penalty stands even if the user later works ≥ 6 hours.
+      1. Punched in **> grace_minutes** after shift start → status `half_day` with reason `late_punch_in` (also stores `late_minutes`).
+      2. Total `hours_worked` **< min_full_day_hours** at punch-out → status `half_day` with reason `short_hours`.
+      3. Once a day is half-day for being late, it **cannot recover** to `present` — penalty stands even if the user later works ≥ min hours.
     - **HR override locks the day** — `_apply_regularisation` now sets `regularised: True`; subsequent `punch_in` / `punch_out` skip the auto-rule and preserve HR-edited status.
-    - **New helper module** `/app/backend/services/shift_rules.py` exposes `compute_punch_in_status()` and `compute_status_after_punch_out()`. Constants `LATE_GRACE_MINUTES = 30` and `MIN_FULL_DAY_HOURS = 6.0`.
     - **API responses** for `/api/attendance/punch-in` and `/punch-out` now include `status`, `late_minutes`, `auto_status_reason` and a friendly suffix in `message` (e.g. *"— marked Half Day (late by 45 min)"*).
     - **Frontend** `<AttendanceStatusBadge>` (new component at `/app/frontend/src/components/attendance/StatusBadge.js`) shows the actual status pill (Present / Half Day / Outside Fence / Leave / etc.) plus a subtle reason chip — `Late 45m` (amber) for late half-day or `<6h` (orange) for short-hours half-day. Used in personal Attendance History, Today's Summary (managers), and the team attendance table.
-    - **Test coverage**: 14 unit tests in `/app/backend/tests/test_shift_rules.py` covering on-time/early/within-grace/late, both shift cohorts, late-locks-on-long-hours, short-hours, and unmapped roles. All pass.
+    - **Test coverage**: 14 unit tests in `/app/backend/tests/test_shift_rules.py` + 9 dict-shift tests in `test_shift_rules_dict.py`. All pass.
+
+38. **Configurable Shifts (Feb 2026)** -
+    Hardcoded shift hours replaced with a CRUD-able `shifts` collection. Each shift has:
+    `name`, `start_hour:start_minute`, `end_hour:end_minute`, `grace_minutes`, `min_full_day_hours`,
+    `assigned_roles[]`, `is_default`, `is_active`. **A role can only be on ONE shift** — selecting it
+    for shift B auto-removes it from shift A (via `$pullAll`). At most one shift can carry `is_default=true`.
+    - **New route** `/app/backend/routes/shifts.py`: `GET/POST/PUT/DELETE /api/shifts` (HR-only for writes; soft-delete via `is_active=false` + cascading `$unset` on employee overrides), `GET /api/shifts/resolve/me`, `GET /api/shifts/resolve/{employee_id}` (HR/manager debug helper).
+    - **Resolution priority** (`services/shift_rules.resolve_shift_for`): employee.shift_id → role-assigned shift → is_default shift → hard-coded legacy fallback. Used by both punch_in and punch_out.
+    - **Auto-seed** on startup if collection is empty: 2 default shifts ("Field Shift" 7-16 IST → field_agent+managers; "HO Shift" 9:30-18:30 IST → management+employee + is_default).
+    - **Snapshot on attendance**: every punch record now stores `shift_id` + `shift_name` for audit; HR-locked records preserve their original snapshot.
+    - **Employee override**: new `shift_id` field on employees. PUT `/api/employees/{id}` accepts `shift_id` (set) or empty string (clears via `$unset`).
+    - **Frontend Settings → Shifts tab** (`/app/frontend/src/pages/ShiftsTab.js`): card-based list with Edit/Delete; "New Shift" modal with start/end pickers, grace/min-hours, multi-select roles **with live conflict warning** ("Currently in Field Shift — will move here on save"), is_default toggle. Default shift renders a yellow "Default" badge.
+    - **Employee Edit Form** new "Shift Override" dropdown (`edit-shift_id`) — listing all active shifts; "— Use role default —" clears the override.
+    - **Tests**: 15 new pytest cases for the API + role-exclusivity + default-exclusivity + override clear behaviour. 23 existing rule-engine tests still pass. Total 38/38 green.
 
 - [ ] Employee confirmation letter after probation
 - [ ] Leave encashment calculation
