@@ -789,13 +789,18 @@ async def credit_monthly_el(current_user: dict = Depends(get_current_user)):
             continue
 
         balance = await db.leave_balances.find_one({"employee_id": emp_id, "year": fy})
-        if not balance:
-            skipped_not_eligible += 1
-            continue
-
-        if balance.get(flag_key):
+        if balance and balance.get(flag_key):
             skipped_already_credited += 1
             continue
+
+        # Auto-create the FY balance row if missing so the EL credit isn't silently dropped.
+        if not balance:
+            new_balance = {
+                "employee_id": emp_id,
+                "year": fy,
+                **{k: dict(v) for k, v in LEAVE_BALANCE_TEMPLATE.items()},
+            }
+            await db.leave_balances.insert_one(new_balance)
 
         await db.leave_balances.update_one(
             {"employee_id": emp_id, "year": fy},
