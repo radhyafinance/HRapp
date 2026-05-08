@@ -1,3 +1,7 @@
+# Pinned: face_recognition_models still uses legacy pkg_resources API,
+# which is removed in setuptools 81+. Holds until the lib is updated or replaced.
+setuptools<81
+
 absl-py==2.4.0
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.5
