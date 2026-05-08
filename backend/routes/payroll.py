@@ -65,7 +65,7 @@ def calc_payroll_components(emp: dict, days_in_month: int = 30, lop_days: float 
     else:
         gratuity_monthly = round((basic_payable * 15) / 26 / 12)
 
-    ctc_monthly = round(gross + epf_employer + esic_employer + gratuity_monthly)
+    ctc_monthly = round(gross_payable + epf_employer + esic_employer + gratuity_monthly)
     net_salary = round(gross_payable - epf_employee - esic_employee)
 
     return {
