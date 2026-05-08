@@ -45,7 +45,7 @@ def calc_payroll_components(emp: dict, days_in_month: int = 30, lop_days: float 
     if stored_epf is not None and float(stored_epf) > 0:
         raw_epf_emp = float(stored_epf) * lop_fraction if lop_days > 0 else float(stored_epf)
         epf_employee = round(min(raw_epf_emp, EPF_CAP), 2)
-        epf_employer = min(round(basic_payable * 0.12, 2), EPF_CAP)
+        epf_employer = epf_employee  # Employer always matches employee (same 12% basis + cap)
     else:
         epf_employee = 0
         epf_employer = 0
