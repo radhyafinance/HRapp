@@ -200,6 +200,30 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
     multi_session = bool(emp_doc.get("multi_session_attendance"))
 
     sessions = list((existing or {}).get("sessions") or [])
+
+    # Migrate legacy records: punch_in_time stored flat (no sessions array).
+    # Reconstruct sessions from top-level fields so is_first_session is correct
+    # and the grace-period check is never applied to a 2nd/3rd punch-in.
+    if not sessions and existing and existing.get("punch_in_time"):
+        sessions = [{
+            "punch_in_time": existing.get("punch_in_time"),
+            "punch_in_location": existing.get("punch_in_location"),
+            "punch_in_face_matched": existing.get("punch_in_face_matched"),
+            "punch_in_face_distance": existing.get("punch_in_face_distance"),
+            "punch_in_face_warning": existing.get("punch_in_face_warning"),
+            "punch_in_photo": existing.get("punch_in_photo"),
+            "geofence_verified": existing.get("geofence_verified"),
+            "distance_from_office": existing.get("distance_from_office"),
+            "location_name": existing.get("location_name"),
+            "punch_out_time": existing.get("punch_out_time"),
+            "punch_out_location": existing.get("punch_out_location"),
+            "punch_out_face_matched": existing.get("punch_out_face_matched"),
+            "punch_out_face_distance": existing.get("punch_out_face_distance"),
+            "punch_out_face_warning": existing.get("punch_out_face_warning"),
+            "punch_out_photo": existing.get("punch_out_photo"),
+            "hours_worked": existing.get("hours_worked"),
+        }]
+
     last_session_open = bool(sessions and not sessions[-1].get("punch_out_time"))
 
     if existing and existing.get("punch_in_time"):
@@ -219,6 +243,7 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
 
     now = datetime.now(timezone.utc)
     punch_in_iso = now.isoformat()
+    # is_first_session = True only when there is genuinely no previous punch today
     is_first_session = not sessions
 
     # Auto status from shift rules — skip if HR has already locked the day via regularisation.
@@ -230,10 +255,21 @@ async def punch_in(data: PunchRequest, current_user: dict = Depends(get_current_
         auto_reason = existing.get("auto_status_reason")
         shift_used = None
     elif not is_first_session:
-        # Subsequent session — keep whatever status the first punch-in produced.
-        auto_status = existing.get("status") or "present"
-        late_minutes = existing.get("late_minutes", 0)
-        auto_reason = existing.get("auto_status_reason")
+        # Subsequent session — only carry forward the "late_punch_in" lock from session 1.
+        # "short_hours" is an intermediate state set at punch-out; it should not
+        # penalise the employee when they open a new session (more hours are coming).
+        # Grace-period (late_punch_in) is the only permanent penalty.
+        existing_status = existing.get("status") or "present"
+        existing_reason = existing.get("auto_status_reason")
+        if existing_status == "half_day" and existing_reason == "late_punch_in":
+            auto_status = "half_day"
+            late_minutes = existing.get("late_minutes", 0)
+            auto_reason = "late_punch_in"
+        else:
+            # Reset to present — punch-out will recompute from total hours
+            auto_status = "present"
+            late_minutes = 0
+            auto_reason = None
         shift_used = None
     else:
         shift_used = await resolve_shift_for(current_user.get("role"), data.employee_id, db)
