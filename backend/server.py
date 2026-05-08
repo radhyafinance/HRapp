@@ -1,13 +1,14 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import asyncio
 import bcrypt
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from auth_utils import hash_password
 
 from routes import auth, employees, candidates, attendance, leaves, payroll
@@ -85,6 +86,42 @@ async def root():
     return {"message": "Radhya HR System API", "status": "running"}
 
 
+# ──────────────────────────────────────────────────────────────
+#  Background scheduler — runs face-photo purge daily at 02:00 IST
+# ──────────────────────────────────────────────────────────────
+IST_OFFSET = timedelta(hours=5, minutes=30)
+
+
+def _seconds_until_next_ist(hour: int, minute: int = 0) -> float:
+    """Return seconds from 'now' until the next occurrence of HH:MM IST."""
+    now_utc = datetime.now(timezone.utc)
+    now_ist = now_utc + IST_OFFSET
+    target_ist = now_ist.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target_ist <= now_ist:
+        target_ist += timedelta(days=1)
+    return (target_ist - now_ist).total_seconds()
+
+
+async def _daily_face_photo_purge_loop():
+    """Run face-mismatch photo cleanup once a day at 02:00 IST. Survives errors."""
+    from routes.attendance import purge_old_face_mismatch_photos
+    while True:
+        try:
+            wait = _seconds_until_next_ist(2, 0)
+            logger.info(f"Face-photo purge scheduler: next run in {wait/3600:.1f}h (02:00 IST)")
+            await asyncio.sleep(wait)
+            result = await purge_old_face_mismatch_photos()
+            purged = result["top_level_records_purged"] + result["session_records_purged"]
+            logger.info(f"Daily face-photo purge: {purged} records (cutoff={result['cutoff_date']})")
+        except asyncio.CancelledError:
+            logger.info("Face-photo purge scheduler stopped")
+            raise
+        except Exception as e:
+            logger.error(f"Daily face-photo purge failed: {e} — retrying tomorrow")
+            # Sleep ~24h before retrying so a recurring failure doesn't tight-loop
+            await asyncio.sleep(24 * 3600)
+
+
 @app.on_event("startup")
 async def startup():
     db = db_instance
@@ -145,6 +182,9 @@ async def startup():
             logger.info(f"Face-mismatch photo cleanup: {purged} records purged (cutoff={purge_result['cutoff_date']})")
     except Exception as e:
         logger.warning(f"Face-mismatch photo cleanup skipped: {e}")
+
+    # Start the daily 02:00 IST scheduler for ongoing photo cleanup
+    app.state.face_photo_purge_task = asyncio.create_task(_daily_face_photo_purge_loop())
 
     # Seed / migrate admin user — login by username "admin" (no longer email-based)
     admin_username = os.environ.get("ADMIN_USERNAME", "admin")
@@ -225,4 +265,11 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
+    task = getattr(app.state, "face_photo_purge_task", None)
+    if task and not task.done():
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
     mongo_client.close()
