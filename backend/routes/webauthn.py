@@ -88,7 +88,11 @@ async def _consume_challenge(username: str, kind: str) -> bytes:
     rec = await db.webauthn_challenges.find_one({"username": username, "kind": kind})
     if not rec:
         raise HTTPException(status_code=400, detail="No active challenge — please retry")
-    if rec["expires_at"] < datetime.now(timezone.utc):
+    expires_at = rec["expires_at"]
+    # Mongo strips tzinfo on read — normalise both sides to naive UTC for comparison
+    if expires_at.tzinfo is not None:
+        expires_at = expires_at.replace(tzinfo=None)
+    if expires_at < datetime.utcnow():
         await db.webauthn_challenges.delete_one({"_id": rec["_id"]})
         raise HTTPException(status_code=400, detail="Challenge expired — please retry")
     await db.webauthn_challenges.delete_one({"_id": rec["_id"]})
