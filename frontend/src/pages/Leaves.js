@@ -115,6 +115,7 @@ export default function Leaves() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkResult, setBulkResult] = useState(null);
   const [auditLog, setAuditLog] = useState(null); // null = closed, [] = open
+  const [coDetail, setCoDetail] = useState(null); // { employee_id, name, grants[] | "loading" | "error" }
   const bulkFileRef = useRef(null);
 
   const isManager = ["hr_admin", "management", "managers"].includes(user?.role);
@@ -208,6 +209,16 @@ export default function Leaves() {
       console.error(e);
     } finally {
       setEmpLeavesLoading(false);
+    }
+  };
+
+  const openCompOffDetail = async (emp) => {
+    setCoDetail({ employee_id: emp.employee_id, name: emp.name, grants: "loading" });
+    try {
+      const res = await API.get(`/comp-offs/balance/${emp.employee_id}`);
+      setCoDetail({ employee_id: emp.employee_id, name: emp.name, grants: res.data });
+    } catch (e) {
+      setCoDetail({ employee_id: emp.employee_id, name: emp.name, grants: "error", err: e.response?.data?.detail || "Failed to load" });
     }
   };
 
@@ -492,7 +503,16 @@ export default function Leaves() {
                         </td>
                       ))}
                       <td className="px-4 py-3" data-testid={`comp-off-balance-${e.employee_id}`}>
-                        <span className="text-sm font-bold text-violet-700">{e["Comp-Off"]?.remaining ?? 0}</span>
+                        {(e["Comp-Off"]?.remaining ?? 0) > 0 ? (
+                          <button onClick={() => openCompOffDetail(e)}
+                            data-testid={`comp-off-breakdown-${e.employee_id}`}
+                            className="text-sm font-bold text-violet-700 underline decoration-dotted hover:bg-violet-50 px-1 rounded"
+                            title="Click to see breakdown">
+                            {e["Comp-Off"].remaining}
+                          </button>
+                        ) : (
+                          <span className="text-sm font-bold text-slate-400">0</span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex gap-2">
@@ -996,6 +1016,56 @@ export default function Leaves() {
               ))
             )}
           </div>
+        </Modal>
+      )}
+
+      {/* Comp-Off Breakdown Modal */}
+      {coDetail && (
+        <Modal title={`Comp-Off Breakdown — ${coDetail.name} (${coDetail.employee_id})`} onClose={() => setCoDetail(null)}>
+          {coDetail.grants === "loading" ? (
+            <p className="text-sm text-slate-400 text-center py-8">Loading…</p>
+          ) : coDetail.grants === "error" ? (
+            <p className="text-sm text-red-600 text-center py-8">{coDetail.err || "Failed to load"}</p>
+          ) : coDetail.grants.length === 0 ? (
+            <p className="text-sm text-slate-400 text-center py-8">No active comp-offs.</p>
+          ) : (
+            <div className="space-y-2" data-testid="comp-off-breakdown-list">
+              {coDetail.grants.map((g) => {
+                const expiry = g.expiry_date ? new Date(g.expiry_date) : null;
+                const today = new Date(); today.setHours(0,0,0,0);
+                const daysLeft = expiry ? Math.ceil((expiry - today) / 86400000) : null;
+                const expiringSoon = daysLeft !== null && daysLeft <= 14;
+                const sourceLabel = g.source === "regularisation" ? "Regularised" : "Punch-in";
+                const sourceCls = g.source === "regularisation" ? "bg-amber-100 text-amber-700" : "bg-violet-100 text-violet-700";
+                return (
+                  <div key={g.id} className="border border-slate-200 rounded-lg p-3 text-xs" data-testid={`co-grant-${g.id}`}>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <span className="text-sm font-bold text-[#1E2A47]">
+                        Earned: {g.earn_date ? new Date(g.earn_date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                      </span>
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${sourceCls}`}>{sourceLabel}</span>
+                    </div>
+                    {g.earn_reason && <p className="text-slate-500 mb-1">{g.earn_reason}</p>}
+                    <div className="flex items-center justify-between">
+                      <span className="text-slate-600">
+                        Expires: <strong className={expiringSoon ? "text-red-600" : "text-slate-700"}>
+                          {expiry ? expiry.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                        </strong>
+                      </span>
+                      {daysLeft !== null && (
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${expiringSoon ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"}`}>
+                          {daysLeft > 0 ? `${daysLeft} day${daysLeft === 1 ? "" : "s"} left` : "Expired"}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              <p className="text-[11px] text-slate-400 pt-2 border-t border-slate-100">
+                Comp-offs expire 90 days after the date earned. Showing approved & unused only.
+              </p>
+            </div>
+          )}
         </Modal>
       )}
     </div>
