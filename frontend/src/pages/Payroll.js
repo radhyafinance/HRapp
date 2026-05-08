@@ -51,9 +51,9 @@ export default function Payroll() {
     setEditTds(r.tds || 0);
     setEditOtherDed(r.other_deductions || 0);
     setEditOtherAdd(r.other_additions || 0);
-    const wd = r.working_days || 26;
-    const pd = r.present_days ?? wd;
-    setEditLopDays(r.lop_days != null ? r.lop_days : Math.max(0, wd - pd));
+    const wd = r.working_days || daysInPeriod(r.period);
+    const lopDays = r.lop_days != null ? r.lop_days : 0;
+    setEditLopDays(lopDays);
     setEditRemarks(r.remarks || "");
   };
 
@@ -256,9 +256,7 @@ export default function Payroll() {
           const totalDed = r.total_deductions != null
             ? r.total_deductions
             : (Number(r.epf_employee || 0) + Number(r.esic_employee || 0) + Number(r.tds || 0) + Number(r.other_deductions || 0));
-          const wd = Number(r.working_days || 26);
-          const pd = r.present_days != null ? Number(r.present_days) : wd;
-          const lop = r.lop_days != null ? Number(r.lop_days) : Math.max(0, wd - pd);
+          const lop = r.lop_days != null ? Number(r.lop_days) : 0;
           return {
             net: acc.net + Number(r.net_salary || 0),
             ded: acc.ded + totalDed,
@@ -411,12 +409,12 @@ export default function Payroll() {
             <div className="grid grid-cols-3 gap-3">
               {[
                 ["Days in Month", daysInPeriod(showSlip.period)],
-                ["Payable Days",  showSlip.present_days || showSlip.working_days || 26],
-                ["Leave Days",    showSlip.leave_days || 0],
+                ["LOP Days",      showSlip.lop_days != null ? showSlip.lop_days : 0],
+                ["Payable Days",  daysInPeriod(showSlip.period) - (showSlip.lop_days != null ? Number(showSlip.lop_days) : 0)],
               ].map(([label, val]) => (
                 <div key={label} className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-center">
                   <p className="text-xs text-slate-500">{label}</p>
-                  <p className="text-lg font-bold text-[#1E2A47]">{val}</p>
+                  <p className={`text-lg font-bold ${label === "LOP Days" && Number(val) > 0 ? "text-red-600" : "text-[#1E2A47]"}`}>{val}</p>
                 </div>
               ))}
             </div>

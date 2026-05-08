@@ -3,14 +3,23 @@ from pydantic import BaseModel
 from typing import Optional, List
 from database import db
 from auth_utils import get_current_user
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
+import calendar as _cal
 from bson import ObjectId
 import io
 
 router = APIRouter()
 
 
-def calc_payroll_components(emp: dict, working_days: int = 26, present_days: int = 26):
+def calc_payroll_components(emp: dict, days_in_month: int = 30, lop_days: float = 0.0):
+    """Compute salary components.
+
+    Args:
+        days_in_month: actual calendar days in the payroll month (28-31).
+        lop_days: Loss-of-Pay days for the month (0 = full salary).
+    Payable days = days_in_month − lop_days.  All earnings/deductions are
+    pro-rated on payable_days / days_in_month when lop_days > 0.
+    """
     salary = emp.get("salary", {})
     basic = salary.get("basic", 0)
     hra = salary.get("hra", 0)
@@ -19,28 +28,29 @@ def calc_payroll_components(emp: dict, working_days: int = 26, present_days: int
     conveyance = salary.get("conveyance_allowance", 0)
     gross = basic + hra + special + canteen + conveyance
 
-    # Pro-rata if absent
-    if present_days < working_days and working_days > 0:
-        gross_payable = round(gross * present_days / working_days, 2)
-        basic_payable = round(basic * present_days / working_days, 2)
+    payable_days = max(0.0, float(days_in_month) - float(lop_days))
+    lop_fraction = payable_days / float(days_in_month) if days_in_month > 0 else 1.0
+
+    # Pro-rata if LOP exists
+    if lop_days > 0 and days_in_month > 0:
+        gross_payable = round(gross * lop_fraction, 2)
+        basic_payable = round(basic * lop_fraction, 2)
     else:
         gross_payable = gross
         basic_payable = basic
 
     # EPF: only deduct if epf_employee is explicitly set to a value > 0.
-    # If null/not set or 0 — employee is EPF-exempt.
-    # Capped at ₹1800 for both employee and employer side.
     EPF_CAP = 1800
     stored_epf = salary.get("epf_employee")
     if stored_epf is not None and float(stored_epf) > 0:
-        raw_epf_emp = float(stored_epf) * present_days / working_days if present_days < working_days else float(stored_epf)
+        raw_epf_emp = float(stored_epf) * lop_fraction if lop_days > 0 else float(stored_epf)
         epf_employee = round(min(raw_epf_emp, EPF_CAP), 2)
         epf_employer = min(round(basic_payable * 0.12, 2), EPF_CAP)
     else:
         epf_employee = 0
         epf_employer = 0
 
-    # ESIC: applicable when basic <= 21000, calculated on basic salary
+    # ESIC: applicable when basic <= 21000, calculated on payable basic
     if basic <= 21000:
         esic_employee = round(basic_payable * 0.0075, 2)
         esic_employer = round(basic_payable * 0.0325, 2)
@@ -48,26 +58,22 @@ def calc_payroll_components(emp: dict, working_days: int = 26, present_days: int
         esic_employee = 0
         esic_employer = 0
 
-    # Gratuity provision (monthly): (Basic × 15 / 26) / 12
-    # 15/26 of basic = annual gratuity per year of service; divide by 12 for monthly accrual.
-    # Directors are excluded from gratuity (per company policy).
+    # Gratuity provision (monthly)
     designation = (emp.get("designation") or "").strip().lower()
     if designation == "director":
         gratuity_monthly = 0
     else:
-        gratuity_monthly = round((basic_payable * 15) / 26 / 12)  # rounded to nearest rupee
+        gratuity_monthly = round((basic_payable * 15) / 26 / 12)
 
-    # CTC components
-    ctc_monthly = round(gross + epf_employer + esic_employer + gratuity_monthly)  # rounded to nearest rupee
-
-    net_salary = round(gross_payable - epf_employee - esic_employee)  # rounded to nearest rupee
+    ctc_monthly = round(gross + epf_employer + esic_employer + gratuity_monthly)
+    net_salary = round(gross_payable - epf_employee - esic_employee)
 
     return {
         "basic": basic_payable,
-        "hra": round(hra * present_days / working_days, 2) if present_days < working_days else hra,
-        "special_allowance": round(special * present_days / working_days, 2) if present_days < working_days else special,
-        "canteen_allowance": round(canteen * present_days / working_days, 2) if present_days < working_days else canteen,
-        "conveyance_allowance": round(conveyance * present_days / working_days, 2) if present_days < working_days else conveyance,
+        "hra": round(hra * lop_fraction, 2) if lop_days > 0 else hra,
+        "special_allowance": round(special * lop_fraction, 2) if lop_days > 0 else special,
+        "canteen_allowance": round(canteen * lop_fraction, 2) if lop_days > 0 else canteen,
+        "conveyance_allowance": round(conveyance * lop_fraction, 2) if lop_days > 0 else conveyance,
         "gross_salary": gross,
         "gross_payable": gross_payable,
         "epf_employee": epf_employee,
@@ -77,9 +83,92 @@ def calc_payroll_components(emp: dict, working_days: int = 26, present_days: int
         "gratuity_monthly": gratuity_monthly,
         "ctc_monthly": ctc_monthly,
         "net_salary": net_salary,
-        "working_days": working_days,
-        "present_days": present_days,
+        "working_days": days_in_month,
+        "present_days": payable_days,
+        "lop_days": lop_days,
     }
+
+
+async def calculate_lop_days(employee_id: str, year: int, month: int, joining_date_str: str) -> float:
+    """Auto-calculate LOP days for the month.
+
+    LOP = working days where the employee has no punch-in, no approved leave,
+    and the day is not a public holiday or Sunday.
+    Half-day attendance is counted as present (not LOP).
+    """
+    days_in_month = _cal.monthrange(year, month)[1]
+    period = f"{year}-{month:02d}"
+
+    try:
+        joining_date = date.fromisoformat(joining_date_str[:10])
+    except Exception:
+        joining_date = date(year, month, 1)
+
+    # Fetch attendance records
+    att_records = await db.attendance_records.find(
+        {"employee_id": employee_id, "date": {"$regex": f"^{period}"}}
+    ).to_list(35)
+    att_by_date = {r["date"]: r for r in att_records}
+
+    # Fetch holidays
+    holidays_list = await db.holidays.find(
+        {"date": {"$regex": f"^{period}"}}
+    ).to_list(35)
+    holiday_dates = {h["date"] for h in holidays_list}
+
+    # Fetch all approved leaves and expand into individual dates
+    approved_leaves = await db.leave_applications.find(
+        {"employee_id": employee_id, "status": "approved"}
+    ).to_list(500)
+    leave_dates: set = set()
+    for lv in approved_leaves:
+        try:
+            s = date.fromisoformat(str(lv.get("start_date", ""))[:10])
+            e = date.fromisoformat(str(lv.get("end_date", ""))[:10])
+            cur = s
+            while cur <= e:
+                if cur.year == year and cur.month == month:
+                    leave_dates.add(cur.isoformat())
+                cur += timedelta(days=1)
+        except Exception:
+            pass
+
+    today = date.today()
+    lop = 0.0
+    for day in range(1, days_in_month + 1):
+        d = date(year, month, day)
+
+        # Skip future dates or pre-joining dates
+        if d > today or d < joining_date:
+            continue
+
+        date_str = d.isoformat()
+
+        # Sunday = weekly off — not LOP
+        if d.weekday() == 6:
+            continue
+
+        # Public holiday — not LOP
+        if date_str in holiday_dates:
+            continue
+
+        # Covered by approved leave — not LOP
+        if date_str in leave_dates:
+            continue
+
+        # Check attendance status
+        att = att_by_date.get(date_str)
+        if att:
+            status = att.get("status", "")
+            if status in ("present", "half_day", "leave", "weekly_off", "holiday"):
+                continue
+            # status == "absent" or unexpected → LOP
+            lop += 1.0
+        else:
+            # No attendance record on a working day → absent → LOP
+            lop += 1.0
+
+    return lop
 
 
 def pay_to_dict(p):
@@ -120,28 +209,17 @@ async def process_payroll(data: ProcessPayrollRequest, current_user: dict = Depe
         query["employee_id"] = {"$in": data.employee_ids}
     employees = await db.employees.find(query).to_list(1000)
     period = f"{data.year}-{data.month:02d}"
+    days_in_month = _cal.monthrange(data.year, data.month)[1]
     processed = []
     for emp in employees:
         emp_id = emp["employee_id"]
         existing = await db.payroll_records.find_one({"employee_id": emp_id, "period": period})
         if existing:
             continue
-        # Get attendance for the month
-        att_records = await db.attendance_records.find(
-            {"employee_id": emp_id, "date": {"$regex": f"^{period}"}}
-        ).to_list(35)
-        present_days = len([r for r in att_records if r.get("punch_in_time")])
-        working_days = 26  # Standard working days
-        if present_days == 0:
-            present_days = working_days  # Default to full month if no attendance
-        components = calc_payroll_components(emp, working_days, present_days)
-        # Get approved leaves
-        approved_leaves = await db.leave_applications.find({
-            "employee_id": emp_id,
-            "status": "approved",
-            "start_date": {"$regex": f"^{period}"},
-        }).to_list(100)
-        leave_days = sum(lv.get("days", 0) for lv in approved_leaves)
+        # Auto-calculate LOP: absent days with no approved leave, no holiday, not Sunday
+        joining_date_str = emp.get("joining_date", f"{data.year}-{data.month:02d}-01") or f"{data.year}-{data.month:02d}-01"
+        lop_days = await calculate_lop_days(emp_id, data.year, data.month, joining_date_str)
+        components = calc_payroll_components(emp, days_in_month, lop_days)
         record = {
             "employee_id": emp_id,
             "employee_name": f"{emp.get('first_name', '')} {emp.get('last_name', '')}",
@@ -151,7 +229,6 @@ async def process_payroll(data: ProcessPayrollRequest, current_user: dict = Depe
             "month": data.month,
             "year": data.year,
             **components,
-            "leave_days": leave_days,
             "tds": 0,
             "other_deductions": 0,
             "other_additions": 0,
@@ -251,14 +328,13 @@ async def update_payroll(record_id: str, data: PayrollUpdateRequest, current_use
         "status": "processed",
     }
 
-    # If HR sets LOP days, recompute pro-rata earnings + EPF/ESIC.
+    # If HR manually overrides LOP days, recompute pro-rata earnings + EPF/ESIC.
     if data.lop_days is not None:
         emp = await db.employees.find_one({"employee_id": record.get("employee_id")})
-        working_days = record.get("working_days", 26) or 26
+        days_in_month = record.get("working_days", 30) or 30
         lop = max(0.0, float(data.lop_days))
-        present_days = max(0.0, working_days - lop)
         if emp:
-            new_components = calc_payroll_components(emp, working_days, present_days)
+            new_components = calc_payroll_components(emp, days_in_month, lop)
             update_doc.update(new_components)
         update_doc["lop_days"] = lop
 
