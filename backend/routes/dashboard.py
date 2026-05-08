@@ -1,9 +1,112 @@
 from fastapi import APIRouter, HTTPException, Depends
 from database import db
 from auth_utils import get_current_user
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
 
 router = APIRouter()
+
+
+def _is_working_day(d: date) -> bool:
+    """Mon-Sat are working; Sunday is not. (Saturday off rule applied separately at attendance level.)"""
+    return d.weekday() != 6
+
+
+@router.get("/my-stats")
+async def my_dashboard_stats(current_user: dict = Depends(get_current_user)):
+    """Personal dashboard data — for the logged-in employee only.
+    Returns: absent_this_month, pending_leaves, pending_regularisations, today_status."""
+    emp_id = current_user.get("employee_id")
+    if not emp_id:
+        raise HTTPException(status_code=400, detail="No employee_id on user")
+
+    today_dt = datetime.now(timezone.utc)
+    today_iso = today_dt.strftime("%Y-%m-%d")
+    today_d = today_dt.date()
+    month_start = today_d.replace(day=1)
+
+    # 1. Today's punch status
+    today_rec = await db.attendance_records.find_one({"employee_id": emp_id, "date": today_iso}) or {}
+    sessions = today_rec.get("sessions") or []
+    last_session = sessions[-1] if sessions else None
+    has_open_session = bool(last_session and last_session.get("punch_in_time") and not last_session.get("punch_out_time"))
+    today_status = {
+        "has_punched_in": bool(today_rec.get("punch_in_time")),
+        "has_punched_out": bool(today_rec.get("punch_out_time")) and not has_open_session,
+        "punch_in_time": today_rec.get("punch_in_time"),
+        "punch_out_time": today_rec.get("punch_out_time"),
+        "hours_worked": today_rec.get("hours_worked"),
+        "session_count": len(sessions),
+        "has_open_session": has_open_session,
+        "status": today_rec.get("status"),
+    }
+
+    # 2. Pending leaves (mine)
+    pending_leaves = await db.leave_applications.count_documents({
+        "employee_id": emp_id, "status": "pending"
+    })
+
+    # 3. Pending regularisation requests (mine)
+    pending_regs = await db.attendance_reg_requests.count_documents({
+        "employee_id": emp_id, "status": "pending"
+    })
+
+    # 4. Absent days this month — working days from month start through yesterday
+    #    that have NO present/half_day record AND NO approved leave covering that day
+    yesterday = today_d - timedelta(days=1)
+    if yesterday < month_start:
+        absent_this_month = 0
+    else:
+        att_records = await db.attendance_records.find({
+            "employee_id": emp_id,
+            "date": {"$gte": month_start.isoformat(), "$lte": yesterday.isoformat()},
+        }, {"_id": 0, "date": 1, "status": 1, "punch_in_time": 1}).to_list(100)
+        present_dates = {r["date"] for r in att_records if r.get("status") in ("present", "half_day") or r.get("punch_in_time")}
+
+        approved_leaves = await db.leave_applications.find({
+            "employee_id": emp_id, "status": "approved",
+            "$or": [
+                {"start_date": {"$lte": yesterday.isoformat()}, "end_date": {"$gte": month_start.isoformat()}},
+                {"from_date": {"$lte": yesterday.isoformat()}, "to_date": {"$gte": month_start.isoformat()}},
+            ],
+        }, {"_id": 0, "start_date": 1, "end_date": 1, "from_date": 1, "to_date": 1}).to_list(100)
+        leave_dates = set()
+        for lv in approved_leaves:
+            s = lv.get("start_date") or lv.get("from_date")
+            e = lv.get("end_date") or lv.get("to_date")
+            if not s or not e:
+                continue
+            try:
+                s_d = date.fromisoformat(s)
+                e_d = date.fromisoformat(e)
+            except (ValueError, TypeError):
+                continue
+            cur = max(s_d, month_start)
+            stop = min(e_d, yesterday)
+            while cur <= stop:
+                leave_dates.add(cur.isoformat())
+                cur += timedelta(days=1)
+
+        # Holidays in the window
+        holidays = await db.holidays.find({
+            "date": {"$gte": month_start.isoformat(), "$lte": yesterday.isoformat()}
+        }, {"_id": 0, "date": 1}).to_list(100)
+        holiday_dates = {h["date"] for h in holidays}
+
+        absent_this_month = 0
+        cur = month_start
+        while cur <= yesterday:
+            iso = cur.isoformat()
+            if _is_working_day(cur) and iso not in holiday_dates and iso not in present_dates and iso not in leave_dates:
+                absent_this_month += 1
+            cur += timedelta(days=1)
+
+    return {
+        "today_status": today_status,
+        "pending_leaves": pending_leaves,
+        "pending_regularisations": pending_regs,
+        "absent_this_month": absent_this_month,
+        "month_label": today_d.strftime("%B %Y"),
+    }
 
 
 @router.get("/stats")

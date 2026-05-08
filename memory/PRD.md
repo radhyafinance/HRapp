@@ -248,6 +248,16 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 - [ ] Employee confirmation letter after probation
 - [ ] Leave encashment calculation
 
+42. **Personal Dashboard for HO + Field Staff (Feb 2026)** -
+    Dashboard now adapts to the user's role:
+    - **HO Staff (`employee`) and Field Staff (`field_agent`)** see a **personal** dashboard:
+      - Big "Today's Attendance" card (`<QuickPunchCard>`) with one-click Punch In / Punch Out — same camera + GPS flow as `/attendance`, embedded inline. Multi-session aware ("Punch In Again" when a session is closed).
+      - 3 personal stat cards: **Absent This Month**, **Pending Leaves** (clickable → `/leaves`), **Pending Regularisations** (clickable → `/attendance`).
+      - Quick Actions row: Attendance History / Apply Leave / View Payslip / Performance.
+    - **HR Admin / Management / Managers** unchanged: company-wide stats grid, recent activity feed, My Interviews panel.
+    - **New backend endpoint** `GET /api/dashboard/my-stats` returns `today_status` (punch_in/out times, session_count, has_open_session, hours_worked, status), `pending_leaves`, `pending_regularisations`, `absent_this_month`, `month_label`. Absent count excludes Sundays + holidays + days with present/half-day record + days covered by approved leave.
+    - **Refactor**: Extracted `<CameraCapture>` from `Attendance.js` to `/components/attendance/CameraCapture.js` so the punch UI can be reused by the dashboard widget without code duplication.
+
 41. **Face-Mismatch Photo Retention (Feb 2026)** -
     Auto-purge attendance face-mismatch selfies older than **45 days** to control DB size.
     - **New helper** `purge_old_face_mismatch_photos()` in `routes/attendance.py` runs an `update_many` to clear top-level `punch_in_photo` / `punch_out_photo` and per-session `sessions[].punch_in_photo` / `sessions[].punch_out_photo` for records with `date < today - 45d`. Audit metadata (face_matched flag, distance, warning, geofence info) is **preserved** for compliance.
