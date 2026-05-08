@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import API from "../utils/api";
 import { Users, CalendarCheck, FileText, CreditCard, TrendingUp, UserPlus, Clock, Video, Mail, Phone, CalendarX, FileEdit, AlertCircle } from "lucide-react";
 import { QuickPunchCard } from "../components/dashboard/QuickPunchCard";
+import { WebAuthnSetupCard } from "../components/dashboard/WebAuthnSetupCard";
 
 const StatCard = ({ label, value, icon: Icon, color, sub, onClick }) => (
   <div onClick={onClick}
@@ -52,6 +53,8 @@ function PersonalDashboard({ user }) {
   return (
     <>
       <QuickPunchCard user={user} todayStatus={data?.today_status} onPunched={fetchData} />
+
+      <WebAuthnSetupCard />
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
         <StatCard label="Absent This Month" value={data?.absent_this_month ?? 0}

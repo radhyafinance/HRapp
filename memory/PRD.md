@@ -248,6 +248,25 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 - [ ] Employee confirmation letter after probation
 - [ ] Leave encashment calculation
 
+43. **WebAuthn Biometric Login (Feb 2026)** -
+    Single-tap passwordless login for non-admin roles using the device's platform authenticator (Face ID / Touch ID / Windows Hello / Android biometric).
+    - **Backend** (`/app/backend/routes/webauthn.py`, prefix `/api/auth/webauthn`):
+      - `GET /status` — tells UI whether role is allowed and lists registered devices
+      - `POST /register/begin` + `/register/complete` (auth required) — bound to existing user
+      - `POST /authenticate/begin` + `/authenticate/complete` (public) — issues same JWT as `/auth/login`
+      - `DELETE /credentials/{credential_id_hex}` — remove a device
+      - **HR Admin role hard-blocked** at every endpoint (403). Implementation: `WEBAUTHN_BLOCKED_ROLES = {"hr_admin"}`.
+      - Stack: `webauthn==2.7.1` (py-webauthn). RP_ID derived from `FRONTEND_URL` env var, so preview vs production work without code changes.
+      - Two collections: `webauthn_credentials` (cred_id hex, public_key bytes, sign_count, friendly_name) and `webauthn_challenges` (5-min TTL, single-use).
+      - Standard ECDSA-P256 + RS256 algorithms; `userVerification=preferred`; clone-detection via signature counter.
+    - **Frontend**:
+      - `@simplewebauthn/browser@13.3.0` for ceremony helpers + base64url handling
+      - `<WebAuthnSetupCard>` on the personal Dashboard — "Set up biometric login" button + list of registered devices with remove buttons. Hidden for HR Admin.
+      - Login page — new violet "Sign in with Biometric" button under password Sign In (only when WebAuthn is supported by the browser AND a username has been entered).
+      - Helper `/utils/webauthn.js` wraps `startRegistration` / `startAuthentication` with friendly error messages (cancelled, already registered, no biometric available).
+    - **Verified**: Admin returns `allowed:false` and 403 on register; field staff returns valid `PublicKeyCredentialCreationOptions` with correct rp_id from env. ESLint clean, ruff clean, backend reload clean. Login page screenshot confirms the new button.
+    - **Production note**: User registers once on each device they want to use. Re-registration needed if device biometric is reset (e.g., new fingerprint enrolled on iOS).
+
 42. **Personal Dashboard for HO + Field Staff (Feb 2026)** -
     Dashboard now adapts to the user's role:
     - **HO Staff (`employee`) and Field Staff (`field_agent`)** see a **personal** dashboard:

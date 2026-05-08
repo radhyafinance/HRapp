@@ -13,7 +13,7 @@ from auth_utils import hash_password
 
 from routes import auth, employees, candidates, attendance, leaves, payroll
 from routes import performance, exit_routes, letters, locations, dashboard, gratuity, settings as app_settings
-from routes import employee_documents, tracker, holidays, comp_offs, notifications, shifts
+from routes import employee_documents, tracker, holidays, comp_offs, notifications, shifts, webauthn
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -57,6 +57,7 @@ database.client = mongo_client
 database.db = db_instance
 
 app.include_router(auth.router, prefix="/api/auth", tags=["Auth"])
+app.include_router(webauthn.router, prefix="/api/auth/webauthn", tags=["WebAuthn"])
 app.include_router(employees.router, prefix="/api/employees", tags=["Employees"])
 app.include_router(employee_documents.router, prefix="/api/employees", tags=["Employee Documents"])
 app.include_router(candidates.router, prefix="/api/candidates", tags=["Candidates"])
