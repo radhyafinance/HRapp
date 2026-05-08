@@ -136,6 +136,16 @@ async def startup():
     except Exception as e:
         logger.warning(f"Shift seeding skipped: {e}")
 
+    # Purge face-mismatch attendance photos older than retention window (45 days)
+    try:
+        from routes.attendance import purge_old_face_mismatch_photos
+        purge_result = await purge_old_face_mismatch_photos()
+        purged = purge_result["top_level_records_purged"] + purge_result["session_records_purged"]
+        if purged:
+            logger.info(f"Face-mismatch photo cleanup: {purged} records purged (cutoff={purge_result['cutoff_date']})")
+    except Exception as e:
+        logger.warning(f"Face-mismatch photo cleanup skipped: {e}")
+
     # Seed / migrate admin user — login by username "admin" (no longer email-based)
     admin_username = os.environ.get("ADMIN_USERNAME", "admin")
     admin_password = os.environ.get("ADMIN_PASSWORD", "Admin@123")

@@ -248,6 +248,13 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 - [ ] Employee confirmation letter after probation
 - [ ] Leave encashment calculation
 
+41. **Face-Mismatch Photo Retention (Feb 2026)** -
+    Auto-purge attendance face-mismatch selfies older than **45 days** to control DB size.
+    - **New helper** `purge_old_face_mismatch_photos()` in `routes/attendance.py` runs an `update_many` to clear top-level `punch_in_photo` / `punch_out_photo` and per-session `sessions[].punch_in_photo` / `sessions[].punch_out_photo` for records with `date < today - 45d`. Audit metadata (face_matched flag, distance, warning, geofence info) is **preserved** for compliance.
+    - **Auto-runs on every backend startup** (logged: `Face-mismatch photo cleanup: N records purged …`).
+    - **Manual trigger** via `POST /api/attendance/admin/purge-old-face-photos` (HR Admin only) returns `{cutoff_date, retention_days, top_level_records_purged, session_records_purged}`.
+    - **Verified** with seeded 60-day + 10-day test records: photos stripped only from the 60-day one, audit metadata intact.
+
 40. **Joining Kit Word Download (Feb 2026)** -
     HR can now download the Joining Kit in editable `.docx` format alongside the existing PDF.
     - **New service** `/app/backend/services/joining_kit_docx.py` (~750 LOC) builds the same 14-section bilingual layout as `joining_kit_pdf.py`. Uses `python-docx==1.2.0`. Word natively shapes Devanagari (Nirmala UI) so no Pillow workaround needed.

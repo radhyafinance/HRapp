@@ -45,6 +45,57 @@ async def _is_face_match_strict() -> bool:
     return bool(settings.get("strict", False))
 
 
+# ──────────────────────────────────────────────────────────────
+#  Face-mismatch photo retention policy
+# ──────────────────────────────────────────────────────────────
+FACE_PHOTO_RETENTION_DAYS = 45
+
+
+async def purge_old_face_mismatch_photos() -> dict:
+    """Strip face-mismatch selfies from attendance records older than the retention window.
+
+    Photos are only stored when face match fails (see punch_in / punch_out logic).
+    Once 45 days have passed, the photo's audit value drops to near zero — but the
+    metadata (matched flag, distance, warning, location) stays for compliance.
+    Idempotent: subsequent calls do nothing once cleared.
+    """
+    cutoff_date = (date.today() - timedelta(days=FACE_PHOTO_RETENTION_DAYS)).isoformat()
+
+    # Top-level photos (legacy single-session schema + mirror fields on multi-session records)
+    res_top = await db.attendance_records.update_many(
+        {
+            "date": {"$lt": cutoff_date},
+            "$or": [
+                {"punch_in_photo": {"$nin": [None, ""]}},
+                {"punch_out_photo": {"$nin": [None, ""]}},
+            ],
+        },
+        {"$unset": {"punch_in_photo": "", "punch_out_photo": ""}},
+    )
+
+    # Per-session photos inside the sessions[] array
+    res_sessions = await db.attendance_records.update_many(
+        {
+            "date": {"$lt": cutoff_date},
+            "$or": [
+                {"sessions.punch_in_photo": {"$nin": [None, ""]}},
+                {"sessions.punch_out_photo": {"$nin": [None, ""]}},
+            ],
+        },
+        {"$set": {
+            "sessions.$[].punch_in_photo": None,
+            "sessions.$[].punch_out_photo": None,
+        }},
+    )
+
+    return {
+        "cutoff_date": cutoff_date,
+        "retention_days": FACE_PHOTO_RETENTION_DAYS,
+        "top_level_records_purged": res_top.modified_count,
+        "session_records_purged": res_sessions.modified_count,
+    }
+
+
 async def _verify_face(employee_id: str, selfie_b64: Optional[str]) -> dict:
     """Compare selfie against the employee's passport_photo.
 
@@ -124,6 +175,14 @@ class LocationUpdateRequest(BaseModel):
     latitude: float
     longitude: float
     accuracy: Optional[float] = None
+
+
+@router.post("/admin/purge-old-face-photos")
+async def admin_purge_old_face_photos(current_user: dict = Depends(get_current_user)):
+    """Manually trigger the 45-day face-mismatch photo cleanup. HR Admin only."""
+    if current_user.get("role") != "hr_admin":
+        raise HTTPException(status_code=403, detail="HR Admin only")
+    return await purge_old_face_mismatch_photos()
 
 
 @router.post("/punch-in")
