@@ -18,6 +18,7 @@ import Letters from "./pages/Letters";
 import Settings from "./pages/Settings";
 import Gratuity from "./pages/Gratuity";
 import CandidateApply from "./pages/CandidateApply";
+import UpdatePrompt from "./components/UpdatePrompt";
 import "./App.css";
 
 function App() {
@@ -45,6 +46,7 @@ function App() {
           </Route>
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>
+        <UpdatePrompt />
       </BrowserRouter>
     </AuthProvider>
   );

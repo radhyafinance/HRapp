@@ -1,4 +1,4 @@
-const CACHE_NAME = "radhya-hr-v9";
+const CACHE_NAME = "radhya-hr-v10";
 const STATIC_ASSETS = [
   "/manifest.json",
   "/logo192.png",
@@ -8,15 +8,18 @@ const STATIC_ASSETS = [
   "/apple-touch-icon.png"
 ];
 
-// Install — cache the app shell
+// Install — cache the app shell, but DO NOT skip waiting.
+// Staying in "waiting" lets the app show an "Update available" prompt
+// and only activate when the user explicitly confirms the refresh.
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
   );
-  self.skipWaiting();
+  // Note: skipWaiting() is intentionally NOT called here.
+  // It is triggered via a postMessage from the app after user confirmation.
 });
 
-// Activate — clean up old caches
+// Activate — clean up old caches, then take control immediately
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches.keys().then((keys) =>
@@ -24,6 +27,13 @@ self.addEventListener("activate", (event) => {
     )
   );
   self.clients.claim();
+});
+
+// The app sends this message after the user taps "Refresh" in the update prompt.
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
 });
 
 // Fetch strategy:
