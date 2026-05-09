@@ -436,11 +436,13 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
             row_remark = f"{emp_id} {remark_suffix}"   # e.g. "RMF0001 Salary APR26"
             row_remark_client = row_remark[:21]
             row_remark_beneficiary = row_remark[:30]
+            # ICICI Bank: set transaction type to WIB and leave IFSC blank
+            is_icici = ifsc.startswith("ICIC")
             ws.append([
-                txn_type,
+                "WIB" if is_icici else txn_type,
                 net_amount,
                 debit_account,
-                ifsc,
+                "" if is_icici else ifsc,
                 beneficiary_acct,
                 name,
                 row_remark_client,
