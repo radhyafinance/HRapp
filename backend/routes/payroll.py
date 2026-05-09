@@ -453,6 +453,19 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
                 cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
 
         buffer = io.BytesIO()
+        # Lock all cells — enable sheet protection so no one can tamper
+        from openpyxl.styles import Protection
+        for row in ws.iter_rows():
+            for cell in row:
+                cell.protection = Protection(locked=True)
+        ws.protection.sheet   = True
+        ws.protection.password = "RadhyaFinance"
+        ws.protection.insertRows     = True
+        ws.protection.insertColumns  = True
+        ws.protection.deleteRows     = True
+        ws.protection.deleteColumns  = True
+        ws.protection.sort           = True
+        ws.protection.autoFilter     = True
         wb.save(buffer)
         buffer.seek(0)
         filename = f"NEFT_{short_code}_{period}.xlsx"

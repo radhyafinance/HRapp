@@ -366,9 +366,18 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
     bank_keys = ["bank_name", "account_number", "ifsc_code"]
     if any(k in update_data for k in bank_keys):
         bank = emp.get("bank_details", {}) or {}
+        old_account = bank.get("account_number", "")
+        old_ifsc    = bank.get("ifsc_code", "")
         for k in bank_keys:
             if k in update_data:
                 bank[k] = update_data.pop(k)
+        # If account number or IFSC changed, clear previous verification
+        if bank.get("account_number", "") != old_account or bank.get("ifsc_code", "") != old_ifsc:
+            bank.pop("verified", None)
+            bank.pop("verified_name", None)
+            bank.pop("verified_at", None)
+            bank.pop("name_match_score", None)
+            bank.pop("verification_raw", None)
         update_data["bank_details"] = bank
 
     # Address consolidation
