@@ -1,11 +1,16 @@
 import React, { useEffect, useState } from "react";
-import { UserCheck } from "lucide-react";
+import { UserCheck, ShieldCheck, ShieldX, Loader } from "lucide-react";
 import API from "../../utils/api";
 
 const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", managers: "Managers", employee: "HO Staff", field_agent: "Field Staff" };
 
-export function EmployeeDetailView({ emp }) {
+export function EmployeeDetailView({ emp: initialEmp }) {
+  const [emp, setEmp] = useState(initialEmp);
   const [managerInfo, setManagerInfo] = useState(null);
+  const [verifying, setVerifying] = useState(false);
+  const [verifyMsg, setVerifyMsg] = useState(null); // { ok, text }
+
+  useEffect(() => { setEmp(initialEmp); }, [initialEmp]);
 
   useEffect(() => {
     if (!emp?.reporting_to) return;
@@ -17,6 +22,41 @@ export function EmployeeDetailView({ emp }) {
   const addr = emp.address || {};
   const sal = emp.salary || {};
   const bank = emp.bank_details || {};
+
+  const hasBankDetails = bank.account_number && bank.ifsc_code;
+
+  async function handleVerifyBank() {
+    setVerifying(true);
+    setVerifyMsg(null);
+    try {
+      const res = await API.post(`/employees/${emp.employee_id}/verify-bank`);
+      const d = res.data;
+      const verified = d.verified;
+      const name = d.verified_name || "";
+      const score = d.name_match_score != null ? ` (match: ${d.name_match_score}%)` : "";
+      setVerifyMsg({
+        ok: verified,
+        text: verified
+          ? `Verified — Account holder: ${name || "Name not returned"}${score}`
+          : `Verification failed. ${d.raw?.message || d.raw?.error || "Account may be invalid or inactive."}`,
+      });
+      // Refresh bank details state to show updated verified badge
+      setEmp(prev => ({
+        ...prev,
+        bank_details: {
+          ...prev.bank_details,
+          verified,
+          verified_name: name,
+          verified_at: new Date().toISOString(),
+        },
+      }));
+    } catch (e) {
+      const msg = e.response?.data?.detail || "Could not reach verification service.";
+      setVerifyMsg({ ok: false, text: msg });
+    } finally {
+      setVerifying(false);
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -82,6 +122,44 @@ export function EmployeeDetailView({ emp }) {
           </div>
         ))}
       </div>
+
+      {/* Bank Account Verification */}
+      {hasBankDetails && (
+        <div className="border-t pt-3">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Bank Verification</p>
+            {bank.verified != null && (
+              bank.verified
+                ? <span className="flex items-center gap-1 text-xs font-semibold text-green-600"><ShieldCheck size={13} /> Verified</span>
+                : <span className="flex items-center gap-1 text-xs font-semibold text-red-500"><ShieldX size={13} /> Not Verified</span>
+            )}
+          </div>
+
+          {bank.verified && bank.verified_name && (
+            <p className="text-xs text-slate-500 mb-2">
+              Bank name: <span className="font-semibold text-[#0F172A]">{bank.verified_name}</span>
+              {bank.verified_at && <span className="ml-2 text-slate-400">· {new Date(bank.verified_at).toLocaleDateString("en-IN")}</span>}
+            </p>
+          )}
+
+          <button
+            onClick={handleVerifyBank}
+            disabled={verifying}
+            data-testid="verify-bank-btn"
+            className="flex items-center gap-2 px-4 py-2 bg-[#1E2A47] text-white text-xs font-semibold rounded-lg hover:bg-[#2d3d63] disabled:opacity-60 transition-colors"
+          >
+            {verifying ? <><Loader size={13} className="animate-spin" /> Verifying...</> : <><ShieldCheck size={13} /> {bank.verified ? "Re-verify Account" : "Verify Account"}</>}
+          </button>
+
+          {verifyMsg && (
+            <div className={`mt-2 flex items-start gap-2 text-xs p-2.5 rounded-lg ${verifyMsg.ok ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-600 border border-red-200"}`}>
+              {verifyMsg.ok ? <ShieldCheck size={13} className="mt-0.5 flex-shrink-0" /> : <ShieldX size={13} className="mt-0.5 flex-shrink-0" />}
+              {verifyMsg.text}
+            </div>
+          )}
+        </div>
+      )}
+
       {(addr.current || addr.permanent) && (
         <div className="border-t pt-2">
           {addr.current && <p className="text-sm"><span className="text-slate-500">Current Address: </span><span className="font-medium">{addr.current}</span></p>}

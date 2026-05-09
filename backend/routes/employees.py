@@ -5,6 +5,8 @@ from typing import Optional, List
 from database import db
 from auth_utils import get_current_user, hash_password
 from datetime import datetime, timezone
+import os
+import httpx
 
 def get_financial_year() -> int:
     d = datetime.now(timezone.utc)
@@ -688,3 +690,93 @@ async def bulk_upload(file: UploadFile = File(...), current_user: dict = Depends
         except Exception as e:
             errors.append(f"Row {email}: {str(e)}")
     return {"created": created, "skipped": skipped, "errors": errors}
+
+
+# ─────────────────────────────────────────────
+#  Perfios bank account verification
+# ─────────────────────────────────────────────
+PERFIOS_URL = "https://hub.perfios.com/api/kyc/v3/bankacc-verification"
+
+@router.post("/{employee_id}/verify-bank")
+async def verify_bank_account(employee_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    emp = await db.employees.find_one({"employee_id": employee_id})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    bank = emp.get("bank_details") or {}
+    account_number = bank.get("account_number", "").strip()
+    ifsc_code      = bank.get("ifsc_code", "").strip().upper()
+    emp_name       = f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip()
+
+    if not account_number or not ifsc_code:
+        raise HTTPException(status_code=400, detail="Bank account number and IFSC code are required before verifying")
+
+    api_key = os.environ.get("PERFIOS_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Perfios API key not configured")
+
+    payload = {
+        "accountNumber":       account_number,
+        "accountHolderName":   emp_name,
+        "ifsc":                ifsc_code,
+        "consent":             "Y",
+        "nameMatchType":       "Entity",
+        "useCombinedSolution": "Y",
+        "allowPartialMatch":   True,
+        "preset":              "G",
+        "suppressReorderPenalty": True,
+        "clientData":          {"caseId": employee_id},
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                PERFIOS_URL,
+                json=payload,
+                headers={"x-auth-key": api_key, "Content-Type": "application/json"},
+            )
+        raw = resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Perfios API unreachable: {e}")
+
+    # Parse Perfios response structure:
+    # raw.statusCode == 101 → success
+    # raw.result.data.source[0].data.accountName → registered name
+    # raw.result.data.source[0].isValid → account valid
+    # raw.result.comparisionData.inputVsSource.flags.accountHolderName.score → name match
+    r = raw.get("result") or {}
+    data = r.get("data") or {}
+    sources = data.get("source") or []
+    src_data = sources[0].get("data") if sources else {}
+    is_valid = sources[0].get("isValid") if sources else False
+    comp = r.get("comparisionData") or {}
+    validity = (comp.get("inputVsSource") or {}).get("validity", "")
+    name_flag = ((comp.get("inputVsSource") or {}).get("flags") or {}).get("accountHolderName") or {}
+
+    verified   = bool(is_valid) or validity == "VALID" or raw.get("statusCode") == 101
+    reg_name   = src_data.get("accountName") or src_data.get("registeredName") or ""
+    name_match = name_flag.get("score")
+    if name_match is not None:
+        name_match = round(float(name_match) * 100, 1)  # convert 0-1 → 0-100
+
+    # Persist result on employee
+    await db.employees.update_one(
+        {"employee_id": employee_id},
+        {"$set": {
+            "bank_details.verified":             verified,
+            "bank_details.verified_name":        reg_name,
+            "bank_details.name_match_score":     name_match,
+            "bank_details.verified_at":          datetime.now(timezone.utc).isoformat(),
+            "bank_details.verification_raw":     raw,
+        }},
+    )
+
+    return {
+        "verified":        verified,
+        "verified_name":   reg_name,
+        "name_match_score": name_match,
+        "raw":             raw,
+    }
