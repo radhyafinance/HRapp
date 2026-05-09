@@ -9,7 +9,7 @@ Flow:
 
 HR Admin role is BLOCKED from registration (server-side enforced).
 """
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 from typing import Optional
 import os
@@ -40,16 +40,30 @@ router = APIRouter()
 
 
 # ──────────────────────────────────────────────────────────────
-#  RP configuration — derived from FRONTEND_URL env var
+#  RP configuration — derived at request time from the Origin header
+#  so the same code works on preview AND production domains.
 # ──────────────────────────────────────────────────────────────
 _FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 _parsed = urlparse(_FRONTEND_URL)
-RP_ID = _parsed.hostname or "localhost"
-RP_NAME = "Radhya Micro Finance HR"
-EXPECTED_ORIGIN = f"{_parsed.scheme}://{_parsed.netloc}"
+_DEFAULT_RP_ID = _parsed.hostname or "localhost"
+_DEFAULT_ORIGIN = f"{_parsed.scheme}://{_parsed.netloc}"
 
+RP_NAME = "Radhya Micro Finance HR"
 CHALLENGE_TTL_MINUTES = 5
 WEBAUTHN_BLOCKED_ROLES = {"hr_admin"}
+
+
+def _rp_from_request(request: Request) -> tuple[str, str]:
+    """Return (rp_id, expected_origin) derived from the request's Origin header.
+    Falls back to FRONTEND_URL env var when the header is absent (e.g. curl tests)."""
+    origin = request.headers.get("origin") or request.headers.get("referer") or _DEFAULT_ORIGIN
+    # Strip trailing path from referer so we get just the origin
+    parsed = urlparse(origin)
+    hostname = parsed.hostname or _DEFAULT_RP_ID
+    scheme   = parsed.scheme or "https"
+    port     = f":{parsed.port}" if parsed.port and parsed.port not in (80, 443) else ""
+    clean_origin = f"{scheme}://{hostname}{port}"
+    return hostname, clean_origin
 
 
 # ──────────────────────────────────────────────────────────────
@@ -109,13 +123,14 @@ def _user_handle(username: str) -> bytes:
 #  Status — does the current user have credentials? Is this role allowed?
 # ──────────────────────────────────────────────────────────────
 @router.get("/status")
-async def webauthn_status(current_user: dict = Depends(get_current_user)):
+async def webauthn_status(request: Request, current_user: dict = Depends(get_current_user)):
     """Tells the UI whether to show 'Set up biometric' button + whether already set."""
     role = current_user.get("role")
     username = current_user.get("username")
     allowed = role not in WEBAUTHN_BLOCKED_ROLES
     if not allowed or not username:
         return {"allowed": False, "registered": False, "credentials": []}
+    rp_id, _ = _rp_from_request(request)
     creds = await db.webauthn_credentials.find(
         {"username": username},
         {"_id": 0, "credential_id": 1, "friendly_name": 1, "created_at": 1, "last_used_at": 1},
@@ -123,7 +138,7 @@ async def webauthn_status(current_user: dict = Depends(get_current_user)):
     return {
         "allowed": True,
         "registered": len(creds) > 0,
-        "rp_id": RP_ID,
+        "rp_id": rp_id,
         "credentials": creds,
     }
 
@@ -132,13 +147,15 @@ async def webauthn_status(current_user: dict = Depends(get_current_user)):
 #  REGISTRATION — must be authenticated to register
 # ──────────────────────────────────────────────────────────────
 @router.post("/register/begin")
-async def register_begin(current_user: dict = Depends(get_current_user)):
+async def register_begin(request: Request, current_user: dict = Depends(get_current_user)):
     role = current_user.get("role")
     username = current_user.get("username")
     if not username:
         raise HTTPException(status_code=400, detail="No username on session")
     if role in WEBAUTHN_BLOCKED_ROLES:
         raise HTTPException(status_code=403, detail="Biometric login is not available for HR Admin accounts")
+
+    rp_id, _ = _rp_from_request(request)
 
     # Existing credentials so the authenticator doesn't re-register the same one
     existing = await db.webauthn_credentials.find(
@@ -151,7 +168,7 @@ async def register_begin(current_user: dict = Depends(get_current_user)):
 
     display_name = current_user.get("name") or username
     options = generate_registration_options(
-        rp_id=RP_ID,
+        rp_id=rp_id,
         rp_name=RP_NAME,
         user_id=_user_handle(username),
         user_name=username,
@@ -168,13 +185,12 @@ async def register_begin(current_user: dict = Depends(get_current_user)):
     )
 
     await _store_challenge(username, options.challenge, kind="register")
-    # options_to_json returns a JSON STRING — parse so FastAPI sends an object
     import json as _json
     return _json.loads(options_to_json(options))
 
 
 @router.post("/register/complete")
-async def register_complete(body: RegistrationCompleteBody, current_user: dict = Depends(get_current_user)):
+async def register_complete(request: Request, body: RegistrationCompleteBody, current_user: dict = Depends(get_current_user)):
     role = current_user.get("role")
     username = current_user.get("username")
     if role in WEBAUTHN_BLOCKED_ROLES:
@@ -182,14 +198,15 @@ async def register_complete(body: RegistrationCompleteBody, current_user: dict =
     if not username:
         raise HTTPException(status_code=400, detail="No username on session")
 
+    rp_id, expected_origin = _rp_from_request(request)
     challenge = await _consume_challenge(username, kind="register")
 
     try:
         verification = verify_registration_response(
             credential=body.credential,
             expected_challenge=challenge,
-            expected_origin=EXPECTED_ORIGIN,
-            expected_rp_id=RP_ID,
+            expected_origin=expected_origin,
+            expected_rp_id=rp_id,
             require_user_verification=False,
         )
     except Exception as e:
@@ -216,13 +233,12 @@ async def register_complete(body: RegistrationCompleteBody, current_user: dict =
 #  AUTHENTICATION — public; no auth required
 # ──────────────────────────────────────────────────────────────
 @router.post("/authenticate/begin")
-async def authenticate_begin(body: AuthenticationBeginBody):
+async def authenticate_begin(request: Request, body: AuthenticationBeginBody):
     username = body.username.strip()
     user = await db.users.find_one({"username": username}) \
         or await db.users.find_one({"username": username.lower()}) \
         or await db.users.find_one({"username": username.upper()})
     if not user:
-        # Don't leak existence — return generic options anyway? For simplicity, 404.
         raise HTTPException(status_code=404, detail="No biometric login set up for this user")
     if user.get("role") in WEBAUTHN_BLOCKED_ROLES:
         raise HTTPException(status_code=403, detail="Biometric login is not available for this account")
@@ -233,9 +249,10 @@ async def authenticate_begin(body: AuthenticationBeginBody):
     if not creds:
         raise HTTPException(status_code=404, detail="No biometric login set up for this user")
 
+    rp_id, _ = _rp_from_request(request)
     allow = [PublicKeyCredentialDescriptor(id=bytes.fromhex(c["credential_id"])) for c in creds]
     options = generate_authentication_options(
-        rp_id=RP_ID,
+        rp_id=rp_id,
         allow_credentials=allow,
         user_verification=UserVerificationRequirement.PREFERRED,
     )
@@ -245,7 +262,7 @@ async def authenticate_begin(body: AuthenticationBeginBody):
 
 
 @router.post("/authenticate/complete")
-async def authenticate_complete(body: AuthenticationCompleteBody):
+async def authenticate_complete(request: Request, body: AuthenticationCompleteBody):
     username = body.username.strip()
     user = await db.users.find_one({"username": username}) \
         or await db.users.find_one({"username": username.lower()}) \
@@ -261,13 +278,13 @@ async def authenticate_complete(body: AuthenticationCompleteBody):
         if emp and emp.get("status") == "exited":
             raise HTTPException(status_code=403, detail="Account disabled — employee has exited the organization.")
 
+    rp_id, expected_origin = _rp_from_request(request)
     challenge = await _consume_challenge(user["username"], kind="authenticate")
 
     # Look up the stored credential by ID from the response
     cred_id = body.credential.get("id") or body.credential.get("rawId")
     if not cred_id:
         raise HTTPException(status_code=400, detail="Malformed credential")
-    # cred.id is base64url-encoded
     import base64
     pad = "=" * (-len(cred_id) % 4)
     raw_id = base64.urlsafe_b64decode(cred_id + pad)
@@ -283,8 +300,8 @@ async def authenticate_complete(body: AuthenticationCompleteBody):
         verification = verify_authentication_response(
             credential=body.credential,
             expected_challenge=challenge,
-            expected_origin=EXPECTED_ORIGIN,
-            expected_rp_id=RP_ID,
+            expected_origin=expected_origin,
+            expected_rp_id=rp_id,
             credential_public_key=stored["public_key"],
             credential_current_sign_count=stored.get("sign_count", 0),
             require_user_verification=False,
