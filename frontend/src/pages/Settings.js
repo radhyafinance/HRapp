@@ -50,6 +50,9 @@ export default function Settings() {
   const [savingCompany, setSavingCompany] = useState(false);
   const [faceMatchStrict, setFaceMatchStrict] = useState(false);
   const [savingFaceMatch, setSavingFaceMatch] = useState(false);
+  const [pwForm, setPwForm] = useState({ current_password: "", new_password: "", confirm_password: "" });
+  const [pwMsg, setPwMsg] = useState(null);
+  const [savingPw, setSavingPw] = useState(false);
 
   const fetchData = async () => {
     setLoading(true);
@@ -171,7 +174,7 @@ export default function Settings() {
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 border-b border-slate-200">
-        {[["locations", "Office Locations"], ["company", "Company / Bank"], ["attendance", "Attendance"], ["shifts", "Shifts"], ["leaves", "Leave Management"], ["holidays", "Holidays & Comp-Off"], ["users", "User Management"]].map(([val, label]) => (
+        {[["locations", "Office Locations"], ["company", "Company / Bank"], ["attendance", "Attendance"], ["shifts", "Shifts"], ["leaves", "Leave Management"], ["holidays", "Holidays & Comp-Off"], ["users", "User Management"], ["security", "Security"]].map(([val, label]) => (
           <button key={val} onClick={() => setActiveTab(val)} data-testid={`settings-tab-${val}`}
             className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${activeTab === val ? "border-[#E85B1E] text-[#E85B1E]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             {label}
@@ -446,6 +449,72 @@ export default function Settings() {
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "security" && (
+        <div className="max-w-md">
+          <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6">
+            <h3 className="text-base font-bold text-[#1E2A47] mb-1">Change Password</h3>
+            <p className="text-sm text-slate-500 mb-5">Update your login password.</p>
+            <form
+              data-testid="change-password-form"
+              onSubmit={async e => {
+                e.preventDefault();
+                if (pwForm.new_password !== pwForm.confirm_password) {
+                  setPwMsg({ ok: false, text: "New passwords do not match." });
+                  return;
+                }
+                if (pwForm.new_password.length < 8) {
+                  setPwMsg({ ok: false, text: "Password must be at least 8 characters." });
+                  return;
+                }
+                setSavingPw(true); setPwMsg(null);
+                try {
+                  await API.post("/auth/change-password", {
+                    current_password: pwForm.current_password,
+                    new_password: pwForm.new_password,
+                  });
+                  setPwMsg({ ok: true, text: "Password changed successfully." });
+                  setPwForm({ current_password: "", new_password: "", confirm_password: "" });
+                } catch (err) {
+                  setPwMsg({ ok: false, text: err.response?.data?.detail || "Failed to change password." });
+                } finally {
+                  setSavingPw(false);
+                }
+              }}
+              className="space-y-4"
+            >
+              {[
+                ["current_password", "Current Password"],
+                ["new_password", "New Password"],
+                ["confirm_password", "Confirm New Password"],
+              ].map(([field, label]) => (
+                <div key={field}>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">{label}</label>
+                  <input
+                    type="password"
+                    data-testid={`pw-${field}`}
+                    value={pwForm[field]}
+                    onChange={e => setPwForm({ ...pwForm, [field]: e.target.value })}
+                    required
+                    className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
+                  />
+                </div>
+              ))}
+              {pwMsg && (
+                <p data-testid="pw-msg" className={`text-sm font-medium ${pwMsg.ok ? "text-green-600" : "text-red-500"}`}>{pwMsg.text}</p>
+              )}
+              <button
+                type="submit"
+                disabled={savingPw}
+                data-testid="change-password-btn"
+                className="w-full py-2.5 bg-[#1E2A47] text-white rounded-lg text-sm font-semibold hover:bg-[#2d3d63] disabled:opacity-60 transition-colors"
+              >
+                {savingPw ? "Updating..." : "Update Password"}
+              </button>
+            </form>
           </div>
         </div>
       )}

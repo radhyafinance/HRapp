@@ -475,17 +475,17 @@ export default function Attendance() {
         )}
       </div>
 
-      {/* Attendance History */}
-      {!isManager ? (
+      {/* Personal Attendance History — shown to all roles with an employee_id except HR/Mgmt
+          (HR/Mgmt manage their own attendance via the admin "Add Record" panel above).
+          Managers see this block AND the Team Attendance block below. */}
+      {user?.employee_id && !canRegulariseAdmin && (
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-            <h3 className="font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Attendance History</h3>
-            {user?.employee_id && (
-              <button onClick={() => setEmpReqOpen(true)} data-testid="request-regularisation-btn"
-                className="flex items-center gap-1 px-3 py-1.5 bg-[#1E2A47] text-white rounded-lg text-xs font-semibold hover:bg-[#2A3A5E]">
-                <FileEdit size={12} /> Request Regularisation
-              </button>
-            )}
+            <h3 className="font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>My Attendance History</h3>
+            <button onClick={() => setEmpReqOpen(true)} data-testid="request-regularisation-btn"
+              className="flex items-center gap-1 px-3 py-1.5 bg-[#1E2A47] text-white rounded-lg text-xs font-semibold hover:bg-[#2A3A5E]">
+              <FileEdit size={12} /> Request Regularisation
+            </button>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full" data-testid="attendance-table">
@@ -520,7 +520,10 @@ export default function Attendance() {
             </div>
           )}
         </div>
-      ) : (
+      )}
+
+      {/* Team / Company-wide Attendance — shown to HR Admin, Management, and Managers */}
+      {isManager && (
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between flex-wrap gap-2">
             <h3 className="font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>

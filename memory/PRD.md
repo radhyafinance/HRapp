@@ -277,6 +277,11 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
     - **New backend endpoint** `GET /api/dashboard/my-stats` returns `today_status` (punch_in/out times, session_count, has_open_session, hours_worked, status), `pending_leaves`, `pending_regularisations`, `absent_this_month`, `month_label`. Absent count excludes Sundays + holidays + days with present/half-day record + days covered by approved leave.
     - **Refactor**: Extracted `<CameraCapture>` from `Attendance.js` to `/components/attendance/CameraCapture.js` so the punch UI can be reused by the dashboard widget without code duplication.
 
+42. **Manager Self-Regularisation Bug Fix (Feb 2026)** -
+    Users with role `managers` (e.g., RMF0017) were unable to request attendance regularisation for themselves because `Attendance.js` rendered the personal-history block only when `!isManager`, hiding the "Request Regularisation" button.
+    - **Fix** in `/app/frontend/src/pages/Attendance.js`: split the previous ternary into two independent blocks. Personal "My Attendance History" with the **Request Regularisation** button + **MyRequestsList** now renders when `user?.employee_id && !canRegulariseAdmin` (so it shows for `managers`, `employee`, and `field_agent` — but stays hidden for `hr_admin`/`management` who use the admin "Add Record" panel instead). The "Team Attendance" block now renders independently when `isManager` is true, so managers see **both** sections.
+    - **Backend was already correct** — `POST /api/attendance/regularisation-requests` accepts any caller with an `employee_id`. Verified end-to-end via curl as RMF0017 and via Playwright screenshot.
+
 41. **Face-Mismatch Photo Retention (Feb 2026)** -
     Auto-purge attendance face-mismatch selfies older than **45 days** to control DB size.
     - **New helper** `purge_old_face_mismatch_photos()` in `routes/attendance.py` runs an `update_many` to clear top-level `punch_in_photo` / `punch_out_photo` and per-session `sessions[].punch_in_photo` / `sessions[].punch_out_photo` for records with `date < today - 45d`. Audit metadata (face_matched flag, distance, warning, geofence info) is **preserved** for compliance.
