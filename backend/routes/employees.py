@@ -204,13 +204,42 @@ async def list_employees(
         query["department"] = department
     if role:
         query["role"] = role
-    if search:
+
+    # Scope by role
+    user_role  = current_user.get("role")
+    my_emp_id  = current_user.get("employee_id")
+    if user_role in ["employee", "field_agent"]:
+        # Can only see themselves
+        query["employee_id"] = my_emp_id
+    elif user_role == "managers":
+        # Can see themselves + their direct reports only
+        existing_filter = query.pop("$or", None)
+        scope_clause = {"$or": [{"employee_id": my_emp_id}, {"reporting_to": my_emp_id}]}
+        if existing_filter:
+            query["$and"] = [scope_clause, {"$or": existing_filter}]
+        else:
+            query.update(scope_clause)
+    # hr_admin, management: no restriction
+
+    if search and user_role in ["hr_admin", "management", "managers"]:
+        search_clause = {"$or": [
+            {"first_name": {"$regex": search, "$options": "i"}},
+            {"last_name": {"$regex": search, "$options": "i"}},
+            {"employee_id": {"$regex": search, "$options": "i"}},
+            {"email": {"$regex": search, "$options": "i"}},
+        ]}
+        if "$or" in query:
+            query = {"$and": [query, search_clause]}
+        else:
+            query.update(search_clause)
+    elif search:
         query["$or"] = [
             {"first_name": {"$regex": search, "$options": "i"}},
             {"last_name": {"$regex": search, "$options": "i"}},
             {"employee_id": {"$regex": search, "$options": "i"}},
             {"email": {"$regex": search, "$options": "i"}},
         ]
+
     emps = await db.employees.find(query).sort("employee_id", 1).to_list(1000)
     return [emp_to_dict(e) for e in emps]
 

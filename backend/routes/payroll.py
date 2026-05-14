@@ -295,8 +295,11 @@ async def list_payroll(
     query = {}
     if period:
         query["period"] = period
-    if current_user.get("role") in ["employee", "field_agent"]:
-        query["employee_id"] = current_user.get("employee_id")
+    role = current_user.get("role")
+    my_emp_id = current_user.get("employee_id")
+    if role in ["employee", "field_agent", "managers"]:
+        # managers see ONLY their own payroll (not their team's)
+        query["employee_id"] = my_emp_id
     elif employee_id:
         query["employee_id"] = employee_id
     records = await db.payroll_records.find(query).sort("period", -1).to_list(500)
@@ -305,6 +308,11 @@ async def list_payroll(
 
 @router.get("/employee/{employee_id}")
 async def employee_payroll(employee_id: str, current_user: dict = Depends(get_current_user)):
+    role = current_user.get("role")
+    my_emp_id = current_user.get("employee_id")
+    # Non-admin roles can only fetch their own payroll history
+    if role not in ["hr_admin", "management"] and employee_id != my_emp_id:
+        raise HTTPException(status_code=403, detail="Access denied")
     records = await db.payroll_records.find({"employee_id": employee_id}).sort("period", -1).to_list(50)
     return [pay_to_dict(r) for r in records]
 
@@ -727,8 +735,8 @@ async def download_payslip_pdf(record_id: str, current_user: dict = Depends(get_
     record = await db.payroll_records.find_one({"_id": ObjectId(record_id)})
     if not record:
         raise HTTPException(status_code=404, detail="Payroll record not found")
-    # Permission: HR/management can download any; employees/field_agents only their own
-    if current_user.get("role") in ["employee", "field_agent"]:
+    # Permission: HR/management can download any; everyone else (managers, employee, field_agent) only their own
+    if current_user.get("role") not in ["hr_admin", "management"]:
         if record.get("employee_id") != current_user.get("employee_id"):
             raise HTTPException(status_code=403, detail="Access denied")
     employee = await db.employees.find_one({"employee_id": record.get("employee_id")})
