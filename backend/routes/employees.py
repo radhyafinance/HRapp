@@ -86,6 +86,18 @@ def emp_to_dict(emp):
     return emp
 
 
+def _strip_salary_for_managers(emp_dict: dict, role: str) -> dict:
+    """Reporting managers (role='managers') must not see salary / CTC details.
+    HR Admin and Management retain full access. The employee themselves keeps access via
+    payroll/payslip endpoints. This strip is applied to /employees list & detail responses only."""
+    if role != "managers":
+        return emp_dict
+    emp_dict.pop("salary", None)
+    emp_dict.pop("ctc_monthly", None)
+    emp_dict.pop("ctc_annual", None)
+    return emp_dict
+
+
 async def get_next_employee_id():
     last = await db.employees.find_one({}, sort=[("employee_id", -1)])
     if not last:
@@ -241,7 +253,7 @@ async def list_employees(
         ]
 
     emps = await db.employees.find(query).sort("employee_id", 1).to_list(1000)
-    return [emp_to_dict(e) for e in emps]
+    return [_strip_salary_for_managers(emp_to_dict(e), user_role) for e in emps]
 
 
 @router.post("")
@@ -325,7 +337,7 @@ async def get_employee(employee_id: str, current_user: dict = Depends(get_curren
     emp = await db.employees.find_one({"employee_id": employee_id})
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
-    return emp_to_dict(emp)
+    return _strip_salary_for_managers(emp_to_dict(emp), current_user.get("role"))
 
 
 @router.put("/{employee_id}")

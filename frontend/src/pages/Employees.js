@@ -6,6 +6,7 @@ import { EmployeeModal } from "../components/employees/EmployeeModal";
 import { ReportingManagerInput } from "../components/employees/ReportingManagerInput";
 import { Modal } from "../components/shared/Modal";
 import { SalaryBreakupForm } from "../components/shared/SalaryBreakupForm";
+import { useAuth } from "../contexts/AuthContext";
 
 const ROLES = ["hr_admin", "management", "managers", "employee", "field_agent"];
 const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", managers: "Managers", employee: "HO Staff", field_agent: "Field Staff" };
@@ -24,6 +25,10 @@ const INITIAL_FORM = { first_name: "", last_name: "", email: "", mobile: "", dep
 const gross = (f) => (parseFloat(f.basic) || 0) + (parseFloat(f.hra) || 0) + (parseFloat(f.special_allowance) || 0) + (parseFloat(f.canteen_allowance) || 0) + (parseFloat(f.conveyance_allowance) || 0); // kept for reference only
 
 export default function Employees() {
+  const { user } = useAuth();
+  // Managers (reporting managers) have a read-only view: no add / bulk / template buttons
+  // and salary/CTC fields are stripped by the backend for them.
+  const canManageEmployees = ["hr_admin", "management"].includes(user?.role);
   const [employees, setEmployees] = useState([]);
   const [completeness, setCompleteness] = useState({});
   const [branches, setBranches] = useState([]);
@@ -126,17 +131,23 @@ export default function Employees() {
           <p className="text-slate-500 text-sm">{employees.length} employees</p>
         </div>
         <div className="flex gap-2">
-          <button onClick={() => fileRef.current.click()} className="flex items-center gap-2 px-4 py-2 border-2 border-[#1E2A47] text-[#1E2A47] rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors" data-testid="bulk-upload-btn">
-            <Upload size={16} /> Bulk Upload
-          </button>
-          <button onClick={downloadTemplate} className="flex items-center gap-2 px-4 py-2 border border-slate-300 text-slate-600 rounded-lg text-sm hover:bg-slate-50 transition-colors">
-            <Download size={16} /> Template
-          </button>
-          <button onClick={() => { setShowAdd(true); fetchNextId(); setError(""); }} className="flex items-center gap-2 px-4 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] transition-colors" data-testid="add-employee-btn">
-            <UserPlus size={16} /> Add Employee
-          </button>
+          {canManageEmployees && (
+            <>
+              <button onClick={() => fileRef.current.click()} className="flex items-center gap-2 px-4 py-2 border-2 border-[#1E2A47] text-[#1E2A47] rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors" data-testid="bulk-upload-btn">
+                <Upload size={16} /> Bulk Upload
+              </button>
+              <button onClick={downloadTemplate} className="flex items-center gap-2 px-4 py-2 border border-slate-300 text-slate-600 rounded-lg text-sm hover:bg-slate-50 transition-colors" data-testid="download-template-btn">
+                <Download size={16} /> Template
+              </button>
+              <button onClick={() => { setShowAdd(true); fetchNextId(); setError(""); }} className="flex items-center gap-2 px-4 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] transition-colors" data-testid="add-employee-btn">
+                <UserPlus size={16} /> Add Employee
+              </button>
+            </>
+          )}
         </div>
-        <input ref={fileRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={handleBulkUpload} />
+        {canManageEmployees && (
+          <input ref={fileRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={handleBulkUpload} />
+        )}
       </div>
 
       <div className="flex flex-col sm:flex-row gap-3 mb-4">

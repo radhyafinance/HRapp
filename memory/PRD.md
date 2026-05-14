@@ -277,7 +277,14 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
     - **New backend endpoint** `GET /api/dashboard/my-stats` returns `today_status` (punch_in/out times, session_count, has_open_session, hours_worked, status), `pending_leaves`, `pending_regularisations`, `absent_this_month`, `month_label`. Absent count excludes Sundays + holidays + days with present/half-day record + days covered by approved leave.
     - **Refactor**: Extracted `<CameraCapture>` from `Attendance.js` to `/components/attendance/CameraCapture.js` so the punch UI can be reused by the dashboard widget without code duplication.
 
-42. **Manager Self-Regularisation Bug Fix (Feb 2026)** -
+42. **Manager Role — Employees Page Restrictions (Feb 2026)** -
+    `managers` role can no longer Bulk Upload, download/upload templates, Add Employees, or view salary/CTC details of any employee (including their direct reports). Backend already 403'd the create / bulk endpoints, but the UI was still showing the buttons; the salary fields were also leaking via `/api/employees` and `/api/employees/{id}` responses.
+    - **Backend** `/app/backend/routes/employees.py`: new helper `_strip_salary_for_managers()` removes `salary`, `ctc_monthly`, `ctc_annual` from both list and detail responses when caller role is `managers`. `hr_admin` and `management` continue to receive full payloads.
+    - **Frontend** `/app/frontend/src/pages/Employees.js`: gated the **Bulk Upload**, **Template**, **Add Employee** buttons and the hidden file input behind `canManageEmployees = ["hr_admin","management"].includes(role)`. New `data-testid="download-template-btn"` for the Template button.
+    - **Frontend** `/app/frontend/src/components/employees/EmployeeModal.js`: **Edit** tab is now hidden for `managers` (backend already 403s the PUT). View / Documents / Tracker remain accessible.
+    - **Verified** via curl: manager `/employees` and `/employees/RMF0001` no longer include `salary`; admin still does. `bulk-upload/template` → 403. UI screenshot confirms missing buttons and missing CTC/salary rows.
+
+41. **Manager Self-Regularisation Bug Fix (Feb 2026)** -
     Users with role `managers` (e.g., RMF0017) were unable to request attendance regularisation for themselves because `Attendance.js` rendered the personal-history block only when `!isManager`, hiding the "Request Regularisation" button.
     - **Fix** in `/app/frontend/src/pages/Attendance.js`: split the previous ternary into two independent blocks. Personal "My Attendance History" with the **Request Regularisation** button + **MyRequestsList** now renders when `user?.employee_id && !canRegulariseAdmin` (so it shows for `managers`, `employee`, and `field_agent` — but stays hidden for `hr_admin`/`management` who use the admin "Add Record" panel instead). The "Team Attendance" block now renders independently when `isManager` is true, so managers see **both** sections.
     - **Backend was already correct** — `POST /api/attendance/regularisation-requests` accepts any caller with an `employee_id`. Verified end-to-end via curl as RMF0017 and via Playwright screenshot.
