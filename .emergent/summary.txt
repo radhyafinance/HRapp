@@ -1,166 +1,132 @@
-<analysis>**original_problem_statement**: Create a comprehensive HR system for an NBFC-MFI named Radhya Micro Finance (40+ employees). The app must include: Candidate/Employee Onboarding, Selfie & Geofenced Attendance tracking, Leaves, Payroll (EPF, ESIC, NEFT sheet format), Performance Management, Exit formalities, Gratuity, and Letters generation. 
-PRODUCT REQUIREMENTS: Full-stack web application (FastAPI backend + React frontend). Role-based access control. Integration for Aadhaar/PAN OCR. Geofenced attendance. Joining Kit PDF generation. Detailed payslip generation.
+<analysis>**original_problem_statement**: Create a comprehensive HR system for an NBFC-MFI named Radhya Micro Finance (40+ employees). The app must include: Candidate/Employee Onboarding, Selfie & Geofenced Attendance tracking, Leaves, Payroll (EPF, ESIC, NEFT sheet format), Performance Management, Exit formalities, Gratuity, and Letters generation. PRODUCT REQUIREMENTS: Full-stack web application (FastAPI backend + React frontend). Role-based access control. Geofenced attendance. Joining Kit PDF/Word generation. Detailed payslip generation. PWA features for field tracking. Hierarchical reporting visibility. Strict Data Privacy/ACLs for salary.
 
 **User's preferred language**: English (INSTRUCT NEXT AGENT: You MUST respond in English only)
 
-**what currently exists?**: A robust PWA HR web application featuring dual-mode authentication, geofenced attendance tracking with configurable multi-session shift rules, a 10-rule FY-based Leave Policy, hierarchical RBAC visibility, dynamic payroll calculations, candidate self-onboarding, and comprehensive visual Employee Calendars indicating personal leaves and absent records.
+**what currently exists?**: A robust PWA HR application with multi-tier role-based access control (Admin, Management, Managers, Employees/Field Agents). Features include geofenced/selfie attendance, leave management, complex payroll logic, Perfios-powered bank verification, transitive (multi-level) manager hierarchy visibility, and strict Data Privacy/ACLs stripping salary/CTC information from peers and managers.
 
 **Last working item**:
-- **Last item agent was working**: Implementing Multiple Sessions for attendance. Enabling a per-employee toggle to allow multiple punch-in/out sessions in a single day, recording total accumulated hours and displaying them accurately on the attendance log. This task was completed and verified.
-- **Status**: NONE
-- **Agent Testing Done**: Y
-- **Which testing method agent to use?**: NA (Task finished successfully with testing_agent_v3_fork)
-- **User Testing Done**: N
+    - **Last item agent was working**: Implementing universal Salary ACL on the  detail endpoint. Ensuring that no user can see another peer's or subordinate's salary via direct API call, unless they are , , or the employee themselves.
+    - **Status**: RESOLVED
+    - **Agent Testing Done**: Y
+    - **Which testing method agent to use?**: NA (Testing is already done)
+    - **User Testing Done**: Y
 
-**All Pending/In progress Issue list**:
-Issue 1: Set a system to check and update pings every 15 minutes.
-- **Attempted fixes**: None. Waiting on user clarification regarding what 15 minutes exactly means (health monitor vs battery saver feature vs active location pinging).
-- **Next debug checklist**: Prompt user for clarification if they request it again.
-- **Why fix this issue and what will be achieved with the fix?**: Enhances tracking reliability for field staff.
-- **Status**: BLOCKED (Awaiting User Clarification)
-- **Is recurring issue?**: N
-- **Should Test frontend/backend/both after fix?**: Both
-- **Blocked on other issue**: Missing User Clarification.
+**All Pending/In progress Issue list**: 
+  - Issue 1: 15-Minute Ping System Configuration
+     - Attempted fixes: None.
+     - Next debug checklist: Prompt user for clarification regarding what 15 minutes exactly means (health monitor vs battery saver feature vs active location pinging).
+     - Why fix this issue and what will be achieved with the fix?: Enhances tracking reliability for field staff.
+     - Status: BLOCKED (Awaiting User Clarification)
+     - Is recurring issue?: N
+     - Should Test frontend/backend/both after fix?: Both
+     - Blocked on other issue: Missing User Clarification.
+  - Issue 2: JWT Session Timeout Adjustment
+     - Attempted fixes: None.
+     - Next debug checklist: Check if user wants to keep the 24-hour limit, extend it, or move to a sliding window session strategy.
+     - Why fix this issue and what will be achieved with the fix?: Improves field staff UX.
+     - Status: USER VERIFICATION PENDING
+     - Is recurring issue?: N
+     - Should Test frontend/backend/both after fix?: Backend (curl)
+     - Blocked on other issue: None.
 
-**In progress Task List**:
-None.
+**In progress Task List**: None
 
 **Upcoming and Future Tasks**:
-- **Task 1: Letter Generation PDFs** (P0) - Implement actual PDF generation and download for Offer Letters, Appointment Letters, Warning Letters, and Confirmation Letters (with company letterhead).
-- **Task 2: Leave Encashment Calculation** (P1) - Logic to compute and disburse EL/PL encashment during payroll or exit.
-- **Task 3: Employee Self-Portal for Document Upload** (P2) - Allow existing employees to login and upload their own documents to fulfill the checklist.
-- **Task 4: Training records module** (P2)
-- **Task 5: Asset management integration** (P2)
+    - Task 1: Letter Generation PDFs (P0) - Implement actual PDF generation and download for Offer Letters, Appointment Letters, Warning Letters, and Confirmation Letters (with company letterhead).
+    - Task 2: Identity Document Verification (P1) - Level 2 API checks via Karza/Perfios API for PAN, Aadhaar, Voter ID.
+    - Task 3: Punch In with Face Feature (P2) - Combine WebAuthn biometric login + immediate attendance punch-in into a single 1-tap flow for field staff.
+    - Task 4: Leave Encashment Calculation (P2) - Logic to compute and disburse EL/PL encashment during payroll or exit.
+    - Task 5: Employee Self-Portal for Document Upload (P2) - Allow existing employees to login and upload their own documents.
+    - Task 6: Training records module (P2)
+    - Task 7: Asset management integration (P2)
+    - Task 8: Document Completeness Scope Refinement (P3) - Scope  to manager's sub-tree instead of whole company (proposed by previous agent).
 
-**Completed work in this session**:
-- **Employee Calendar Visuals (DONE)**:  updated to show personal Approved Leaves (CL, EL, etc.) and Absent records directly on the calendar cells.
-- **Calendar PWA UI Fixes (DONE)**: Made calendar cells mobile-responsive and prevented text/pill overflow.
-- **Auto Half-Day Shift Rules (DONE)**: Shift rules auto-calculate status (Present, Half Day) based on start time, grace periods, and total hours worked.
-- **Configurable Shifts UI (DONE)**: Built a CRUD interface inside Settings to define Custom Shifts (Start/End times, grace periods, min hours) and mapped them to specific roles/employees.
-- **Multiple Session Attendance (DONE)**: Enabled per-employee toggle  allowing numerous punches in a day. Updates backend schemas to store  and displays aggregated stats on the UI.
-- Test suites created ( and ).
+**Completed work in this session**
+- Manager Self-Regularisation Bug Fix (DONE):  now allows managers to view their personal request regularisation button alongside team attendance.
+- Manager Role UI Restrictions (DONE): Removed Bulk Upload, Template, and Add Employee options for managers in . Stripped UI components exposing Salary/CTC data.
+- Transitive Sub-tree Visibility for Managers (DONE): Added  in  so managers see both direct and indirect reports (reports-of-reports) across the application.
+- Universal Salary Data Privacy ACL (DONE): Upgraded  to use , blocking managers and peers from seeing any salary/payroll data across list and detail endpoints. Only self, , and  have access.
 
-**Earlier issues found/mentioned but not fixed**:
-None.
+**Earlier issues found/mentioned but not fixed**
+   - Issue 1:  self-regularisation UI.
+     - Debug checklist: Allow  to request regularisation on themselves directly from the standard UI instead of forcing the Add Record bypass workflow.
+     - Why to solve this issue and what will be achieved with this?: Keeps the audit trail consistent.
+     - Should Test frontend/backend/both after fix: Both
+     - Is recurring issue?: N
 
-**Known issue recurrence from previous fork**:
-- Recurrence count: 0
-- Status: RESOLVED
+**Known issue recurrence from previous fork**
+  - Issue recurrence in previous fork: None
+  - Recurrence count: 0
+  - Status: RESOLVED
 
-**Code Architecture**:
+**Code Architecture**
 
 
-**Key Technical Concepts**:
-- Frontend: React, Tailwind, PWA Service Worker (network-first).
-- Backend: FastAPI, Python, MongoDB, Pytest.
-- Geofencing & Timestamps: Validates selfie & location. Backend enforces Asia/Kolkata (IST) timezone constraints for evaluating Shift logic.
+**Key Technical Concepts**
+Frontend: React, Tailwind, Lucide-React.
+Backend: FastAPI, MongoDB.
+Architecture: Strict Role-Based Access Control (RBAC), deeply nested hierarchical visibility logic (Transitive dependency resolution for managers).
 
-**key DB schema**:
-- : 
-- : Includes new references  and  (boolean).
-- : Includes new array  alongside top-level summaries.
+**key DB schema**
+  - : 
+  - : 
+  - : Tracks status of punch regularisation requests.
 
-**changes in tech stack**:
-- Included ============================= test session starts ==============================
-platform linux -- Python 3.11.15, pytest-9.0.3, pluggy-1.6.0
-rootdir: /app
-plugins: anyio-4.13.0
-collected 76 items / 3 errors
+**changes in tech stack**
+  - None
 
-==================================== ERRORS ====================================
-________________ ERROR collecting backend/tests/test_kyc_ocr.py ________________
-backend/tests/test_kyc_ocr.py:24: in <module>
-    assert BASE_URL, "REACT_APP_BACKEND_URL is not set"
-E   AssertionError: REACT_APP_BACKEND_URL is not set
-E   assert ''
-______________ ERROR collecting backend/tests/test_shift_rules.py ______________
-ImportError while importing test module '/app/backend/tests/test_shift_rules.py'.
-Hint: make sure your test modules/packages have valid Python names.
-Traceback:
-/usr/local/lib/python3.11/importlib/__init__.py:126: in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-backend/tests/test_shift_rules.py:5: in <module>
-    from services.shift_rules import (
-E   ModuleNotFoundError: No module named 'services'
-___________ ERROR collecting backend/tests/test_shift_rules_dict.py ____________
-ImportError while importing test module '/app/backend/tests/test_shift_rules_dict.py'.
-Hint: make sure your test modules/packages have valid Python names.
-Traceback:
-/usr/local/lib/python3.11/importlib/__init__.py:126: in import_module
-    return _bootstrap._gcd_import(name[level:], package, level)
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-backend/tests/test_shift_rules_dict.py:5: in <module>
-    from services.shift_rules import (
-E   ModuleNotFoundError: No module named 'services'
-=========================== short test summary info ============================
-ERROR backend/tests/test_kyc_ocr.py - AssertionError: REACT_APP_BACKEND_URL i...
-ERROR backend/tests/test_shift_rules.py
-ERROR backend/tests/test_shift_rules_dict.py
-!!!!!!!!!!!!!!!!!!! Interrupted: 3 errors during collection !!!!!!!!!!!!!!!!!!!!
-============================== 3 errors in 0.69s =============================== usage heavily for regression testing logic in .
+**All files of reference**
+  -  (Updated personal vs team UI visibility for managers)
+  -  (Added UI RBAC for managers)
+  -  (New helper  for finding indirect reports)
+  -  (Updated ACLs to use )
+  -  (Updated changelog)
 
-**All files of reference**:
--  (Core logic for attendance/shift validation).
--  (Modified for multi-sessions).
--  (New routes for Settings mapping).
--  (Updated state and UI for sessions rendering).
--  (New file).
--  (New UI tab for Settings).
--  (Updated to handle toggle & shift_id override).
--  (Updated rendering logic).
+**Areas that need refactoring**: 
+-  and  (Both >700 lines. Need shared textual data extraction logic to avoid DRY violations).
 
-**Areas that need refactoring**:
-None immediately.  is getting heavy, but well compartmentalized.
+**key api endpoints**
+  -  &  (Universal ACL restricts salary unless caller is self/admin)
+  - 
+  - 
 
-**key api endpoints**:
-- , , 
-- 
-- 
+**Critical Info for New Agent**
+  - **DEPLOYMENT AWARENESS**: User has a production environment. You are strictly in PREVIEW. Data/Passwords modified via DB only apply to Preview. Wait for the user to Save to Github to deploy to Prod.
+  - **Transitive Visibility**: Managers need to see their  reports. Always use  to scope endpoints for managers, not just DB .
+  - **Salary Access Strictness**: NEVER expose , , , etc. to a user checking another user's profile unless they are  or . Use the helper  in .
+  - **MONGO DATETIME QUIRK**: MongoDB strips . Strip tzinfo from  or attach it to the mongo document before comparing.
 
-**Critical Info for New Agent**:
-- **PRODUCTION vs PREVIEW**: The app is LIVE. Any URL generation (like candidate invites) MUST use  on the frontend, NOT hardcoded  backend variables. 
-- **Timezones**: Shift computations heavily rely on evaluating times relative to  (IST). Any logic updating shifts or punch times must retain this logic.
-- **Roles & IDs**: The  role doesn't possess an  and does not track attendance. 
-- Multiple sessions are stored backward-compatibly. The first punch-in records at  and the final closed session updates .  is calculated as the sum of all session durations.
+**documents and test reports created in this job**
+  - 
 
-**documents and test reports created in this job**:
--  (Updated)
--  (Unchanged from prev iteration, but used actively)
--  (Passed - Configurable Shifts)
--  (Passed - Multi-Session Attendance)
--  &  
+**Last 10 User Messages and any pending HUMAN messages** 
+ 1. *User*: RMF0017 unable to request regularisation of attendance.
+ 2. *User*: Production; Maybe both. Button is missing/disabled. Yes, she has open records. (COMPLETED)
+ 3. *User*: Employees page: managers should not be able to Bulk Upload, download or upload templates, Add Employee, or view employees salaries or CTC. (COMPLETED)
+ 4. *User*: RMF0010 is the divisional manager. He should be able to see information for everyone under (staff reporting to him, then staff reporting to them, etc.) him. Except any salary or payroll related data. (COMPLETED)
+ 5. *User*: Confirms wanting to lock down the  detail endpoint to strip salary unless caller is HR/Management or the employee themselves. (COMPLETED)
 
-**Last 10 User Messages and any pending HUMAN messages**:
-1. *User*: Make PWA UI mobile friendly. (COMPLETED)
-2. *User*: Candidate/Employee unique validation. (COMPLETED)
-3. *User*: Add branch column to Employee page. (COMPLETED)
-4. *User*: Candidate Invite Links deployed URL fix. (COMPLETED)
-5. *User*: Hide mark attendance for HR Admin. (COMPLETED)
-6. *User*: Hide converted from candidate list. (COMPLETED)
-7. *User*: Calendar: Once leave is approved, it should show on Employee's calendar... (COMPLETED)
-8. *User*: Also fix calendar UI for PWA. It is not showing neatly... (COMPLETED)
-9. *User*: Attendance rules: Hours for roles, mark half day, total punched time etc. (COMPLETED)
-10. *User*: Give option to allow multiple punch in and punch out for a particular employee. (COMPLETED)
+**Project Health Check:**
+Healthy. No Mocked endpoints.
 
-**Project Health Check**:
-Healthy. Excellent backend tests setup. 
+**3rd Party Integrations** 
+	 •	Google Gemini 2.5 Flash (Aadhaar & PAN OCR) — uses Emergent LLM Key.
+	 •	Resend (Email OTP and Notifications) — requires User API Key.
+	 •	Transistorsoft Background Geolocation — Direct API hook.
+	 •	WebAuthn (Device Biometrics) — Direct API logic.
+	 •	Perfios (Bank Account Verification API) — requires User API Key.
 
-**3rd Party Integrations**:
-- Google Gemini 2.5 Flash (Aadhaar & PAN OCR) — uses Emergent LLM Key.
-- Resend (Email OTP and Notifications) — requires User API Key.
-- Transistorsoft Background Geolocation — Direct API hook.
+**Testing status**
+  - Testing agent used after significant changes: NO (Agent self-tested successfully with bash curls and screenshots).
+  - Troubleshoot agent used after agent stuck in loop: NO
+  - Test files created: []
+  - Known regressions: []
 
-**Testing status**:
-- Testing agent used after significant changes: YES
-- Troubleshoot agent used after agent stuck in loop: NO
-- Test files created: , 
-- Known regressions: None
+**Credentials to test flow:**
+  - HR Admin:  / 
+  - Field Agent/Employee:  / 
+  - Manager:  / 
+  - Divisional Manager:  / 
 
-**Credentials to test flow**:
-- HR Admin:  / 
-- Field Agent:  / 
-- Area Manager:  / 
-
-**What agent forgot to execute**:
-Nothing was missed. The agent completed the last user's prompt (Give option to allow multiple punch in and punch out) flawlessly and finished correctly. Next agent should proceed to the tasks in the  backlog starting with Letter Generation PDFs.</analysis>
+**What agent forgot to execute**
+- The agent proposed scoping the  endpoint to the manager's transitive sub-tree at the very end of the run but finished the task before receiving an answer. The next agent should ask the user if they want this implemented or proceed directly to Letter Generation/ID Verification tasks.</analysis>
