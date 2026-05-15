@@ -224,9 +224,12 @@ async def list_employees(
         # Can only see themselves
         query["employee_id"] = my_emp_id
     elif user_role == "managers":
-        # Can see themselves + their direct reports only
+        # Can see themselves + their FULL reporting sub-tree (direct + indirect reports)
+        from services.hierarchy import get_descendant_employee_ids
+        descendants = await get_descendant_employee_ids(my_emp_id) if my_emp_id else set()
+        allowed_ids = list(descendants) + ([my_emp_id] if my_emp_id else [])
         existing_filter = query.pop("$or", None)
-        scope_clause = {"$or": [{"employee_id": my_emp_id}, {"reporting_to": my_emp_id}]}
+        scope_clause = {"employee_id": {"$in": allowed_ids}}
         if existing_filter:
             query["$and"] = [scope_clause, {"$or": existing_filter}]
         else:
