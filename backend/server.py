@@ -81,6 +81,9 @@ from routes import candidate_invites
 app.include_router(candidate_invites.router, prefix="/api/candidate-invites", tags=["Candidate Invites"])
 app.include_router(candidate_invites.public_router, prefix="/api/public/candidate-invite", tags=["Public Candidate Invite"])
 
+from routes import digilocker
+app.include_router(digilocker.router, prefix="/api/digilocker", tags=["DigiLocker"])
+
 
 @app.get("/api")
 async def root():

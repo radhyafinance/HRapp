@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { Upload, Eye, Download, Trash2, CheckCircle2, AlertCircle, FileText } from "lucide-react";
+import { Upload, Eye, Download, Trash2, CheckCircle2, AlertCircle, FileText, ShieldCheck } from "lucide-react";
 import API from "../../utils/api";
 import { compressImage, fileToBase64String } from "../../utils/imageCompression";
+import { DigiLockerButton } from "../digilocker/DigiLockerButton";
 
 const DOC_GROUPS = [
   { title: "KYC", items: [["aadhaar_front", "Aadhaar — Front"], ["aadhaar_back", "Aadhaar — Back"], ["pan_card", "PAN Card"], ["voter_id_front", "Voter ID — Front"], ["voter_id_back", "Voter ID — Back"], ["driving_license_front", "Driving License — Front"], ["driving_license_back", "Driving License — Back"], ["passport_photo", "Passport-size Photo"]] },
@@ -124,6 +125,14 @@ export function EmployeeDocumentsTab({ employeeId, onDocsChanged }) {
           <AlertCircle size={16} className="flex-shrink-0 mt-0.5" /><span>{err}</span>
         </div>
       )}
+
+      {/* DigiLocker fetch panel */}
+      <DigiLockerButton
+        contextType="employee"
+        contextId={employeeId}
+        onComplete={refresh}
+      />
+
       {DOC_GROUPS.map(g => (
         <div key={g.title}>
           <h4 className="font-bold text-[#1E2A47] text-sm mb-3">{g.title}</h4>
@@ -136,7 +145,13 @@ export function EmployeeDocumentsTab({ employeeId, onDocsChanged }) {
                   <div className="flex items-center justify-between gap-2 mb-2">
                     <p className="text-xs font-semibold text-[#1E2A47] truncate">{label}</p>
                     {meta.uploaded ? (
-                      <span className="flex items-center gap-1 text-[10px] text-green-700 font-medium"><CheckCircle2 size={11} /> Uploaded</span>
+                      <span className="flex items-center gap-1 text-[10px] text-green-700 font-medium">
+                        {meta.digilocker_verified ? (
+                          <><ShieldCheck size={11} className="text-blue-600" /><span className="text-blue-700">DigiLocker Verified</span></>
+                        ) : (
+                          <><CheckCircle2 size={11} /> Uploaded</>
+                        )}
+                      </span>
                     ) : (
                       <span className="text-[10px] text-slate-400 font-medium">Not uploaded</span>
                     )}

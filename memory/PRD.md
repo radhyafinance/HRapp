@@ -167,6 +167,23 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 - Created `/src/utils/imageCompression.js` — canonical `compressImage`, `fileToBase64`, `fileToBase64String`
 - Result: Candidates.js → 150 lines, Employees.js → 309 lines
 
+### ✅ Phase 4 (May 2026)
+43. **DigiLocker Document Verification via Perfios (May 2026)** -
+    HR can now fetch government-verified documents directly from DigiLocker for both Candidates and Employees.
+    - **Flow**: HR clicks "Fetch Documents via DigiLocker" → backend initiates a Perfios DigiLocker session → popup opens with DigiLocker consent page → user authorises → callback page fetches+stores all available documents → main window refreshes with "DigiLocker Verified" badges.
+    - **Backend** (`/app/backend/routes/digilocker.py`):
+      - `POST /api/digilocker/initiate` — calls Perfios `/link`, stores session in `digilocker_sessions` collection, returns DigiLocker redirect URL.
+      - `POST /api/digilocker/fetch-and-store/{session_id}` — fetches document list from Perfios, downloads all docs as base64 PDFs, stores in `employee_documents` / `candidate_documents` with `source:"digilocker"` + `digilocker_verified:true` flags.
+      - `GET /api/digilocker/session/{session_id}/status` — session status check.
+    - **Document type mapping**: PANCR→pan_card, ADHAR→aadhaar_front, DRVLC→driving_license_front, VOTERC→voter_id_front, 10CBSE→edu_10th, 12CBSE→edu_12th, DEGREE→edu_graduation.
+    - **Frontend**:
+      - New `DigiLockerButton` component (`/components/digilocker/DigiLockerButton.js`) — handles full flow with popup, message listener, loading/success/error states.
+      - New `DigiLockerCallback` page (`/pages/DigiLockerCallback.js`) — handles the OAuth return, auto-downloads, posts `DIGILOCKER_DONE` to opener, closes self.
+      - **Employee Documents Tab**: DigiLocker panel at top; verified docs show "DigiLocker Verified" shield badge in blue.
+      - **Candidate Detail Modal**: DigiLocker panel added to KYC section; works same way.
+    - **Security**: Only `hr_admin` and `management` roles can initiate; popup is same-origin so JWT flows naturally via localStorage.
+    - **Note**: Requires active DigiLocker credits on the Perfios account. The API key is shared with bank verification. Current status: "Insufficient Credits" on the Perfios account — contact Perfios to enable DigiLocker service.
+
 ## P0 Backlog (Next Phase)
 - [x] NEFT sheet custom format (RMF0001 8-column bank format) ✅ Apr 2026
 - [x] Payslip PDF download ✅ Apr 2026

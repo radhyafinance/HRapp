@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
-import { Image as ImageIcon, Eye, CalendarClock, FileText, Pencil, Check, X as XIcon } from "lucide-react";
+import { Image as ImageIcon, Eye, CalendarClock, FileText, Pencil, Check, X as XIcon, ShieldCheck } from "lucide-react";
 import { Modal } from "../shared/Modal";
 import { JoiningKitPanel } from "./JoiningKitPanel";
+import { DigiLockerButton } from "../digilocker/DigiLockerButton";
 import API from "../../utils/api";
 
 const STATUS_COLORS = { pending: "bg-amber-100 text-amber-700", selected: "bg-green-100 text-green-700", rejected: "bg-red-100 text-red-700", converted: "bg-blue-100 text-blue-700" };
@@ -67,6 +68,14 @@ export function CandidateDetailModal({ candidate, onClose, onSchedule }) {
       setDocBlobs(prev => ({ ...prev, [type]: url }));
       return url;
     } catch (e) { return null; }
+  };
+
+  const refreshDocs = async () => {
+    try {
+      const res = await API.get(`/candidates/${candidate.id}/documents`);
+      setDocsMeta(res.data);
+      setDocBlobs({});
+    } catch (e) { setDocsMeta({}); }
   };
 
   return (
@@ -188,6 +197,16 @@ export function CandidateDetailModal({ candidate, onClose, onSchedule }) {
 
         <div className="border-t pt-4">
           <h4 className="font-bold text-[#1E2A47] text-sm mb-3">KYC Documents</h4>
+
+          {/* DigiLocker fetch panel */}
+          <div className="mb-4">
+            <DigiLockerButton
+              contextType="candidate"
+              contextId={c.id}
+              onComplete={refreshDocs}
+            />
+          </div>
+
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {[["aadhaar_front", "Aadhaar Front"], ["aadhaar_back", "Aadhaar Back"], ["pan_card", "PAN Card"], ["cv", "CV / Resume"]].map(([key, label]) => {
               const exists = docsMeta && docsMeta[key];

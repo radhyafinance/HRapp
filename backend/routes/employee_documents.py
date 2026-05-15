@@ -84,6 +84,8 @@ async def list_documents(employee_id: str, current_user: dict = Depends(get_curr
                 "mime": asset.get("mime"),
                 "size": asset.get("size"),
                 "uploaded_at": asset.get("uploaded_at"),
+                "source": asset.get("source"),
+                "digilocker_verified": asset.get("digilocker_verified", False),
             }
         else:
             out[dtype] = {"label": DOC_LABELS.get(dtype, dtype), "uploaded": False}
