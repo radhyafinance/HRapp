@@ -86,11 +86,18 @@ def emp_to_dict(emp):
     return emp
 
 
-def _strip_salary_for_managers(emp_dict: dict, role: str) -> dict:
-    """Reporting managers (role='managers') must not see salary / CTC details.
-    HR Admin and Management retain full access. The employee themselves keeps access via
-    payroll/payslip endpoints. This strip is applied to /employees list & detail responses only."""
-    if role != "managers":
+def _strip_salary_unless_authorised(emp_dict: dict, current_user: dict) -> dict:
+    """Salary / CTC visibility rules:
+       - hr_admin and management: see everything (full access).
+       - the employee themselves: see their own salary (needed for self-portal & payslips).
+       - everyone else (managers, peers, field_agent): salary is stripped.
+    Applied to /employees list & detail responses. Payslip / payroll endpoints have their own
+    independent ACL.
+    """
+    role = current_user.get("role")
+    if role in ("hr_admin", "management"):
+        return emp_dict
+    if current_user.get("employee_id") and emp_dict.get("employee_id") == current_user.get("employee_id"):
         return emp_dict
     emp_dict.pop("salary", None)
     emp_dict.pop("ctc_monthly", None)
@@ -256,7 +263,7 @@ async def list_employees(
         ]
 
     emps = await db.employees.find(query).sort("employee_id", 1).to_list(1000)
-    return [_strip_salary_for_managers(emp_to_dict(e), user_role) for e in emps]
+    return [_strip_salary_unless_authorised(emp_to_dict(e), current_user) for e in emps]
 
 
 @router.post("")
@@ -340,7 +347,7 @@ async def get_employee(employee_id: str, current_user: dict = Depends(get_curren
     emp = await db.employees.find_one({"employee_id": employee_id})
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
-    return _strip_salary_for_managers(emp_to_dict(emp), current_user.get("role"))
+    return _strip_salary_unless_authorised(emp_to_dict(emp), current_user)
 
 
 @router.put("/{employee_id}")
