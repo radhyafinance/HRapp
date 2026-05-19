@@ -187,13 +187,16 @@ async def fetch_and_store(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to fetch DigiLocker document list: {e}")
 
-    # Extract list — Perfios nests differently based on version
-    available = (
-        docs_raw.get("documents")
-        or docs_raw.get("result", {}).get("documents")
-        or docs_raw.get("data", {}).get("documents")
-        or []
-    )
+    # Extract list — Perfios may return a plain list or a nested dict
+    if isinstance(docs_raw, list):
+        available = docs_raw
+    else:
+        available = (
+            docs_raw.get("documents")
+            or docs_raw.get("result", {}).get("documents")
+            or docs_raw.get("data", {}).get("documents")
+            or []
+        )
 
     if not available:
         await db.digilocker_sessions.update_one(
@@ -240,13 +243,17 @@ async def fetch_and_store(
 
     # ── Step C: Parse response and store ─────────────────────────────────────
     # Perfios response might be list or dict keyed by URI
-    dl_files = (
-        dl_raw.get("files")
-        or dl_raw.get("documents")
-        or dl_raw.get("result", {}).get("files")
-        or dl_raw.get("result", {}).get("documents")
-        or []
-    )
+    # Parse downloaded files — Perfios may return a plain list or nested dict
+    if isinstance(dl_raw, list):
+        dl_files = dl_raw
+    else:
+        dl_files = (
+            dl_raw.get("files")
+            or dl_raw.get("documents")
+            or dl_raw.get("result", {}).get("files")
+            or dl_raw.get("result", {}).get("documents")
+            or []
+        )
     if isinstance(dl_files, dict):
         dl_files = [{"uri": k, **v} for k, v in dl_files.items()]
 
