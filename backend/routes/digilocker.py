@@ -273,6 +273,7 @@ async def _do_fetch_and_store(
                 headers={"x-auth-key": api_key, "Content-Type": "application/json"},
             )
         dl_raw = dlr.json()
+        import logging; logging.info(f"[DigiLocker] /download raw keys: {str(dl_raw)[:800]}")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to download DigiLocker documents: {e}")
 
@@ -291,7 +292,16 @@ async def _do_fetch_and_store(
     for item in dl_files:
         uri = item.get("uri", "")
         name = item.get("name", item.get("docType", ""))
-        b64_data = item.get("pdfB64") or item.get("data") or item.get("content")
+        b64_data = (
+            item.get("pdfB64")
+            or item.get("pdfContent")
+            or item.get("fileBase64")
+            or item.get("base64")
+            or item.get("data")
+            or item.get("content")
+            or item.get("pdf")
+        )
+        import logging; logging.info(f"[DigiLocker] item uri={uri} name={name} keys={list(item.keys())} has_b64={bool(b64_data)}")
 
         if not b64_data:
             failed.append({"uri": uri, "reason": "no data in response"})
