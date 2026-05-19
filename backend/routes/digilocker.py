@@ -54,8 +54,11 @@ def _extract_perfios_list(raw) -> list:
                 if isinstance(inner_val, list) and inner_val:
                     return inner_val
     return []
+
+
+def _map_doc_type(uri: str, name: str) -> Optional[str]:
     """Guess our storage key from a DigiLocker URI / name string."""
-    upper = (uri + " " + name).upper()
+    upper = ((uri or "") + " " + (name or "")).upper()
     for token, key in _DL_TYPE_MAP.items():
         if token in upper:
             return key

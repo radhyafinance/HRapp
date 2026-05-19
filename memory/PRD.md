@@ -30,6 +30,10 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 10. **Gratuity** - Eligibility check (5yr), calculation, monthly provision
 11. **Settings** - 5 office locations (Moradabad HO, Chandpur, Najibabad, Budaun, Chandausi)
 
+### ✅ Phase 3 Patch (Feb 2026)
+- **DigiLocker Aadhaar Save Bug — FIXED**: Defined missing `_map_doc_type` function in `/app/backend/routes/digilocker.py` (the function body was orphaned dead code after a `return []` inside `_extract_perfios_list`, causing a latent `NameError` for any DigiLocker doctype not explicitly listed in `_DL_TYPE_MAP`). Verified Aadhaar `parsedFile` → JSON payload (photo stripped) saves correctly to `employee_documents.aadhaar_front` via end-to-end simulation. Cleaned debug test artifacts (`test_field`, `aadhaar_test`) left on RMF0003.
+
+
 ### ✅ Phase 2 Complete (Apr 2026)
 12. **NEFT Sheet (RMF0001 Bank Format)** - Exact 8-column bank format: Transaction Type, Amount, Debit Account No (12 digit, from settings), IFSC, Beneficiary Account, Beneficiary Name (cleaned uppercase, max 32, no special chars), Remarks for Client (max 21), Remarks for Beneficiary (max 30). Filename `NEFT_RMF0001_<period>.xlsx`. Locale-safe period label (e.g. `Apr26`).
 13. **Company / Bank Settings Tab** - Company profile (name, CIN, address, contacts) + NEFT bank credentials (debit account, IFSC, transaction type) — used in NEFT export.
