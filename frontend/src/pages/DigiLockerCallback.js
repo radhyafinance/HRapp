@@ -35,7 +35,7 @@ export default function DigiLockerCallback() {
     }
 
     // Token lives in localStorage (same origin as main window)
-    const token = localStorage.getItem("token");
+    const token = localStorage.getItem("auth_token");
     if (!token) {
       setStatus("error");
       setMessage("Session expired. Please log in again and retry.");
