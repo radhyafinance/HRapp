@@ -34,7 +34,26 @@ _DL_TYPE_MAP = {
     "MGRCER": "edu_post_graduation",
 }
 
-def _map_doc_type(uri: str, name: str) -> Optional[str]:
+def _extract_perfios_list(raw) -> list:
+    """Extract a document list from any Perfios response shape.
+
+    Handles:  raw=[...], raw={"documents":[...]}, raw={"result":[...]},
+              raw={"result":{"documents":[...]}}, raw={"data":{...}}, etc.
+    """
+    if isinstance(raw, list):
+        return raw
+    if not isinstance(raw, dict):
+        return []
+    for key in ("documents", "files", "items", "result", "data"):
+        val = raw.get(key)
+        if isinstance(val, list) and val:
+            return val
+        if isinstance(val, dict):
+            for inner in ("documents", "files", "items"):
+                inner_val = val.get(inner)
+                if isinstance(inner_val, list) and inner_val:
+                    return inner_val
+    return []
     """Guess our storage key from a DigiLocker URI / name string."""
     upper = (uri + " " + name).upper()
     for token, key in _DL_TYPE_MAP.items():
@@ -207,19 +226,12 @@ async def _do_fetch_and_store(
                 headers={"x-auth-key": api_key, "Content-Type": "application/json"},
             )
         docs_raw = dr.json()
+        import logging; logging.info(f"[DigiLocker] /documents raw: {str(docs_raw)[:500]}")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to fetch DigiLocker document list: {e}")
 
-    # Extract list — Perfios may return a plain list or a nested dict
-    if isinstance(docs_raw, list):
-        available = docs_raw
-    else:
-        available = (
-            docs_raw.get("documents")
-            or docs_raw.get("result", {}).get("documents")
-            or docs_raw.get("data", {}).get("documents")
-            or []
-        )
+    # Extract document list — handles all Perfios response shapes
+    available = _extract_perfios_list(docs_raw)
 
     if not available:
         await db.digilocker_sessions.update_one(
@@ -266,17 +278,8 @@ async def _do_fetch_and_store(
 
     # ── Step C: Parse response and store ─────────────────────────────────────
     # Perfios response might be list or dict keyed by URI
-    # Parse downloaded files — Perfios may return a plain list or nested dict
-    if isinstance(dl_raw, list):
-        dl_files = dl_raw
-    else:
-        dl_files = (
-            dl_raw.get("files")
-            or dl_raw.get("documents")
-            or dl_raw.get("result", {}).get("files")
-            or dl_raw.get("result", {}).get("documents")
-            or []
-        )
+    # Parse downloaded files — handles all Perfios response shapes
+    dl_files = _extract_perfios_list(dl_raw)
     if isinstance(dl_files, dict):
         dl_files = [{"uri": k, **v} for k, v in dl_files.items()]
 
