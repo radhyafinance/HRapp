@@ -55,6 +55,7 @@ def _map_doc_type(uri: str, name: str) -> Optional[str]:
 class InitiateRequest(BaseModel):
     context_type: str   # "candidate" or "employee"
     context_id: str     # candidate ObjectId string OR employee_id (RMFXXXX)
+    frontend_origin: str = ""   # window.location.origin from browser — used to build the redirect URL
 
 
 @router.post("/initiate")
@@ -73,9 +74,11 @@ async def initiate_digilocker(
     if not api_key:
         raise HTTPException(status_code=500, detail="Perfios API key not configured")
 
-    frontend_url = os.environ.get("FRONTEND_URL", "").rstrip("/")
+    # Use the origin the browser reports (works on both preview and production)
+    # Fall back to FRONTEND_URL env var if not provided
+    base_origin = (body.frontend_origin or os.environ.get("FRONTEND_URL", "")).rstrip("/")
     session_id = str(uuid.uuid4())
-    redirect_url = f"{frontend_url}/digilocker/callback"
+    redirect_url = f"{base_origin}/digilocker/callback"
 
     payload = {
         "redirectUrl": redirect_url,

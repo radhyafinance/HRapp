@@ -56,6 +56,7 @@ export function DigiLockerButton({ contextType, contextId, onComplete }) {
       const res = await API.post("/digilocker/initiate", {
         context_type: contextType,
         context_id: contextId,
+        frontend_origin: window.location.origin,
       });
       const { digilocker_url } = res.data;
 
