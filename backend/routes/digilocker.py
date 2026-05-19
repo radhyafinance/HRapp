@@ -109,6 +109,7 @@ async def initiate_digilocker(
         or raw.get("url")
         or raw.get("authUrl")
         or raw.get("result", {}).get("redirectUrl")
+        or raw.get("result", {}).get("link")
     )
 
     if not access_request_id or not digilocker_url:
