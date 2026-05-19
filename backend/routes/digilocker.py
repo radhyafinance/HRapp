@@ -246,6 +246,16 @@ async def _do_fetch_and_store(
             "failed": [],
         }
 
+    # Build URI → doctype lookup from the documents list so we can map
+    # even when the download response items carry no name/doctype
+    uri_to_meta = {
+        d.get("uri", d.get("docUri", "")): {
+            "name": d.get("name", ""),
+            "doctype": d.get("doctype", d.get("docType", "")),
+        }
+        for d in available
+    }
+
     # ── Step B: Download all available documents ─────────────────────────────
     download_payload = {
         "accessRequestId": access_request_id,
@@ -290,24 +300,43 @@ async def _do_fetch_and_store(
     actor = current_user.get("employee_id") or current_user.get("username")
 
     for item in dl_files:
-        uri = item.get("uri", "")
-        name = item.get("name", item.get("docType", ""))
-        b64_data = (
-            item.get("pdfB64")
-            or item.get("pdfContent")
-            or item.get("fileBase64")
-            or item.get("base64")
-            or item.get("data")
-            or item.get("content")
-            or item.get("pdf")
-        )
-        import logging; logging.info(f"[DigiLocker] item uri={uri} name={name} keys={list(item.keys())} has_b64={bool(b64_data)}")
+        # Download response uses "documentUri", documents list used "uri"
+        uri = item.get("documentUri") or item.get("uri", "")
+
+        # Cross-reference with documents list for name + doctype
+        meta = uri_to_meta.get(uri, {})
+        name = meta.get("name") or item.get("name", "")
+        doctype = meta.get("doctype") or item.get("doctype", item.get("docType", ""))
+
+        # PDF data lives at rawFiles.pdfB64.content
+        raw_files = item.get("rawFiles") or {}
+        pdf_b64_obj = raw_files.get("pdfB64")
+        b64_data = None
+        if isinstance(pdf_b64_obj, dict):
+            b64_data = pdf_b64_obj.get("content")
+        elif isinstance(pdf_b64_obj, str):
+            b64_data = pdf_b64_obj
+        # Fallbacks for other Perfios response shapes
+        if not b64_data:
+            b64_data = (
+                item.get("pdfContent")
+                or item.get("fileBase64")
+                or item.get("base64")
+                or item.get("data")
+                or item.get("content")
+                or item.get("pdfB64")
+            )
+
+        import logging; logging.info(f"[DigiLocker] item uri={uri} doctype={doctype} name={name} has_b64={bool(b64_data)}")
 
         if not b64_data:
-            failed.append({"uri": uri, "reason": "no data in response"})
+            failed.append({"uri": uri, "reason": "no PDF data in response (pdfB64 is null)"})
             continue
 
-        doc_key = _map_doc_type(uri, name)
+        # Use explicit doctype from Perfios first, then fall back to URI/name scanning
+        doc_key = _DL_TYPE_MAP.get(doctype.upper()) if doctype else None
+        if not doc_key:
+            doc_key = _map_doc_type(uri, name)
         if not doc_key:
             failed.append({"uri": uri, "name": name, "reason": "unrecognised document type"})
             continue
