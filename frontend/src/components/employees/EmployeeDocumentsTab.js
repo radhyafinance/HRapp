@@ -5,7 +5,7 @@ import { compressImage, fileToBase64String } from "../../utils/imageCompression"
 import { DigiLockerButton } from "../digilocker/DigiLockerButton";
 
 const DOC_GROUPS = [
-  { title: "KYC", items: [["aadhaar_front", "Aadhaar — Front"], ["aadhaar_back", "Aadhaar — Back"], ["pan_card", "PAN Card"], ["voter_id_front", "Voter ID — Front"], ["voter_id_back", "Voter ID — Back"], ["driving_license_front", "Driving License — Front"], ["driving_license_back", "Driving License — Back"], ["passport_photo", "Passport-size Photo"]] },
+  { title: "KYC", items: [["aadhaar_front", "Aadhaar — Front"], ["aadhaar_back", "Aadhaar — Back"], ["aadhaar_digilocker", "Aadhaar (DigiLocker Verified)"], ["pan_card", "PAN Card"], ["voter_id_front", "Voter ID — Front"], ["voter_id_back", "Voter ID — Back"], ["driving_license_front", "Driving License — Front"], ["driving_license_back", "Driving License — Back"], ["passport_photo", "Passport-size Photo"]] },
   { title: "Education", items: [["edu_10th", "10th Certificate"], ["edu_12th", "12th Certificate"], ["edu_graduation", "Graduation"], ["edu_post_graduation", "Post-Graduation"], ["edu_phd", "Ph.D"], ["edu_other", "Other Qualification"]] },
   { title: "Banking & Statutory", items: [["cancelled_cheque", "Cancelled Cheque / Passbook"], ["pf_proof", "PF Proof"], ["esic_proof", "ESIC Proof"]] },
   { title: "Other", items: [["bike_rc", "Bike RC"], ["bike_puc_insurance", "Bike PUC / Insurance"], ["police_verification", "Police Verification"], ["medical_form", "Medical Form"]] },

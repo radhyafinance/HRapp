@@ -25,7 +25,7 @@ PERFIOS_BASE = "https://hub.perfios.com/api/kyc/v3/digilocker"
 # URI examples: "in.gov.pan-PANCR-ABCDE1234F", "in.gov.uid-ADHAR-123456789012"
 _DL_TYPE_MAP = {
     "PANCR":  "pan_card",
-    "ADHAR":  "aadhaar_front",
+    "ADHAR":  "aadhaar_digilocker",   # store separately — leaves manually-uploaded aadhaar_front/back intact
     "DRVLC":  "driving_license_front",
     "VOTERC": "voter_id_front",
     "10CBSE": "edu_10th",
@@ -66,7 +66,7 @@ def _map_doc_type(uri: str, name: str) -> Optional[str]:
     if "PAN" in upper:
         return "pan_card"
     if "AADHAAR" in upper or "AADHAR" in upper or "ADHAR" in upper:
-        return "aadhaar_front"
+        return "aadhaar_digilocker"
     if "DRIVING" in upper or "DL" in upper:
         return "driving_license_front"
     if "VOTER" in upper:

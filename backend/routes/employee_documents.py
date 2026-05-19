@@ -16,7 +16,7 @@ router = APIRouter()
 # Allowed doc keys (joining kit checklist + KYC + joining kit PDF)
 ALLOWED_DOC_TYPES = {
     # KYC
-    "aadhaar_front", "aadhaar_back", "pan_card",
+    "aadhaar_front", "aadhaar_back", "aadhaar_digilocker", "pan_card",
     # Joining Kit checklist items
     "cancelled_cheque", "passport_photo",
     "voter_id_front", "voter_id_back",
@@ -35,6 +35,7 @@ ALLOWED_DOC_TYPES = {
 DOC_LABELS = {
     "aadhaar_front": "Aadhaar Card — Front",
     "aadhaar_back": "Aadhaar Card — Back",
+    "aadhaar_digilocker": "Aadhaar (DigiLocker Verified)",
     "pan_card": "PAN Card",
     "cancelled_cheque": "Cancelled Cheque / Passbook",
     "passport_photo": "Passport-size Photograph",
@@ -141,13 +142,15 @@ async def document_completeness_all(current_user: dict = Depends(get_current_use
     """Return a map of employee_id -> {uploaded, total, percent} for all employees."""
     if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
-    total = len(ALLOWED_DOC_TYPES)
+    # DigiLocker Aadhaar is an optional supplement to the manual Aadhaar upload, not a separate requirement
+    countable = ALLOWED_DOC_TYPES - {"aadhaar_digilocker"}
+    total = len(countable)
     out = {}
     async for d in db.employee_documents.find({}):
         emp_id = d.get("employee_id")
         if not emp_id:
             continue
-        uploaded = sum(1 for k in ALLOWED_DOC_TYPES if isinstance(d.get(k), dict))
+        uploaded = sum(1 for k in countable if isinstance(d.get(k), dict))
         out[emp_id] = {"uploaded": uploaded, "total": total, "percent": round(uploaded * 100 / total)}
     return {"total_doc_types": total, "completeness": out}
 
