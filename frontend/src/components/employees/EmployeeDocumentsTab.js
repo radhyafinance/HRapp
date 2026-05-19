@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Upload, Eye, Download, Trash2, CheckCircle2, AlertCircle, FileText, ShieldCheck } from "lucide-react";
+import { Upload, Eye, Download, Trash2, CheckCircle2, AlertCircle, FileText, ShieldCheck, User, Calendar, MapPin, X } from "lucide-react";
 import API from "../../utils/api";
 import { compressImage, fileToBase64String } from "../../utils/imageCompression";
 import { DigiLockerButton } from "../digilocker/DigiLockerButton";
@@ -17,6 +17,7 @@ export function EmployeeDocumentsTab({ employeeId, onDocsChanged }) {
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState(null);
   const [err, setErr] = useState("");
+  const [aadhaarModal, setAadhaarModal] = useState(null); // holds aadhaar_data object
 
   const refresh = async () => {
     setLoading(true);
@@ -119,6 +120,7 @@ export function EmployeeDocumentsTab({ employeeId, onDocsChanged }) {
   if (loading) return <p className="text-center text-slate-400 py-8">Loading...</p>;
 
   return (
+    <>
     <div className="space-y-5">
       {err && (
         <div className="bg-red-50 border border-red-200 text-red-700 text-sm p-3 rounded-lg flex gap-2">
@@ -184,6 +186,12 @@ export function EmployeeDocumentsTab({ employeeId, onDocsChanged }) {
                             <Eye size={11} /> View
                           </button>
                         )}
+                        {meta.mime === "application/json" && meta.aadhaar_data && (
+                          <button type="button" onClick={() => setAadhaarModal(meta.aadhaar_data)} data-testid={`view-aadhaar-${key}`}
+                            className="inline-flex items-center gap-1 px-2 py-1 text-[11px] bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
+                            <Eye size={11} /> View Details
+                          </button>
+                        )}
                         <button type="button" onClick={() => download(key, meta.file_name)} disabled={busy} data-testid={`download-doc-${key}`}
                           className="inline-flex items-center gap-1 px-2 py-1 text-[11px] bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
                           <Download size={11} /> Download
@@ -204,5 +212,103 @@ export function EmployeeDocumentsTab({ employeeId, onDocsChanged }) {
       ))}
       <p className="text-[11px] text-slate-500 italic">Image files are auto-compressed to under 1 MB before upload. PDFs must be under 5 MB.</p>
     </div>
+
+    {/* Aadhaar Details Modal */}
+    {aadhaarModal && (
+      <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setAadhaarModal(null)}>
+        <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-6" onClick={e => e.stopPropagation()}>
+          <div className="flex items-center justify-between mb-5">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 bg-[#1E2A47] rounded-xl flex items-center justify-center">
+                <ShieldCheck size={17} className="text-white" />
+              </div>
+              <div>
+                <p className="text-sm font-bold text-[#1E2A47]">Aadhaar Card</p>
+                <p className="flex items-center gap-1 text-[11px] text-blue-600 font-medium">
+                  <ShieldCheck size={10} /> DigiLocker Verified
+                </p>
+              </div>
+            </div>
+            <button onClick={() => setAadhaarModal(null)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+          </div>
+
+          <div className="space-y-3">
+            {/* UID */}
+            {aadhaarModal.uid && (
+              <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl">
+                <ShieldCheck size={16} className="text-blue-500 flex-shrink-0" />
+                <div>
+                  <p className="text-[10px] text-slate-400 uppercase tracking-wider">Aadhaar Number</p>
+                  <p className="text-sm font-bold text-[#1E2A47] tracking-widest font-mono">{aadhaarModal.uid}</p>
+                </div>
+              </div>
+            )}
+            {/* Name */}
+            {(aadhaarModal.name || aadhaarModal.fullName || aadhaarModal.nm) && (
+              <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl">
+                <User size={16} className="text-slate-500 flex-shrink-0" />
+                <div>
+                  <p className="text-[10px] text-slate-400 uppercase tracking-wider">Full Name</p>
+                  <p className="text-sm font-semibold text-[#1E2A47]">{aadhaarModal.name || aadhaarModal.fullName || aadhaarModal.nm}</p>
+                </div>
+              </div>
+            )}
+            {/* DOB + Gender */}
+            <div className="grid grid-cols-2 gap-2">
+              {(aadhaarModal.dob || aadhaarModal.dateOfBirth) && (
+                <div className="flex items-center gap-2 p-3 bg-slate-50 rounded-xl">
+                  <Calendar size={14} className="text-slate-500 flex-shrink-0" />
+                  <div>
+                    <p className="text-[10px] text-slate-400 uppercase tracking-wider">DOB</p>
+                    <p className="text-xs font-semibold text-[#1E2A47]">{aadhaarModal.dob || aadhaarModal.dateOfBirth}</p>
+                  </div>
+                </div>
+              )}
+              {(aadhaarModal.gender || aadhaarModal.sex) && (
+                <div className="flex items-center gap-2 p-3 bg-slate-50 rounded-xl">
+                  <User size={14} className="text-slate-500 flex-shrink-0" />
+                  <div>
+                    <p className="text-[10px] text-slate-400 uppercase tracking-wider">Gender</p>
+                    <p className="text-xs font-semibold text-[#1E2A47]">
+                      {(aadhaarModal.gender || aadhaarModal.sex) === "M" ? "Male" : (aadhaarModal.gender || aadhaarModal.sex) === "F" ? "Female" : aadhaarModal.gender || aadhaarModal.sex}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+            {/* Address */}
+            {(aadhaarModal.address || aadhaarModal.poa || aadhaarModal.co || aadhaarModal.house) && (
+              <div className="flex items-start gap-3 p-3 bg-slate-50 rounded-xl">
+                <MapPin size={16} className="text-slate-500 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-[10px] text-slate-400 uppercase tracking-wider mb-1">Address</p>
+                  {typeof (aadhaarModal.address || aadhaarModal.poa) === "string" ? (
+                    <p className="text-xs text-[#1E2A47]">{aadhaarModal.address || aadhaarModal.poa}</p>
+                  ) : (
+                    <p className="text-xs text-[#1E2A47]">
+                      {[aadhaarModal.co, aadhaarModal.house, aadhaarModal.street || aadhaarModal.lm,
+                        aadhaarModal.vtc || aadhaarModal.loc, aadhaarModal.subdist, aadhaarModal.dist,
+                        aadhaarModal.state, aadhaarModal.pc].filter(Boolean).join(", ")}
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+            {/* Show all remaining fields as key-value if standard fields not found */}
+            {!aadhaarModal.uid && !aadhaarModal.name && (
+              <div className="space-y-1.5">
+                {Object.entries(aadhaarModal).filter(([k]) => k !== "photo").map(([k, v]) => (
+                  <div key={k} className="flex justify-between text-xs p-2 bg-slate-50 rounded-lg">
+                    <span className="text-slate-500 capitalize">{k}</span>
+                    <span className="text-[#1E2A47] font-medium max-w-[60%] text-right">{typeof v === "object" ? JSON.stringify(v) : String(v)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }

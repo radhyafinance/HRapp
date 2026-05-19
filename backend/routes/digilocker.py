@@ -323,7 +323,17 @@ async def _do_fetch_and_store(
             parsed_file = item.get("parsedFile")
             if parsed_file:
                 import json as _json
-                b64_data = _json.dumps(parsed_file) if isinstance(parsed_file, dict) else str(parsed_file)
+                # Strip the photo (large JPEG) before storing; keep identity fields only
+                pf = parsed_file if isinstance(parsed_file, dict) else {}
+                issued_to = (pf.get("data") or {}).get("issuedTo", {})
+                issued_to_clean = {k: v for k, v in issued_to.items() if k != "photo"}
+                compact = {
+                    "xmlSignatureVerified": pf.get("xmlSignatureVerified"),
+                    "status": pf.get("status"),
+                    "verified_at": (pf.get("data") or {}).get("additionalData", {}).get("ts"),
+                    "issuedTo": issued_to_clean,
+                }
+                b64_data = _json.dumps(compact)
                 mime = "application/json"
 
         # Last-resort fallbacks
@@ -351,6 +361,7 @@ async def _do_fetch_and_store(
             failed.append({"uri": uri, "name": name, "reason": "unrecognised document type"})
             continue
 
+        import json as _json
         asset = {
             "data": b64_data,
             "mime": mime,
@@ -362,6 +373,13 @@ async def _do_fetch_and_store(
             "digilocker_verified": True,
             "digilocker_uri": uri,
         }
+        # For JSON docs (Aadhaar), also store flattened fields for easy UI rendering
+        if mime == "application/json":
+            try:
+                parsed = _json.loads(b64_data)
+                asset["aadhaar_data"] = parsed.get("issuedTo") or parsed
+            except Exception:
+                pass
 
         collection = db.employee_documents if context_type == "employee" else db.candidate_documents
         pk_field = "employee_id" if context_type == "employee" else "candidate_id"
