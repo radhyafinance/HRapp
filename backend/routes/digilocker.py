@@ -158,7 +158,7 @@ async def fetch_and_store(
 
     session = await db.digilocker_sessions.find_one({"session_id": session_id})
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        raise HTTPException(status_code=404, detail="Session not found. It may have expired — please try again.")
 
     if session.get("status") == "completed":
         stored = session.get("stored_docs", [])
@@ -169,6 +169,29 @@ async def fetch_and_store(
     context_type = session["context_type"]
     context_id = session["context_id"]
     case_id = f"{context_type[:3]}_{context_id}"
+
+    try:
+        return await _do_fetch_and_store(
+            session_id, api_key, access_request_id,
+            context_type, context_id, case_id, current_user,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        import traceback, logging
+        logging.error(f"[DigiLocker] fetch-and-store unexpected error: {exc}\n{traceback.format_exc()}")
+        await db.digilocker_sessions.update_one(
+            {"session_id": session_id},
+            {"$set": {"status": "error", "error": str(exc)}},
+        )
+        raise HTTPException(status_code=500, detail=f"Internal error during document processing: {exc}")
+
+
+async def _do_fetch_and_store(
+    session_id, api_key, access_request_id,
+    context_type, context_id, case_id, current_user,
+):
+    """Inner implementation — separated so the outer handler can catch ALL exceptions."""
 
     # ── Step A: Fetch document list ──────────────────────────────────────────
     docs_payload = {
