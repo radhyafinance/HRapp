@@ -4,8 +4,11 @@ Reporting-tree hierarchy helpers.
 A "manager" can see the full sub-tree of employees who report to them
 — directly OR indirectly (e.g. their reports' reports, etc.).
 
-These helpers walk `employees.reporting_to` breadth-first and return the
+These helpers walk the reporting field breadth-first and return the
 full set of employee IDs in the sub-tree rooted at a given manager.
+
+NOTE: The DB may use either "reporting_to" or "reports_to" depending on
+how employees were onboarded.  Both fields are queried to stay robust.
 """
 from database import db
 
@@ -14,8 +17,8 @@ async def get_descendant_employee_ids(root_employee_id: str, max_depth: int = 10
     """Return the full sub-tree of employees reporting (transitively) to
     `root_employee_id`. The root itself is NOT included.
 
-    `max_depth` is a safety cap to prevent infinite loops on bad data
-    (e.g. circular reporting). 10 is plenty for a 40-person org.
+    Queries BOTH `reporting_to` and `reports_to` so the function works
+    regardless of which field name was used during data entry.
     """
     if not root_employee_id:
         return set()
@@ -26,8 +29,14 @@ async def get_descendant_employee_ids(root_employee_id: str, max_depth: int = 10
     for _ in range(max_depth):
         if not frontier:
             break
+        frontier_list = list(frontier)
         rows = await db.employees.find(
-            {"reporting_to": {"$in": list(frontier)}},
+            {
+                "$or": [
+                    {"reporting_to": {"$in": frontier_list}},
+                    {"reports_to":   {"$in": frontier_list}},
+                ]
+            },
             {"_id": 0, "employee_id": 1},
         ).to_list(2000)
         next_frontier: set[str] = set()
