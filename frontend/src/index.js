@@ -34,10 +34,14 @@ if ("serviceWorker" in navigator) {
       })
       .catch((err) => console.warn("SW registration failed:", err));
 
-    // When the SW takes control (after SKIP_WAITING), reload the page
+    // Track whether a controller existed BEFORE any change.
+    // We only want to reload when the SW is UPDATING (old → new),
+    // NOT on first install (null → first SW), which would cause a blank-page reload.
+    const hadControllerOnLoad = Boolean(navigator.serviceWorker.controller);
     let refreshing = false;
+
     navigator.serviceWorker.addEventListener("controllerchange", () => {
-      if (!refreshing) {
+      if (hadControllerOnLoad && !refreshing) {
         refreshing = true;
         window.location.reload();
       }

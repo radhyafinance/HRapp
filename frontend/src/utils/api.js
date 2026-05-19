@@ -16,7 +16,13 @@ API.interceptors.request.use((config) => {
 API.interceptors.response.use(
   (res) => res,
   (err) => {
-    if (err.response?.status === 401) {
+    // Only force-logout on 401 if it's NOT the login endpoint itself.
+    // A failed login returns 401 too — we must let the login page handle that
+    // via its own catch block instead of triggering a hard page reload.
+    const isAuthEndpoint =
+      err.config?.url?.includes("/auth/login") ||
+      err.config?.url?.includes("/auth/otp");
+    if (err.response?.status === 401 && !isAuthEndpoint) {
       localStorage.removeItem("auth_token");
       localStorage.removeItem("auth_user");
       window.location.href = "/login";
