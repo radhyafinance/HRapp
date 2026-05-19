@@ -80,7 +80,7 @@ async def initiate_digilocker(
     payload = {
         "redirectUrl": redirect_url,
         "oAuthState": session_id,
-        "aadhaarFlowRequired": False,
+        "aadhaarFlowRequired": True,
         "pinlessAuth": True,
         "customDocList": "",   # empty = all available documents
         "consent": "Y",
