@@ -159,6 +159,7 @@ export function EmployeeDocumentsTab({ employeeId, onDocsChanged }) {
                   {meta.uploaded && (
                     <p className="text-[10px] text-slate-500 mb-2 truncate" title={meta.file_name}>
                       {meta.file_name || "—"} • {meta.size ? `${Math.round(meta.size / 1024)} KB` : ""}
+                      {meta.mime === "application/json" && <span className="ml-1 text-blue-600 font-medium">(eAadhaar data)</span>}
                     </p>
                   )}
                   <div className="flex gap-1.5 flex-wrap">
@@ -177,10 +178,12 @@ export function EmployeeDocumentsTab({ employeeId, onDocsChanged }) {
                     )}
                     {meta.uploaded && (
                       <>
-                        <button type="button" onClick={() => view(key)} disabled={busy} data-testid={`view-doc-${key}`}
-                          className="inline-flex items-center gap-1 px-2 py-1 text-[11px] bg-[#1E2A47]/10 text-[#1E2A47] rounded hover:bg-[#1E2A47]/20">
-                          <Eye size={11} /> View
-                        </button>
+                        {meta.mime !== "application/json" && (
+                          <button type="button" onClick={() => view(key)} disabled={busy} data-testid={`view-doc-${key}`}
+                            className="inline-flex items-center gap-1 px-2 py-1 text-[11px] bg-[#1E2A47]/10 text-[#1E2A47] rounded hover:bg-[#1E2A47]/20">
+                            <Eye size={11} /> View
+                          </button>
+                        )}
                         <button type="button" onClick={() => download(key, meta.file_name)} disabled={busy} data-testid={`download-doc-${key}`}
                           className="inline-flex items-center gap-1 px-2 py-1 text-[11px] bg-blue-100 text-blue-700 rounded hover:bg-blue-200">
                           <Download size={11} /> Download

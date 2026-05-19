@@ -263,7 +263,7 @@ async def _do_fetch_and_store(
             {
                 "uri": (d.get("uri") or d.get("docUri") or ""),
                 "pdfB64": True,
-                "parsed": False,
+                "parsed": True,   # request parsed JSON data too (needed for Aadhaar)
             }
             for d in available
             if d.get("uri") or d.get("docUri")
@@ -312,11 +312,21 @@ async def _do_fetch_and_store(
         raw_files = item.get("rawFiles") or {}
         pdf_b64_obj = raw_files.get("pdfB64")
         b64_data = None
+        mime = "application/pdf"
         if isinstance(pdf_b64_obj, dict):
             b64_data = pdf_b64_obj.get("content")
         elif isinstance(pdf_b64_obj, str):
             b64_data = pdf_b64_obj
-        # Fallbacks for other Perfios response shapes
+
+        # Fallback: parsedFile (structured JSON — Aadhaar often has no PDF but has parsed data)
+        if not b64_data:
+            parsed_file = item.get("parsedFile")
+            if parsed_file:
+                import json as _json
+                b64_data = _json.dumps(parsed_file) if isinstance(parsed_file, dict) else str(parsed_file)
+                mime = "application/json"
+
+        # Last-resort fallbacks
         if not b64_data:
             b64_data = (
                 item.get("pdfContent")
@@ -327,7 +337,7 @@ async def _do_fetch_and_store(
                 or item.get("pdfB64")
             )
 
-        import logging; logging.info(f"[DigiLocker] item uri={uri} doctype={doctype} name={name} has_b64={bool(b64_data)}")
+        import logging; logging.info(f"[DigiLocker] item uri={uri} doctype={doctype} name={name} mime={mime} has_b64={bool(b64_data)}")
 
         if not b64_data:
             failed.append({"uri": uri, "reason": "no PDF data in response (pdfB64 is null)"})
@@ -343,8 +353,8 @@ async def _do_fetch_and_store(
 
         asset = {
             "data": b64_data,
-            "mime": "application/pdf",
-            "file_name": f"{doc_key}_digilocker.pdf",
+            "mime": mime,
+            "file_name": f"{doc_key}_digilocker.{'pdf' if mime == 'application/pdf' else 'json'}",
             "size": len(b64_data),
             "uploaded_at": now,
             "uploaded_by": actor,
