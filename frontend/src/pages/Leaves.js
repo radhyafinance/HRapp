@@ -130,14 +130,15 @@ export default function Leaves() {
       setLeaves(leavesRes.data);
       setBalance(balRes.data);
       if (isManager) {
-        const [pendRes, allBalRes] = await Promise.all([
-          API.get("/leaves/pending"),
+        const pendRes = await API.get("/leaves/pending");
+        setPending(pendRes.data);
+      }
+      // Only hr_admin / management can see all leave balances
+      if (isAdminOrMgmt) {
+        const [allBalRes] = await Promise.all([
           API.get("/leaves/balances/all"),
         ]);
-        setPending(pendRes.data);
         setAllBalances(allBalRes.data);
-      }
-      if (isAdminOrMgmt) {
         try {
           const apRes = await API.get("/leaves/approved");
           setApprovedLeaves(apRes.data);
@@ -415,7 +416,7 @@ export default function Leaves() {
         <div className="flex gap-2 mb-4 border-b border-slate-200 flex-wrap">
           {(isAdminOrMgmt
             ? [["pending", `Pending Approvals (${pending.length})`], ["approved", `All Approved Leaves (${approvedLeaves.length})`], ["all", "All Employees"]]
-            : [["my", "My Leaves"], ["pending", `Pending Approvals (${pending.length})`], ["all", "All Employees"]]
+            : [["my", "My Leaves"], ["pending", `Pending Approvals (${pending.length})`], ["team", "Team Leaves"]]
           ).map(([val, label]) => (
             <button key={val} onClick={() => setActiveTab(val)} data-testid={`tab-${val}`}
               className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${activeTab === val ? "border-[#E85B1E] text-[#E85B1E]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
@@ -582,8 +583,48 @@ export default function Leaves() {
         </div>
       )}
 
+      {/* Team Leaves tab — managers only: shows all team leave history (no balances) */}
+      {activeTab === "team" && (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+          <div className="px-4 py-3 border-b border-slate-100">
+            <p className="text-sm font-semibold text-[#1E2A47]">Team Leave History</p>
+            <p className="text-xs text-slate-400">{leaves.filter(l => l.employee_id !== user?.employee_id).length} leave records across your team</p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead><tr className="bg-slate-50 border-b">
+                {["Employee", "Type", "From", "To", "Days", "Status", "Applied"].map(h => (
+                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
+                ))}
+              </tr></thead>
+              <tbody>
+                {loading
+                  ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                  : leaves.filter(l => l.employee_id !== user?.employee_id).length === 0
+                    ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No team leave records found.</td></tr>
+                    : leaves.filter(l => l.employee_id !== user?.employee_id).map(l => (
+                      <tr key={l.id} className="border-b border-slate-100 hover:bg-slate-50">
+                        <td className="px-4 py-3">
+                          <p className="text-sm font-semibold text-[#0F172A]">{l.employee_name || l.employee_id}</p>
+                          <p className="text-xs font-mono text-[#E85B1E]">{l.employee_id}</p>
+                        </td>
+                        <td className="px-4 py-3"><span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">{l.leave_type}</span></td>
+                        <td className="px-4 py-3 text-sm text-slate-600">{l.start_date || l.from_date}</td>
+                        <td className="px-4 py-3 text-sm text-slate-600">{l.end_date || l.to_date}</td>
+                        <td className="px-4 py-3 text-sm font-medium">{l.days}d</td>
+                        <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[l.status]}`}>{l.status}</span></td>
+                        <td className="px-4 py-3 text-xs text-slate-400">{l.applied_at ? new Date(l.applied_at).toLocaleDateString("en-IN") : "—"}</td>
+                      </tr>
+                    ))
+                }
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Leaves Table (My + Pending + Approved tabs) */}
-      {activeTab !== "all" && (
+      {activeTab !== "all" && activeTab !== "team" && (
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="leaves-table">

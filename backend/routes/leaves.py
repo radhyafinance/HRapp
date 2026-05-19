@@ -389,10 +389,33 @@ async def list_leaves(
     current_user: dict = Depends(get_current_user),
 ):
     query = {}
-    if current_user.get("role") in ["employee", "field_agent"]:
-        query["employee_id"] = current_user.get("employee_id")
+    role = current_user.get("role")
+    me_id = current_user.get("employee_id")
+
+    if role in ["employee", "field_agent"]:
+        # Employees can only see their own leaves
+        query["employee_id"] = me_id
+    elif role == "managers":
+        if employee_id:
+            # Viewing a specific employee — validate they are in the sub-tree
+            from services.hierarchy import get_descendant_employee_ids
+            allowed = await get_descendant_employee_ids(me_id) if me_id else set()
+            if me_id:
+                allowed.add(me_id)
+            if employee_id not in allowed:
+                raise HTTPException(status_code=403, detail="Access denied")
+            query["employee_id"] = employee_id
+        else:
+            # Default: scope to entire sub-tree + self
+            from services.hierarchy import get_descendant_employee_ids
+            scope_ids = list(await get_descendant_employee_ids(me_id)) if me_id else []
+            if me_id:
+                scope_ids.append(me_id)
+            query["employee_id"] = {"$in": scope_ids} if scope_ids else "__none__"
     elif employee_id:
+        # hr_admin / management filtering by specific employee
         query["employee_id"] = employee_id
+
     if status:
         query["status"] = status
     leaves = await db.leave_applications.find(query).sort("applied_at", -1).to_list(1000)
@@ -472,8 +495,8 @@ async def approved_leaves(current_user: dict = Depends(get_current_user)):
 
 @router.get("/balances/all")
 async def all_leave_balances(current_user: dict = Depends(get_current_user)):
-    """Return leave balances for all employees — HR Admin, Management, Managers only."""
-    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
+    """Return leave balances for all employees — HR Admin and Management only."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
     fy = get_financial_year()
     # Fetch all employees (name + id)
@@ -541,6 +564,12 @@ async def my_leave_balance(current_user: dict = Depends(get_current_user)):
 
 @router.get("/balance/{employee_id}")
 async def get_leave_balance(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Get leave balance for a specific employee.
+    Only the employee themselves, hr_admin, or management may view."""
+    role = current_user.get("role")
+    me_id = current_user.get("employee_id")
+    if role not in ["hr_admin", "management"] and me_id != employee_id:
+        raise HTTPException(status_code=403, detail="Access denied")
     balance = await db.leave_balances.find_one(
         {"employee_id": employee_id, "year": get_financial_year()}
     )
