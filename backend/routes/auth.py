@@ -196,9 +196,6 @@ async def verify_otp(data: OtpVerifyPayload):
     }
 
 
-@router.get("/me")
-
-
 @router.post("/login")
 async def login(data: LoginRequest):
     username = data.username.strip()
@@ -215,10 +212,14 @@ async def login(data: LoginRequest):
         emp = await db.employees.find_one({"employee_id": user["employee_id"]}, {"status": 1})
         if emp and emp.get("status") == "exited":
             raise HTTPException(status_code=403, detail="Account disabled — employee has exited the organization.")
+    # Effective role: auto-promote to "managers" if this user has direct reports,
+    # regardless of the stored role. Keeps the UI / authz correct when DB role drifted.
+    from services.hierarchy import compute_effective_role
+    effective_role = await compute_effective_role(user["role"], user.get("employee_id"))
     token = create_token(
         str(user["_id"]),
         user["username"],
-        user["role"],
+        effective_role,
         user.get("employee_id"),
         user.get("name", ""),
     )
@@ -229,7 +230,7 @@ async def login(data: LoginRequest):
             "id": str(user["_id"]),
             "username": user["username"],
             "name": user.get("name", ""),
-            "role": user["role"],
+            "role": effective_role,
             "employee_id": user.get("employee_id"),
         },
     }
@@ -240,11 +241,13 @@ async def get_me(current_user: dict = Depends(get_current_user)):
     user = await db.users.find_one({"_id": ObjectId(current_user["sub"])})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    from services.hierarchy import compute_effective_role
+    effective_role = await compute_effective_role(user["role"], user.get("employee_id"))
     return {
         "id": str(user["_id"]),
         "username": user.get("username"),
         "name": user.get("name", ""),
-        "role": user["role"],
+        "role": effective_role,
         "employee_id": user.get("employee_id"),
     }
 

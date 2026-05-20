@@ -30,6 +30,14 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 10. **Gratuity** - Eligibility check (5yr), calculation, monthly provision
 11. **Settings** - 5 office locations (Moradabad HO, Chandpur, Najibabad, Budaun, Chandausi)
 
+
+### ✅ Phase 3 Patch (Feb 2026) — Production Hierarchy Drift Fix
+- **Auto-upgrade role to "managers"** when an employee has direct reports — protects against DB drift where someone's stored role got demoted to `employee` in production but they functionally manage a team (e.g. RMF0010 in prod).
+  - New helpers in `/app/backend/services/hierarchy.py`: `has_direct_reports(employee_id)` and `compute_effective_role(role, employee_id)`.
+  - Applied in `/api/auth/login` and `/api/auth/me` so the frontend (`auth_user` localStorage / sidebar / tabs) receives the upgraded role.
+  - Applied in `get_current_user` dependency so existing JWT-authenticated sessions also get the upgrade without re-login.
+- **Removed stray `@router.get("/me")` decorator** that was leaking onto the `login()` function, causing `GET /api/auth/me` to hit the POST login handler (the Pydantic "body required" error users saw when probing the endpoint).
+
 ### ✅ Phase 3 Patch (Feb 2026)
 - **DigiLocker Aadhaar Save Bug — FIXED**: Defined missing `_map_doc_type` function in `/app/backend/routes/digilocker.py` (the function body was orphaned dead code after a `return []` inside `_extract_perfios_list`, causing a latent `NameError` for any DigiLocker doctype not explicitly listed in `_DL_TYPE_MAP`). Verified Aadhaar `parsedFile` → JSON payload (photo stripped) saves correctly to `employee_documents.aadhaar_front` via end-to-end simulation. Cleaned debug test artifacts (`test_field`, `aadhaar_test`) left on RMF0003.
 

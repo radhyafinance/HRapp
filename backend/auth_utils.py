@@ -36,11 +36,20 @@ def create_token(user_id: str, username: str, role: str, employee_id: str = None
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     try:
         payload = jwt.decode(credentials.credentials, get_jwt_secret(), algorithms=[JWT_ALGORITHM])
-        return payload
     except jwt.ExpiredSignatureError:
         raise HTTPException(status_code=401, detail="Token expired")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+    # Auto-upgrade role to "managers" if this user actually has direct reports.
+    # Protects against DB drift where a manager's stored role is "employee".
+    # Only run the lookup for non-privileged roles to keep hot-path cost low.
+    role = payload.get("role")
+    if role in (None, "employee", "field_agent"):
+        from services.hierarchy import has_direct_reports
+        if await has_direct_reports(payload.get("employee_id")):
+            payload["role"] = "managers"
+    return payload
 
 
 def require_roles(*roles):

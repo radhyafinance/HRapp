@@ -50,6 +50,34 @@ async def get_descendant_employee_ids(root_employee_id: str, max_depth: int = 10
     return descendants
 
 
+async def has_direct_reports(employee_id: str) -> bool:
+    """True if at least one employee reports to `employee_id` (either field name)."""
+    if not employee_id:
+        return False
+    found = await db.employees.find_one(
+        {"$or": [
+            {"reporting_to": employee_id},
+            {"reports_to":   employee_id},
+        ]},
+        {"_id": 1},
+    )
+    return found is not None
+
+
+async def compute_effective_role(role: str, employee_id: str) -> str:
+    """Return the role to use for authorization decisions.
+
+    Auto-upgrades non-managerial roles (employee / field_agent) to "managers"
+    when the user actually has direct reports — protects against DB drift
+    where someone's role was mis-set but they're functionally a manager.
+    """
+    if role in ("hr_admin", "management", "managers"):
+        return role
+    if await has_direct_reports(employee_id):
+        return "managers"
+    return role or "employee"
+
+
 async def get_visible_employee_ids(role: str, employee_id: str) -> set | None:
     """Convenience wrapper used by routes for hierarchical scoping.
 
