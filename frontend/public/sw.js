@@ -1,4 +1,4 @@
-const CACHE_NAME = "radhya-hr-v10";
+const CACHE_NAME = "radhya-hr-v11";
 const STATIC_ASSETS = [
   "/manifest.json",
   "/logo192.png",
@@ -38,7 +38,8 @@ self.addEventListener("message", (event) => {
 
 // Fetch strategy:
 //  - /api/*           → network only (no cache)
-//  - JS/CSS/HTML      → network first, fallback to cache (so updates always reach users)
+//  - Navigation/HTML  → network first, fallback to cache root (so refresh on any SPA route stays fresh)
+//  - JS/CSS           → network first, fallback to cache (so updates always reach users)
 //  - Images/icons etc → cache first (long-lived assets)
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
@@ -46,6 +47,25 @@ self.addEventListener("fetch", (event) => {
   // API: never cache
   if (url.pathname.startsWith("/api")) {
     event.respondWith(fetch(event.request));
+    return;
+  }
+
+  // SPA navigation (refresh on any client-side route like /attendance, /leaves)
+  // Always go network-first; fall back to the cached app shell on offline.
+  // Without this, refresh on a deep route could serve a stale HTML referencing
+  // JS chunk hashes that no longer exist after a redeploy → blank page.
+  if (event.request.mode === "navigate") {
+    event.respondWith(
+      fetch(event.request)
+        .then((response) => {
+          if (response && response.status === 200 && event.request.method === "GET") {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put("/", clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match("/").then((c) => c || caches.match(event.request)))
+    );
     return;
   }
 

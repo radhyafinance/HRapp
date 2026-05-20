@@ -16,6 +16,10 @@ if ("serviceWorker" in navigator) {
     navigator.serviceWorker
       .register("/sw.js")
       .then((reg) => {
+        // Force an update check on every page load. The browser only checks
+        // /sw.js automatically every ~24h, which can leave users stuck on a
+        // broken SW for a day after a deploy. This makes the check immediate.
+        try { reg.update(); } catch (_) { /* noop */ }
         // A new SW is already waiting (page was loaded after a deploy)
         if (reg.waiting) {
           window.dispatchEvent(new CustomEvent("swUpdateReady", { detail: reg }));
