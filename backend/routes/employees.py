@@ -87,10 +87,10 @@ def emp_to_dict(emp):
 
 
 def _strip_salary_unless_authorised(emp_dict: dict, current_user: dict) -> dict:
-    """Salary / CTC visibility rules:
+    """Sensitive field visibility rules:
        - hr_admin and management: see everything (full access).
-       - the employee themselves: see their own salary (needed for self-portal & payslips).
-       - everyone else (managers, peers, field_agent): salary is stripped.
+       - the employee themselves: see their own data (self-portal & payslips).
+       - everyone else (managers, peers, field_agent): salary AND bank details stripped.
     Applied to /employees list & detail responses. Payslip / payroll endpoints have their own
     independent ACL.
     """
@@ -102,6 +102,7 @@ def _strip_salary_unless_authorised(emp_dict: dict, current_user: dict) -> dict:
     emp_dict.pop("salary", None)
     emp_dict.pop("ctc_monthly", None)
     emp_dict.pop("ctc_annual", None)
+    emp_dict.pop("bank_details", None)
     return emp_dict
 
 

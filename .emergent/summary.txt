@@ -2,50 +2,50 @@
 
 **User's preferred language**: English (INSTRUCT NEXT AGENT: You MUST respond in English only)
 
-**what currently exists?**: A robust PWA HR application with multi-tier role-based access control (Admin, Management, Managers, Employees/Field Agents). Features include geofenced/selfie attendance, leave management, complex payroll logic, Perfios-powered bank verification, transitive (multi-level) manager hierarchy visibility, and strict Data Privacy/ACLs stripping salary/CTC information from peers and managers.
+**what currently exists?**: A robust PWA HR application with multi-tier role-based access control. Features include geofenced/selfie attendance, leave management, complex payroll logic, transitive manager hierarchy visibility, and DigiLocker document verification via Perfios API for authenticating candidate/employee documents. 
 
 **Last working item**:
-    - **Last item agent was working**: Implementing universal Salary ACL on the  detail endpoint. Ensuring that no user can see another peer's or subordinate's salary via direct API call, unless they are , , or the employee themselves.
-    - **Status**: RESOLVED
+    - **Last item agent was working**: Fixing a PWA blank screen on refresh bug occurring in the production deployment. The agent modified the Service Worker () to handle SPA navigation requests () as network-first rather than cache-first. Also forced  on page load in  to bust stale caches.
+    - **Status**: USER VERIFICATION PENDING
     - **Agent Testing Done**: Y
-    - **Which testing method agent to use?**: NA (Testing is already done)
-    - **User Testing Done**: Y
+    - **Which testing method agent to use?**: NA (Testing on preview complete; awaiting user deploy and test on production)
+    - **User Testing Done**: N
 
 **All Pending/In progress Issue list**: 
-  - Issue 1: 15-Minute Ping System Configuration
+  - Issue 1: 15-Minute Ping System Configuration (P2)
      - Attempted fixes: None.
      - Next debug checklist: Prompt user for clarification regarding what 15 minutes exactly means (health monitor vs battery saver feature vs active location pinging).
-     - Why fix this issue and what will be achieved with the fix?: Enhances tracking reliability for field staff.
+     - Why fix this issue and what will be achieved with the fix?: Clarifies and implements background tracking requirements.
      - Status: BLOCKED (Awaiting User Clarification)
      - Is recurring issue?: N
      - Should Test frontend/backend/both after fix?: Both
-     - Blocked on other issue: Missing User Clarification.
-  - Issue 2: JWT Session Timeout Adjustment
+     - Blocked on other issue: None
+
+  - Issue 2: JWT Session Timeout Adjustment (P2)
      - Attempted fixes: None.
      - Next debug checklist: Check if user wants to keep the 24-hour limit, extend it, or move to a sliding window session strategy.
-     - Why fix this issue and what will be achieved with the fix?: Improves field staff UX.
+     - Why fix this issue and what will be achieved with the fix?: Better UX for field agents to avoid frequent logouts.
      - Status: USER VERIFICATION PENDING
      - Is recurring issue?: N
-     - Should Test frontend/backend/both after fix?: Backend (curl)
-     - Blocked on other issue: None.
+     - Should Test frontend/backend/both after fix?: Backend
+     - Blocked on other issue: None
 
 **In progress Task List**: None
 
-**Upcoming and Future Tasks**:
+**Upcoming and Future Tasks**
     - Task 1: Letter Generation PDFs (P0) - Implement actual PDF generation and download for Offer Letters, Appointment Letters, Warning Letters, and Confirmation Letters (with company letterhead).
-    - Task 2: Identity Document Verification (P1) - Level 2 API checks via Karza/Perfios API for PAN, Aadhaar, Voter ID.
-    - Task 3: Punch In with Face Feature (P2) - Combine WebAuthn biometric login + immediate attendance punch-in into a single 1-tap flow for field staff.
-    - Task 4: Leave Encashment Calculation (P2) - Logic to compute and disburse EL/PL encashment during payroll or exit.
-    - Task 5: Employee Self-Portal for Document Upload (P2) - Allow existing employees to login and upload their own documents.
-    - Task 6: Training records module (P2)
-    - Task 7: Asset management integration (P2)
-    - Task 8: Document Completeness Scope Refinement (P3) - Scope  to manager's sub-tree instead of whole company (proposed by previous agent).
+    - Task 2: Punch In with Face Feature (P1) - Combine WebAuthn biometric login + immediate attendance punch-in into a single 1-tap flow for field staff.
+    - Task 3: Leave Encashment Calculation (P2) - Logic to compute and disburse EL/PL encashment during payroll or exit.
+    - Task 4: Employee Self-Portal for Document Upload (P2) - Allow existing employees to login and upload their own documents.
+    - Task 5: Training records module (P2)
+    - Task 6: Asset management integration (P2)
+    - Task 7: Document Completeness Scope Refinement (P3) - Scope  to manager's sub-tree instead of whole company.
 
 **Completed work in this session**
-- Manager Self-Regularisation Bug Fix (DONE):  now allows managers to view their personal request regularisation button alongside team attendance.
-- Manager Role UI Restrictions (DONE): Removed Bulk Upload, Template, and Add Employee options for managers in . Stripped UI components exposing Salary/CTC data.
-- Transitive Sub-tree Visibility for Managers (DONE): Added  in  so managers see both direct and indirect reports (reports-of-reports) across the application.
-- Universal Salary Data Privacy ACL (DONE): Upgraded  to use , blocking managers and peers from seeing any salary/payroll data across list and detail endpoints. Only self, , and  have access.
+- Fixed Aadhaar JSON Data saving to MongoDB (DONE): Repaired  definition in .
+- Separated Aadhaar Storage (DONE): Mapped DigiLocker Aadhaar to a new  DB field, preserving  and  for manual image uploads. Added third row to KYC UI.
+- Fixed Production Manager Visibility (DONE): Added  logic in , , and  to automatically upgrade users to  if they have direct reports, fixing visibility issues caused by production DB drift (e.g., RMF0010 having 'employee' role in DB).
+- Fixed PWA Blank Page on Refresh (DONE): Corrected Service Worker SPA navigation caching to use network-first.
 
 **Earlier issues found/mentioned but not fixed**
    - Issue 1:  self-regularisation UI.
@@ -63,64 +63,67 @@
 
 
 **Key Technical Concepts**
-Frontend: React, Tailwind, Lucide-React.
-Backend: FastAPI, MongoDB.
-Architecture: Strict Role-Based Access Control (RBAC), deeply nested hierarchical visibility logic (Transitive dependency resolution for managers).
+Frontend: React, Tailwind, PWA Service Workers (Workbox patterns).
+Backend: FastAPI, MongoDB, JWT Authentication.
+External Integration: Perfios DigiLocker OAuth flow. 
 
 **key DB schema**
-  - : 
-  - : 
-  - : Tracks status of punch regularisation requests.
+  - :  ( stores verified JSON identity data, others store manual uploads).
+  -  & :  field (dynamically overridden at runtime if the user has direct reports).
 
 **changes in tech stack**
   - None
 
 **All files of reference**
-  -  (Updated personal vs team UI visibility for managers)
-  -  (Added UI RBAC for managers)
-  -  (New helper  for finding indirect reports)
-  -  (Updated ACLs to use )
-  -  (Updated changelog)
+  -  (Fixed missing map logic).
+  -  (Added  type).
+  -  (UI support for distinct DigiLocker row).
+  -  &  (Added dynamic role computation).
+  -  &  (PWA caching logic fixes).
 
 **Areas that need refactoring**: 
--  and  (Both >700 lines. Need shared textual data extraction logic to avoid DRY violations).
+-  has nested  blocks added during Perfios schema debugging. It works robustly now but could benefit from structural cleanup.
 
 **key api endpoints**
-  -  &  (Universal ACL restricts salary unless caller is self/admin)
+  - 
+  - 
   - 
   - 
 
 **Critical Info for New Agent**
-  - **DEPLOYMENT AWARENESS**: User has a production environment. You are strictly in PREVIEW. Data/Passwords modified via DB only apply to Preview. Wait for the user to Save to Github to deploy to Prod.
-  - **Transitive Visibility**: Managers need to see their  reports. Always use  to scope endpoints for managers, not just DB .
-  - **Salary Access Strictness**: NEVER expose , , , etc. to a user checking another user's profile unless they are  or . Use the helper  in .
-  - **MONGO DATETIME QUIRK**: MongoDB strips . Strip tzinfo from  or attach it to the mongo document before comparing.
+  - **ENVIRONMENT AWARENESS**: The user has an active Production Deployment. You are working in Preview. Do NOT use deployment URLs in the code. Whenever the user complains about production or deployment issues, remind them they must use the Save to Github feature to push your preview fixes to their live environment.
+  - **Dynamic Role Computation**: To prevent DB drift between staging/production (e.g. user RMF0010 stored as ),  automatically overrides and returns  if they have valid direct reports in the  tree.
+  - **Aadhaar Dual-Storage**: DigiLocker verified data goes strictly into .  are strictly for manually uploaded files.
 
 **documents and test reports created in this job**
-  - 
+  - /app/memory/PRD.md (Updated with Aadhaar and Role override changes)
 
 **Last 10 User Messages and any pending HUMAN messages** 
- 1. *User*: RMF0017 unable to request regularisation of attendance.
- 2. *User*: Production; Maybe both. Button is missing/disabled. Yes, she has open records. (COMPLETED)
- 3. *User*: Employees page: managers should not be able to Bulk Upload, download or upload templates, Add Employee, or view employees salaries or CTC. (COMPLETED)
- 4. *User*: RMF0010 is the divisional manager. He should be able to see information for everyone under (staff reporting to him, then staff reporting to them, etc.) him. Except any salary or payroll related data. (COMPLETED)
- 5. *User*: Confirms wanting to lock down the  detail endpoint to strip salary unless caller is HR/Management or the employee themselves. (COMPLETED)
+ 1. *User*: Confirmed agent should proceed with Aadhaar save bug.
+ 2. *Agent*: Fixed bug, verified in DB, finished task.
+ 3. *User*: Requested separate storage for DigiLocker Aadhaar vs manual Aadhaar images.
+ 4. *Agent*: Implemented separate  logic, verified, finished task.
+ 5. *User*: Reported RMF0010 unable to see team details in deployment.
+ 6. *Agent*: Diagnosed DB role mismatch in production. Implemented dynamic auto-upgrade to 'managers' role based on direct reports. Finished task.
+ 7. *User*: Reported PWA goes blank on page refresh in deployment.
+ 8. *Agent*: Diagnosed Service Worker caching stale SPA routes. Changed navigation requests to network-first, updated SW version, and instructed user to redeploy.
+*(No pending human messages. Awaiting user to redeploy and verify the SW caching fix)*
 
 **Project Health Check:**
 Healthy. No Mocked endpoints.
 
 **3rd Party Integrations** 
+	 •	Perfios (Bank Account & DigiLocker Verification API) — requires User API Key.
 	 •	Google Gemini 2.5 Flash (Aadhaar & PAN OCR) — uses Emergent LLM Key.
 	 •	Resend (Email OTP and Notifications) — requires User API Key.
 	 •	Transistorsoft Background Geolocation — Direct API hook.
 	 •	WebAuthn (Device Biometrics) — Direct API logic.
-	 •	Perfios (Bank Account Verification API) — requires User API Key.
 
 **Testing status**
-  - Testing agent used after significant changes: NO (Agent self-tested successfully with bash curls and screenshots).
+  - Testing agent used after significant changes: NO (Self-tested via logs and bash scripts).
   - Troubleshoot agent used after agent stuck in loop: NO
-  - Test files created: []
-  - Known regressions: []
+  - Test files created: None
+  - Known regressions: None
 
 **Credentials to test flow:**
   - HR Admin:  / 
@@ -129,4 +132,4 @@ Healthy. No Mocked endpoints.
   - Divisional Manager:  / 
 
 **What agent forgot to execute**
-- The agent proposed scoping the  endpoint to the manager's transitive sub-tree at the very end of the run but finished the task before receiving an answer. The next agent should ask the user if they want this implemented or proceed directly to Letter Generation/ID Verification tasks.</analysis>
+None. All reported issues were addressed.</analysis>

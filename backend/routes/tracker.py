@@ -288,7 +288,7 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
 async def get_tracker_config(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Return the Traccar Client setup details for an employee.
     Creates a tracker config lazily on first fetch."""
-    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
+    if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
 
     emp = await db.employees.find_one(

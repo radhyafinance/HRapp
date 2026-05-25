@@ -1,10 +1,13 @@
 import React, { useEffect, useState } from "react";
 import { UserCheck, ShieldCheck, ShieldX, Loader } from "lucide-react";
 import API from "../../utils/api";
+import { useAuth } from "../../contexts/AuthContext";
 
 const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", managers: "Managers", employee: "HO Staff", field_agent: "Field Staff" };
 
 export function EmployeeDetailView({ emp: initialEmp }) {
+  const { user } = useAuth();
+  const canSeeSensitive = ["hr_admin", "management"].includes(user?.role);
   const [emp, setEmp] = useState(initialEmp);
   const [managerInfo, setManagerInfo] = useState(null);
   const [verifying, setVerifying] = useState(false);
@@ -110,9 +113,11 @@ export function EmployeeDetailView({ emp: initialEmp }) {
           ["Basic", sal.basic ? `₹${sal.basic.toLocaleString("en-IN")}` : null],
           ["HRA", sal.hra ? `₹${sal.hra.toLocaleString("en-IN")}` : null],
           ["Special Allowance", sal.special_allowance ? `₹${sal.special_allowance.toLocaleString("en-IN")}` : null],
-          ["Bank Name", bank.bank_name],
-          ["Account #", bank.account_number],
-          ["IFSC", bank.ifsc_code],
+          ...(canSeeSensitive ? [
+            ["Bank Name", bank.bank_name],
+            ["Account #", bank.account_number],
+            ["IFSC", bank.ifsc_code],
+          ] : []),
           ["Emergency Contact", emp.emergency_contact?.name],
           ["Emergency Mobile", emp.emergency_contact?.mobile],
         ].map(([label, val]) => val && (
@@ -124,7 +129,7 @@ export function EmployeeDetailView({ emp: initialEmp }) {
       </div>
 
       {/* Bank Account Verification */}
-      {hasBankDetails && (
+      {canSeeSensitive && hasBankDetails && (
         <div className="border-t pt-3">
           <div className="flex items-center justify-between mb-2">
             <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Bank Verification</p>

@@ -69,10 +69,8 @@ class UploadDocumentRequest(BaseModel):
 
 @router.get("/{employee_id}/documents")
 async def list_documents(employee_id: str, current_user: dict = Depends(get_current_user)):
-    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
-        # Employees can see their own
-        if current_user.get("employee_id") != employee_id:
-            raise HTTPException(status_code=403, detail="Access denied")
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
     doc = await db.employee_documents.find_one({"employee_id": employee_id})
     out = {}
     for dtype in ALLOWED_DOC_TYPES:
@@ -226,9 +224,8 @@ async def download_document(
     as_attachment: bool = False,
     current_user: dict = Depends(get_current_user),
 ):
-    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
-        if current_user.get("employee_id") != employee_id:
-            raise HTTPException(status_code=403, detail="Access denied")
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
     if doc_type not in ALLOWED_DOC_TYPES:
         raise HTTPException(status_code=400, detail="Invalid document type.")
     doc = await db.employee_documents.find_one({"employee_id": employee_id})

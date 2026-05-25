@@ -15,7 +15,7 @@ export function EmployeeModal({ emp, onClose, onUpdated, onDocsChanged }) {
 
   const tabs = [["view", "View", Eye]];
   if (canEdit) tabs.push(["edit", "Edit", Edit3]);
-  tabs.push(["docs", "Documents", FileText], ["tracker", "Tracker", MapPin]);
+  if (canEdit) tabs.push(["docs", "Documents", FileText], ["tracker", "Tracker", MapPin]);
 
   return (
     <Modal title={`${current.first_name} ${current.last_name} (${current.employee_id})`} onClose={onClose} wide>
