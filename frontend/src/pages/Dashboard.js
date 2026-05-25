@@ -102,6 +102,7 @@ function AdminDashboard({ user }) {
   const [myInterviews, setMyInterviews] = useState([]);
   const [loading, setLoading] = useState(true);
   const canSeeInterviews = ["hr_admin", "management", "managers"].includes(user?.role);
+  const canSeePayroll = ["hr_admin", "management"].includes(user?.role);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -142,7 +143,9 @@ function AdminDashboard({ user }) {
         <StatCard label="Pending Leaves" value={stats?.pending_leaves} icon={FileText} color="bg-blue-500" sub="Awaiting approval" />
         <StatCard label="Candidates" value={stats?.total_candidates} icon={UserPlus} color="bg-purple-500" sub={`${stats?.pending_candidates} pending`} />
         <StatCard label="Exit Requests" value={stats?.exit_requests} icon={TrendingUp} color="bg-orange-500" />
-        <StatCard label="Payroll (Month)" value={stats?.payroll_processed_this_month} icon={CreditCard} color="bg-[#E85B1E]" sub="Records processed" />
+        {canSeePayroll && (
+          <StatCard label="Payroll (Month)" value={stats?.payroll_processed_this_month} icon={CreditCard} color="bg-[#E85B1E]" sub="Records processed" />
+        )}
       </div>
 
       {canSeeInterviews && myInterviews.length > 0 && (

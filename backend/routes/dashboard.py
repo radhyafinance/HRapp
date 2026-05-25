@@ -144,7 +144,9 @@ async def dashboard_stats(current_user: dict = Depends(get_current_user)):
     exit_requests = await db.exit_requests.count_documents({"status": {"$in": ["pending", "approved"]}})
     now = datetime.now(timezone.utc)
     period = f"{now.year}-{now.month:02d}"
-    payroll_processed = await db.payroll_records.count_documents({"period": period})
+    payroll_processed = None
+    if role in ("hr_admin", "management"):
+        payroll_processed = await db.payroll_records.count_documents({"period": period})
     return {
         "total_employees": total_employees,
         "present_today": present_today,
