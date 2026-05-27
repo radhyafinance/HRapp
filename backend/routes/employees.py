@@ -120,7 +120,7 @@ async def get_next_employee_id():
 
 class EmployeeCreate(BaseModel):
     first_name: str
-    last_name: str
+    last_name: Optional[str] = ""
     email: str
     mobile: str
     department: str

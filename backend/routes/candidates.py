@@ -26,9 +26,9 @@ def cand_to_dict(c):
 
 class CandidateCreate(BaseModel):
     first_name: str
-    last_name: str
+    last_name: Optional[str] = ""
     mobile: str
-    email: Optional[str] = None
+    email: str
     position: str
     department: str
     interview_date: Optional[str] = None

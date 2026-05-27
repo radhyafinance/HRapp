@@ -274,7 +274,7 @@ export default function Employees() {
         <Modal title={`Add Employee (Next ID: ${nextId})`} onClose={() => setShowAdd(false)}>
           <form onSubmit={handleAdd} className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
-              {[["first_name", "First Name", "text", true], ["last_name", "Last Name", "text", true], ["email", "Email", "email", true], ["mobile", "Mobile", "tel", true]].map(([key, label, type, req]) => (
+              {[["first_name", "First Name", "text", true], ["last_name", "Last Name", "text", false], ["email", "Email", "email", true], ["mobile", "Mobile", "tel", true]].map(([key, label, type, req]) => (
                 <div key={key}>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">{label}{req && <span className="text-red-500">*</span>}</label>
                   <input type={type} value={form[key]} onChange={e => setForm({ ...form, [key]: e.target.value })} required={req} data-testid={`emp-${key}`}

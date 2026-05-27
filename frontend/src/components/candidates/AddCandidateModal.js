@@ -213,7 +213,7 @@ export function AddCandidateModal({ onClose, onAdded }) {
         <section>
           <h4 className="font-bold text-[#1E2A47] text-sm mb-3">Personal Details</h4>
           <div className="grid grid-cols-2 gap-3">
-            {[["first_name", "First Name", "text", true], ["last_name", "Last Name", "text", true], ["mobile", "Mobile", "tel", true], ["email", "Email", "email", false], ["dob", "Date of Birth (DD/MM/YYYY)", "text", false], ["gender", "Gender", "text", false], ["father_or_husband_name", "Father's / Husband's Name", "text", false]].map(([key, label, type, req]) => (
+            {[["first_name", "First Name", "text", true], ["last_name", "Last Name", "text", false], ["mobile", "Mobile", "tel", true], ["email", "Email", "email", true], ["dob", "Date of Birth (DD/MM/YYYY)", "text", false], ["gender", "Gender", "text", false], ["father_or_husband_name", "Father's / Husband's Name", "text", false]].map(([key, label, type, req]) => (
               <div key={key}>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">{label}{req && <span className="text-red-500">*</span>}</label>
                 <input type={type} value={form[key]} onChange={e => setForm({ ...form, [key]: e.target.value })} required={req}
