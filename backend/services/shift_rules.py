@@ -44,6 +44,7 @@ FALLBACK_SHIFTS: Dict[str, Dict[str, Any]] = {
         "end_hour": 16,  "end_minute": 0,
         "grace_minutes": 30,
         "min_full_day_hours": 6.0,
+        "saturday_rule": "all_working",
     },
     "managers": {
         "name": "Field Shift (legacy)",
@@ -51,6 +52,7 @@ FALLBACK_SHIFTS: Dict[str, Dict[str, Any]] = {
         "end_hour": 16,  "end_minute": 0,
         "grace_minutes": 30,
         "min_full_day_hours": 6.0,
+        "saturday_rule": "all_working",
     },
     "management": {
         "name": "HO Shift (legacy)",
@@ -58,6 +60,7 @@ FALLBACK_SHIFTS: Dict[str, Dict[str, Any]] = {
         "end_hour": 18,  "end_minute": 30,
         "grace_minutes": 30,
         "min_full_day_hours": 6.0,
+        "saturday_rule": "alt_1_3_off",
     },
     "employee": {
         "name": "HO Shift (legacy)",
@@ -65,6 +68,7 @@ FALLBACK_SHIFTS: Dict[str, Dict[str, Any]] = {
         "end_hour": 18,  "end_minute": 30,
         "grace_minutes": 30,
         "min_full_day_hours": 6.0,
+        "saturday_rule": "alt_1_3_off",
     },
 }
 

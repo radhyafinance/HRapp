@@ -35,6 +35,12 @@ class ShiftIn(BaseModel):
     grace_minutes: int = Field(default=30, ge=0, le=240)
     min_full_day_hours: float = Field(default=6.0, ge=0.5, le=12.0)
     assigned_roles: List[str] = Field(default_factory=list)
+    # saturday_rule controls which Saturdays are weekly off:
+    #   "all_working"  – every Saturday is a working day (Field staff default)
+    #   "alt_1_3_off"  – 1st & 3rd Saturdays are WO (HO staff)
+    #   "alt_2_4_off"  – 2nd & 4th Saturdays are WO
+    #   "all_off"      – every Saturday is WO
+    saturday_rule: str = Field(default="all_working")
     is_default: bool = False
     is_active: bool = True
 
@@ -182,6 +188,7 @@ DEFAULT_SHIFTS = [
         "grace_minutes": 30,
         "min_full_day_hours": 6.0,
         "assigned_roles": ["field_agent", "managers"],
+        "saturday_rule": "all_working",
         "is_default": False,
         "is_active": True,
     },
@@ -192,6 +199,7 @@ DEFAULT_SHIFTS = [
         "grace_minutes": 30,
         "min_full_day_hours": 6.0,
         "assigned_roles": ["management", "employee"],
+        "saturday_rule": "alt_1_3_off",
         "is_default": True,
         "is_active": True,
     },

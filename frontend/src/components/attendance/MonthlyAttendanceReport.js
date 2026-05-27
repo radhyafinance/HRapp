@@ -30,6 +30,38 @@ function leavesCovering(leaves, dateStr) {
   });
 }
 
+/* ── Saturday WO helpers (shared logic) ─────────────────────── */
+function getNthSaturday(year, month, n) {
+  const d = new Date(year, month - 1, 1);
+  while (d.getDay() !== 6) d.setDate(d.getDate() + 1);
+  d.setDate(d.getDate() + (n - 1) * 7);
+  return d.getMonth() === month - 1 ? d.toISOString().split("T")[0] : null;
+}
+
+function isWeeklyOff(dateStr, dow, satRule, year, month) {
+  if (dow === 0) return true;
+  if (dow !== 6) return false;
+  if (!satRule || satRule === "all_working") return false;
+  if (satRule === "all_off") return true;
+  let idx = 0;
+  for (let n = 1; n <= 5; n++) { if (getNthSaturday(year, month, n) === dateStr) { idx = n; break; } }
+  if (satRule === "alt_1_3_off") return idx === 1 || idx === 3 || idx === 5;
+  if (satRule === "alt_2_4_off") return idx === 2 || idx === 4;
+  return false;
+}
+
+function resolveShiftSatRule(shifts, emp) {
+  if (!shifts?.length || !emp) return "all_working";
+  if (emp.shift_id) {
+    const s = shifts.find(sh => sh.id === emp.shift_id);
+    if (s) return s.saturday_rule || "all_working";
+  }
+  const byRole = shifts.find(sh => sh.assigned_roles?.includes(emp.role));
+  if (byRole) return byRole.saturday_rule || "all_working";
+  const def = shifts.find(sh => sh.is_default);
+  return def?.saturday_rule || "all_working";
+}
+
 const STATUS_ROW = {
   present:     "bg-green-50  hover:bg-green-100",
   half_day:    "bg-amber-50  hover:bg-amber-100",
@@ -66,6 +98,8 @@ export function MonthlyAttendanceReport({ user }) {
   const [records,   setRecords]     = useState([]);
   const [leaves,    setLeaves]      = useState([]);
   const [holidays,  setHolidays]    = useState(new Set());
+  const [shifts,    setShifts]      = useState([]);
+  const [empObj,    setEmpObj]      = useState(null); // full employee doc for shift resolution
   const [loading,   setLoading]     = useState(false);
   const [empName,   setEmpName]     = useState("");
 
@@ -96,16 +130,20 @@ export function MonthlyAttendanceReport({ user }) {
       const daysT = new Date(year, month, 0).getDate();
       const to    = `${year}-${pad(month)}-${pad(daysT)}`;
 
-      const [attRes, leaveRes, holRes] = await Promise.all([
+      const [attRes, leaveRes, holRes, shiftRes, empRes] = await Promise.all([
         API.get("/attendance", { params: { employee_id: empId, date_from: from, date_to: to, limit: 100 } }),
         API.get("/leaves",     { params: { employee_id: empId } }),
         API.get("/holidays",   { params: { year } }),
+        API.get("/shifts"),
+        API.get(`/employees/${empId}`).catch(() => ({ data: null })),
       ]);
 
       setRecords(attRes.data || []);
       setLeaves(leaveRes.data || []);
       const holDates = new Set((holRes.data || []).map(h => h.date));
       setHolidays(holDates);
+      setShifts(shiftRes.data || []);
+      setEmpObj(empRes.data || null);
     } catch (e) {
       console.error(e);
     } finally {
@@ -131,11 +169,13 @@ export function MonthlyAttendanceReport({ user }) {
   const today = new Date().toISOString().split("T")[0];
   const recMap = Object.fromEntries(records.map(r => [r.date, r]));
   const allDates = daysInMonth(year, month);
+  const empSatRule = resolveShiftSatRule(shifts, empObj);
 
   const rows = allDates.map(dateStr => {
-    const dow  = new Date(dateStr).getDay(); // 0=Sun
+    const dow  = new Date(dateStr).getDay();
     const isFuture  = dateStr > today;
     const isSunday  = dow === 0;
+    const isWO      = isWeeklyOff(dateStr, dow, empSatRule, year, month);
     const isHoliday = holidays.has(dateStr);
     const rec       = recMap[dateStr];
     const leave     = leavesCovering(leaves, dateStr);
@@ -144,7 +184,7 @@ export function MonthlyAttendanceReport({ user }) {
     let leaveType = leave?.leave_type || "";
 
     if (!status) {
-      if (isSunday)   status = "weekly_off";
+      if (isWO)       status = "weekly_off";
       else if (isHoliday) status = "holiday";
       else if (leave)  status = "leave";
       else if (!isFuture) status = "absent";
@@ -152,7 +192,7 @@ export function MonthlyAttendanceReport({ user }) {
     }
     if (status === "leave" && leave) leaveType = leave.leave_type;
 
-    return { dateStr, dow, isFuture, isSunday, isHoliday, rec, leave, status, leaveType };
+    return { dateStr, dow, isFuture, isSunday, isWO, isHoliday, rec, leave, status, leaveType };
   });
 
   /* summary counts */
@@ -164,7 +204,7 @@ export function MonthlyAttendanceReport({ user }) {
   }, {});
   const workingDays = allDates.filter(d => {
     const dow = new Date(d).getDay();
-    return dow !== 0 && !holidays.has(d) && d <= today;
+    return !isWeeklyOff(d, dow, empSatRule, year, month) && !holidays.has(d) && d <= today;
   }).length;
   const totalHours = records.reduce((sum, r) => sum + (r.hours_worked && r.hours_worked > 0 ? r.hours_worked : 0), 0);
   const lopDays    = rows.filter(r => r.rec?.lop || r.status === "lop").length;
@@ -266,7 +306,7 @@ export function MonthlyAttendanceReport({ user }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map(({ dateStr, dow, isFuture, status, rec, leaveType, isHoliday }) => {
+                  {rows.map(({ dateStr, dow, isFuture, status, rec, leaveType, isHoliday, isWO }) => {
                     const rowCls = STATUS_ROW[status] || "";
                     const isSun = dow === 0;
                     return (

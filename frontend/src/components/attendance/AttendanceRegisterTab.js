@@ -25,6 +25,55 @@ function buildDates(year, month) {
   return list;
 }
 
+/** Returns date string of the Nth Saturday (1-indexed) in the given year/month, or null if overflow */
+function getNthSaturday(year, month, n) {
+  const d = new Date(year, month - 1, 1);
+  while (d.getDay() !== 6) d.setDate(d.getDate() + 1);
+  d.setDate(d.getDate() + (n - 1) * 7);
+  return d.getMonth() === month - 1 ? d.toISOString().split("T")[0] : null;
+}
+
+/** Which Saturday number (1-5) is this date? Returns 0 if not a Saturday. */
+function saturdayIndex(dateStr, year, month) {
+  for (let n = 1; n <= 5; n++) {
+    if (getNthSaturday(year, month, n) === dateStr) return n;
+  }
+  return 0;
+}
+
+/**
+ * Is this date a weekly off?
+ *  - Always true for Sunday (dow 0)
+ *  - For Saturday: depends on shift saturday_rule
+ *    "all_working"  → Saturday is working
+ *    "alt_1_3_off"  → 1st & 3rd Saturdays off
+ *    "alt_2_4_off"  → 2nd & 4th Saturdays off
+ *    "all_off"      → all Saturdays off
+ */
+function isWeeklyOff(dateStr, dow, satRule, year, month) {
+  if (dow === 0) return true;
+  if (dow !== 6) return false;
+  if (!satRule || satRule === "all_working") return false;
+  if (satRule === "all_off") return true;
+  const idx = saturdayIndex(dateStr, year, month);
+  if (satRule === "alt_1_3_off") return idx === 1 || idx === 3 || idx === 5;
+  if (satRule === "alt_2_4_off") return idx === 2 || idx === 4;
+  return false;
+}
+
+/** Resolve saturday_rule for an employee given shifts list */
+function resolveEmpSatRule(emp, shifts) {
+  if (!emp || !shifts?.length) return "all_working";
+  if (emp.shift_id) {
+    const s = shifts.find(sh => sh.id === emp.shift_id);
+    if (s) return s.saturday_rule || "all_working";
+  }
+  const byRole = shifts.find(sh => sh.assigned_roles?.includes(emp.role));
+  if (byRole) return byRole.saturday_rule || "all_working";
+  const def = shifts.find(sh => sh.is_default);
+  return def?.saturday_rule || "all_working";
+}
+
 /** Expand multi-day leave into per-date entries */
 function expandLeave(leave) {
   const s = leave.start_date || leave.from_date || "";
@@ -52,12 +101,9 @@ function buildLeaveMap(leaves) {
 }
 
 /** Return { code, color } for a cell */
-function cellInfo(att, leaveType, dow, isHoliday, isFuture) {
-  if (dow === 0) return { code: "WO",  color: "slate"  };
-  if (isHoliday) return { code: "H",   color: "purple" };
-  if (isFuture)  return { code: "",    color: "empty"  };
-
-  if (att) {
+function cellInfo(att, leaveType, dow, isHoliday, isFuture, satRule, dateStr, year, month) {
+  // Attendance record wins over WO/holiday (overtime/manual records)
+  if (!isFuture && att) {
     const { status, geofence_verified, regularised } = att;
     if (status === "present" || status === "full_day") {
       if (regularised)        return { code: "FD", color: "reg"    };
@@ -77,7 +123,11 @@ function cellInfo(att, leaveType, dow, isHoliday, isFuture) {
     if (status === "holiday")    return { code: "H",  color: "purple" };
   }
 
-  if (leaveType) return { code: leaveType.substring(0, 3).toUpperCase(), color: "blue" };
+  // No attendance record — apply calendar rules
+  if (isWeeklyOff(dateStr, dow, satRule, year, month)) return { code: "WO", color: "slate"  };
+  if (isHoliday)  return { code: "H",  color: "purple" };
+  if (isFuture)   return { code: "",   color: "empty"  };
+  if (leaveType)  return { code: leaveType.substring(0, 3).toUpperCase(), color: "blue" };
   return { code: "A", color: "red" };
 }
 
@@ -94,9 +144,10 @@ const COLOR_CLS = {
 };
 
 /* ── Cell component (memoised for perf) ─────────────────────── */
-const Cell = React.memo(({ att, leaveType, dow, isHoliday, isFuture, dateStr, empId }) => {
-  const { code, color } = cellInfo(att, leaveType, dow, isHoliday, isFuture);
-  const bgCls = dow === 0 ? "bg-slate-50" : isHoliday ? "bg-purple-50" : "";
+const Cell = React.memo(({ att, leaveType, dow, isHoliday, isFuture, dateStr, empId, satRule, year, month }) => {
+  const { code, color } = cellInfo(att, leaveType, dow, isHoliday, isFuture, satRule, dateStr, year, month);
+  const isWO = isWeeklyOff(dateStr, dow, satRule, year, month);
+  const bgCls = isWO ? "bg-slate-50" : isHoliday ? "bg-purple-50" : "";
   const title = att
     ? `${empId} · ${dateStr} · ${att.status}${att.regularised ? " (regularised)" : ""}${!att.geofence_verified && att.status === "present" ? " (outside fence)" : ""}`
     : `${empId} · ${dateStr}${leaveType ? " · " + leaveType : ""}`;
@@ -118,6 +169,7 @@ export function AttendanceRegisterTab() {
   const [year,  setYear]  = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
   const [employees,  setEmployees]  = useState([]);
+  const [shifts,     setShifts]     = useState([]);
   const [attRecords, setAttRecords] = useState([]);
   const [leaves,     setLeaves]     = useState([]);
   const [holidays,   setHolidays]   = useState(new Set());
@@ -145,16 +197,18 @@ export function AttendanceRegisterTab() {
       const from = `${year}-${pad(month)}-01`;
       const daysT = new Date(year, month, 0).getDate();
       const to   = `${year}-${pad(month)}-${pad(daysT)}`;
-      const [empR, attR, leaveR, holR] = await Promise.all([
+      const [empR, attR, leaveR, holR, shiftR] = await Promise.all([
         API.get("/employees?status=all&limit=500"),
         API.get("/attendance", { params: { date_from: from, date_to: to, limit: 3000 } }),
         API.get("/leaves",     { params: { status: "approved" } }),
         API.get("/holidays",   { params: { year } }),
+        API.get("/shifts"),
       ]);
       setEmployees(empR.data || []);
       setAttRecords(attR.data || []);
       setLeaves(leaveR.data || []);
       setHolidays(new Set((holR.data || []).map(h => h.date)));
+      setShifts(shiftR.data || []);
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
   }, [year, month]);
@@ -184,23 +238,30 @@ export function AttendanceRegisterTab() {
     [employees, deptFilter]
   );
 
+  /* per-employee saturday rule map */
+  const empSatRuleMap = useMemo(() => {
+    const m = {};
+    for (const emp of employees) m[emp.employee_id] = resolveEmpSatRule(emp, shifts);
+    return m;
+  }, [employees, shifts]);
+
   /* per-date summary (FD count / A count) shown under date header */
   const dateSummary = useMemo(() => {
     const s = {};
     for (const { dateStr, dow } of allDates) {
-      if (dow === 0) { s[dateStr] = null; continue; }
       let fd = 0, a = 0;
       for (const emp of filteredEmps) {
-        const att = attMap[emp.employee_id]?.[dateStr];
-        const lt  = leaveMap[emp.employee_id]?.[dateStr];
-        const { code } = cellInfo(att, lt, dow, holidays.has(dateStr), dateStr > today);
+        const att     = attMap[emp.employee_id]?.[dateStr];
+        const lt      = leaveMap[emp.employee_id]?.[dateStr];
+        const satRule = empSatRuleMap[emp.employee_id] || "all_working";
+        const { code } = cellInfo(att, lt, dow, holidays.has(dateStr), dateStr > today, satRule, dateStr, year, month);
         if (code === "FD") fd++;
         else if (code === "A") a++;
       }
       s[dateStr] = { fd, a };
     }
     return s;
-  }, [allDates, filteredEmps, attMap, leaveMap, holidays, today]);
+  }, [allDates, filteredEmps, attMap, leaveMap, empSatRuleMap, holidays, today, year, month]);
 
   /* ── render ──────────────────────────────────────────────── */
   return (
@@ -354,6 +415,9 @@ export function AttendanceRegisterTab() {
                           isFuture={dateStr > today}
                           dateStr={dateStr}
                           empId={emp.employee_id}
+                          satRule={empSatRuleMap[emp.employee_id] || "all_working"}
+                          year={year}
+                          month={month}
                         />
                       ))}
                     </tr>
