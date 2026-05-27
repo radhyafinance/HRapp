@@ -21,9 +21,19 @@ const INIT_FORM = {
   grace_minutes: 30,
   min_full_day_hours: 6.0,
   assigned_roles: [],
+  saturday_rule: "all_working",
   is_default: false,
   is_active: true,
 };
+
+const SAT_RULES = [
+  { value: "all_working",  label: "All Saturdays working" },
+  { value: "alt_1_3_off",  label: "1st & 3rd Saturdays off" },
+  { value: "alt_2_4_off",  label: "2nd & 4th Saturdays off" },
+  { value: "all_off",      label: "All Saturdays off" },
+];
+
+const SAT_RULE_LABELS = Object.fromEntries(SAT_RULES.map(r => [r.value, r.label]));
 
 function fmtTime(h, m) {
   const hh = String(h).padStart(2, "0");
@@ -83,6 +93,7 @@ function ShiftModal({ initial, onClose, onSaved, otherShifts = [] }) {
         grace_minutes: parseInt(form.grace_minutes, 10),
         min_full_day_hours: parseFloat(form.min_full_day_hours),
         assigned_roles: form.assigned_roles,
+        saturday_rule: form.saturday_rule || "all_working",
         is_default: !!form.is_default,
         is_active: !!form.is_active,
       };
@@ -160,6 +171,33 @@ function ShiftModal({ initial, onClose, onSaved, otherShifts = [] }) {
                 onChange={e => setForm({...form, min_full_day_hours: e.target.value})}
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm" data-testid="shift-min-hours" />
               <p className="text-[10px] text-slate-400 mt-1">Worked hours below this → half day</p>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-2">Saturday Rule</label>
+            <div className="grid grid-cols-2 gap-2">
+              {SAT_RULES.map(({ value, label }) => (
+                <label
+                  key={value}
+                  className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border cursor-pointer transition-colors ${
+                    form.saturday_rule === value
+                      ? "border-[#E85B1E] bg-orange-50"
+                      : "border-slate-200 hover:bg-slate-50"
+                  }`}
+                >
+                  <input
+                    type="radio"
+                    name="saturday_rule"
+                    value={value}
+                    checked={form.saturday_rule === value}
+                    onChange={() => setForm({ ...form, saturday_rule: value })}
+                    className="accent-[#E85B1E]"
+                    data-testid={`shift-sat-rule-${value}`}
+                  />
+                  <span className="text-sm text-slate-700">{label}</span>
+                </label>
+              ))}
             </div>
           </div>
 
@@ -303,6 +341,9 @@ export default function ShiftsTab() {
                 </div>
                 <div>
                   Min hrs: <span className="font-semibold text-slate-700">{s.min_full_day_hours}h</span>
+                </div>
+                <div className="col-span-2">
+                  Saturday: <span className="font-semibold text-slate-700">{SAT_RULE_LABELS[s.saturday_rule] || "All Saturdays working"}</span>
                 </div>
               </div>
 
