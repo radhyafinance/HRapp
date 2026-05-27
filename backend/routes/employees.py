@@ -147,6 +147,7 @@ class EmployeeCreate(BaseModel):
     blood_group: Optional[str] = None
     uan_number: Optional[str] = None
     esi_number: Optional[str] = None
+    epf_employee: Optional[float] = None
     create_user_account: bool = True
     password: Optional[str] = None
     branch: Optional[str] = None
