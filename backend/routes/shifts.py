@@ -5,7 +5,7 @@ shift — picking a role for shift B will auto-remove it from shift A on save.
 """
 
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Literal, Optional
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -40,7 +40,7 @@ class ShiftIn(BaseModel):
     #   "alt_1_3_off"  – 1st & 3rd Saturdays are WO (HO staff)
     #   "alt_2_4_off"  – 2nd & 4th Saturdays are WO
     #   "all_off"      – every Saturday is WO
-    saturday_rule: str = Field(default="all_working")
+    saturday_rule: Literal["all_working", "alt_1_3_off", "alt_2_4_off", "all_off"] = Field(default="all_working")
     is_default: bool = False
     is_active: bool = True
 

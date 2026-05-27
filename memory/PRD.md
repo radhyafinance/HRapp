@@ -333,13 +333,28 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
     - **Verified** via curl: HTTP 200, mime `application/vnd.openxmlformats-officedocument.wordprocessingml.document`, 44 KB output, 14 sections, 26 tables, Hindi text rendered.
 
 ## P1 Backlog
+- [ ] **Letter Generation PDFs** — Offer / Appointment / Warning / Confirmation letters with company letterhead (P0 — next planned task)
+- [ ] **"Punch In with Face"** — WebAuthn biometric login + 1-tap attendance punch-in
 - [ ] GPS location map view for field agent tracking
 - [ ] Mobile-optimized attendance view
 - [ ] WhatsApp/email notifications for leave approvals
 - [ ] Bulk performance review creation
 
 ## P2 Backlog
+- [ ] Leave Encashment Calculation (EL/PL during payroll or exit)
+- [ ] `hr_admin` self-regularisation UI (allow HR Admin to file via standard UI instead of Add Record bypass)
+- [ ] Document Completeness — scope `/document-completeness/all` to manager's sub-tree (currently whole company)
+- [ ] 15-Minute Ping system clarification + implementation (awaiting user input)
+- [ ] JWT session timeout adjustment / sliding window (awaiting user input)
 - [ ] Employee self-portal for document upload
 - [ ] Training records module
 - [ ] Asset management integration
 - [ ] Integration with statutory compliance (PF portal, ESIC portal)
+
+## Refactoring Backlog
+- [ ] Extract duplicated Saturday-rule logic from `AttendanceRegisterTab.js` + `MonthlyAttendanceReport.js` into a shared `/app/frontend/src/utils/shiftRules.js` helper.
+
+## Recent Iter-11 Regression Pass (Feb 2026)
+- **34/34 backend tests pass** (`/app/backend/tests/test_iter11_regression.py`). Verified all 7 new features since iter-10: Bulk Salary Excel template + upload, `epf_employee` Pydantic field, email-mandatory / last_name-optional, `saturday_rule` shift field (now `Literal` validated), ACL hardening on documents / tracker / dashboard payroll-stats, manager hierarchy visibility, and full auth/employees/attendance/leaves/shifts regression.
+- **Minor improvements applied** post-test: `shifts.saturday_rule` now strictly typed as `Literal["all_working","alt_1_3_off","alt_2_4_off","all_off"]` (422 on typos); `test_credentials.md` corrected (RMF0001 is `managers`, not `employee`).
+- **Known minor (non-bugs, documented)**: `/api/attendance/monthly` does NOT exist server-side — frontend builds matrix client-side from `/attendance` + `/leaves` + `/holidays` + `/shifts`. Bulk-salary endpoints are `/employees/bulk-salary/template` and `/employees/bulk-salary/upload` (only `hr_admin` — by design). Dashboard `/stats` soft-gates `payroll_processed_this_month` to `None` for non-admin (by design).
