@@ -8,6 +8,7 @@ import { AttendanceStatusBadge } from "../components/attendance/StatusBadge";
 import { SessionsBadge } from "../components/attendance/SessionsBadge";
 import { CameraCapture } from "../components/attendance/CameraCapture";
 import { MonthlyAttendanceReport } from "../components/attendance/MonthlyAttendanceReport";
+import { AttendanceRegisterTab } from "../components/attendance/AttendanceRegisterTab";
 
 export default function Attendance() {
   const { user } = useAuth();
@@ -293,10 +294,13 @@ export default function Attendance() {
       {/* Tab Bar */}
       <div className="flex gap-1 mb-5 bg-slate-100 p-1 rounded-xl w-fit">
         {[
-          { key: "today",   label: "Today",          icon: Clock },
-          { key: "history", label: "History",         icon: Search },
-          { key: "monthly", label: "Monthly Report",  icon: CalendarDays },
-        ].map(({ key, label, icon: Icon }) => (
+          { key: "today",    label: "Today",            icon: Clock,        roles: null },
+          { key: "history",  label: "History",          icon: Search,       roles: null },
+          { key: "monthly",  label: "Monthly Report",   icon: CalendarDays, roles: null },
+          { key: "register", label: "Attendance Register", icon: Download,  roles: ["hr_admin", "management", "managers"] },
+        ]
+          .filter(t => !t.roles || t.roles.includes(user?.role))
+          .map(({ key, label, icon: Icon }) => (
           <button
             key={key}
             onClick={() => setActiveTab(key)}
@@ -637,6 +641,9 @@ export default function Attendance() {
 
       {/* ── MONTHLY TAB ──────────────────────────────────────── */}
       {activeTab === "monthly" && <MonthlyAttendanceReport user={user} />}
+
+      {/* ── REGISTER TAB ─────────────────────────────────────── */}
+      {activeTab === "register" && <AttendanceRegisterTab />}
 
       {/* Regularisation modals — always mounted */}
       {regEditRecord && (
