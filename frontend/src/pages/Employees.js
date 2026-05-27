@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import API from "../utils/api";
-import { UserPlus, Search, Download, Upload, Eye } from "lucide-react";
+import { UserPlus, Search, Download, Upload, Eye, TrendingUp, X, CheckCircle, AlertCircle, SkipForward } from "lucide-react";
 import { DocCompletenessRing } from "../components/employees/DocCompletenessRing";
 import { EmployeeModal } from "../components/employees/EmployeeModal";
 import { ReportingManagerInput } from "../components/employees/ReportingManagerInput";
@@ -41,7 +41,9 @@ export default function Employees() {
   const [nextId, setNextId] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [salaryResult, setSalaryResult] = useState(null); // { updated, skipped, errors }
   const fileRef = useRef();
+  const salaryFileRef = useRef();
 
   const fetchEmployees = async () => {
     setLoading(true);
@@ -123,6 +125,35 @@ export default function Employees() {
     }
   };
 
+  const downloadSalaryTemplate = async () => {
+    try {
+      const res = await API.get("/employees/bulk-salary/template", { responseType: "blob" });
+      const url = URL.createObjectURL(new Blob([res.data], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }));
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "salary_revision.xlsx";
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      alert("Failed to download: " + (e.response?.data?.detail || e.message));
+    }
+  };
+
+  const handleSalaryUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const res = await API.post("/employees/bulk-salary/upload", formData, { headers: { "Content-Type": "multipart/form-data" } });
+      setSalaryResult(res.data);
+      fetchEmployees();
+    } catch (e) {
+      alert("Upload failed: " + (e.response?.data?.detail || "Unknown error"));
+    }
+    e.target.value = "";
+  };
+
   return (
     <div style={{ fontFamily: "'Work Sans', sans-serif" }}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
@@ -139,6 +170,12 @@ export default function Employees() {
               <button onClick={downloadTemplate} className="flex items-center gap-2 px-4 py-2 border border-slate-300 text-slate-600 rounded-lg text-sm hover:bg-slate-50 transition-colors" data-testid="download-template-btn">
                 <Download size={16} /> Template
               </button>
+              <button onClick={downloadSalaryTemplate} className="flex items-center gap-2 px-4 py-2 border border-amber-400 text-amber-700 bg-amber-50 rounded-lg text-sm font-medium hover:bg-amber-100 transition-colors" data-testid="salary-template-btn">
+                <TrendingUp size={16} /> Salary Template
+              </button>
+              <button onClick={() => salaryFileRef.current.click()} className="flex items-center gap-2 px-4 py-2 border-2 border-amber-500 text-amber-700 rounded-lg text-sm font-medium hover:bg-amber-50 transition-colors" data-testid="salary-upload-btn">
+                <Upload size={16} /> Upload Revision
+              </button>
               <button onClick={() => { setShowAdd(true); fetchNextId(); setError(""); }} className="flex items-center gap-2 px-4 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] transition-colors" data-testid="add-employee-btn">
                 <UserPlus size={16} /> Add Employee
               </button>
@@ -146,7 +183,10 @@ export default function Employees() {
           )}
         </div>
         {canManageEmployees && (
-          <input ref={fileRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={handleBulkUpload} />
+          <>
+            <input ref={fileRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={handleBulkUpload} />
+            <input ref={salaryFileRef} type="file" accept=".xlsx" className="hidden" onChange={handleSalaryUpload} />
+          </>
         )}
       </div>
 
@@ -334,6 +374,47 @@ export default function Employees() {
           onUpdated={(updated) => setEmployees(prev => prev.map(e => e.employee_id === updated.employee_id ? { ...e, ...updated } : e))}
           onDocsChanged={fetchCompleteness}
         />
+      )}
+
+      {salaryResult && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100">
+              <h2 className="font-bold text-[#1E2A47] text-lg" style={{ fontFamily: "'Outfit', sans-serif" }}>Salary Revision — Result</h2>
+              <button onClick={() => setSalaryResult(null)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400" data-testid="close-salary-result"><X size={18} /></button>
+            </div>
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-3 gap-3 text-center">
+                <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+                  <CheckCircle size={22} className="text-green-600 mx-auto mb-1" />
+                  <p className="text-2xl font-bold text-green-700" data-testid="salary-updated-count">{salaryResult.updated}</p>
+                  <p className="text-xs text-green-600 font-medium">Updated</p>
+                </div>
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
+                  <SkipForward size={22} className="text-slate-400 mx-auto mb-1" />
+                  <p className="text-2xl font-bold text-slate-600" data-testid="salary-skipped-count">{salaryResult.skipped}</p>
+                  <p className="text-xs text-slate-500 font-medium">Skipped</p>
+                </div>
+                <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+                  <AlertCircle size={22} className="text-red-500 mx-auto mb-1" />
+                  <p className="text-2xl font-bold text-red-600" data-testid="salary-errors-count">{salaryResult.errors?.length ?? 0}</p>
+                  <p className="text-xs text-red-500 font-medium">Errors</p>
+                </div>
+              </div>
+              {salaryResult.errors?.length > 0 && (
+                <div className="bg-red-50 border border-red-200 rounded-xl p-4 max-h-48 overflow-y-auto">
+                  <p className="text-xs font-bold text-red-700 mb-2">Errors:</p>
+                  {salaryResult.errors.map((e, i) => (
+                    <p key={i} className="text-xs text-red-600 py-0.5">{e}</p>
+                  ))}
+                </div>
+              )}
+              <button onClick={() => setSalaryResult(null)} className="w-full py-2.5 bg-[#1E2A47] text-white rounded-xl text-sm font-semibold hover:bg-[#2a3a5c]" data-testid="close-salary-result-btn">
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -841,3 +841,203 @@ async def verify_bank_account(employee_id: str, current_user: dict = Depends(get
         "name_match_score": name_match,
         "raw":             raw,
     }
+
+
+# ─────────────────────────────────────────────
+#  Bulk Salary Revision
+# ─────────────────────────────────────────────
+
+SALARY_COLUMNS = [
+    ("employee_id",          "Employee ID"),
+    ("name",                 "Name"),
+    ("designation",          "Designation"),
+    ("department",           "Department"),
+    ("status",               "Status"),
+    ("basic",                "Basic (₹/mo)"),
+    ("hra",                  "HRA (₹/mo)"),
+    ("special_allowance",    "Special Allowance (₹/mo)"),
+    ("canteen_allowance",    "Canteen Allowance (₹/mo)"),
+    ("conveyance_allowance", "Conveyance Allowance (₹/mo)"),
+    ("epf_employee",         "EPF Employee (₹/mo)"),
+    ("ctc_monthly",          "CTC Monthly (₹)"),
+]
+
+# Columns that are editable (others are reference-only)
+SALARY_EDITABLE = {"basic", "hra", "special_allowance", "canteen_allowance", "conveyance_allowance", "epf_employee", "ctc_monthly"}
+
+
+@router.get("/bulk-salary/template")
+async def bulk_salary_template(current_user: dict = Depends(get_current_user)):
+    """Download Excel pre-filled with all active employees and their current salaries."""
+    if current_user.get("role") not in ["hr_admin"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    employees = await db.employees.find(
+        {"status": {"$in": ["active", "probation", "notice_period"]}},
+        {"_id": 0}
+    ).sort("employee_id", 1).to_list(2000)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Salary Revision"
+
+    # Styles
+    hdr_fill   = PatternFill("solid", fgColor="1E2A47")
+    lock_fill  = PatternFill("solid", fgColor="F1F5F9")   # locked reference cols
+    edit_fill  = PatternFill("solid", fgColor="FFF5F0")   # editable salary cols
+    hdr_font   = Font(color="FFFFFF", bold=True, size=10)
+    lock_font  = Font(color="64748B", size=10)
+    edit_font  = Font(color="1E2A47", size=10)
+    thin       = Side(border_style="thin", color="CBD5E1")
+    border     = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # Write headers
+    for ci, (key, label) in enumerate(SALARY_COLUMNS, start=1):
+        cell = ws.cell(row=1, column=ci, value=label)
+        cell.fill  = hdr_fill
+        cell.font  = hdr_font
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+        ws.column_dimensions[get_column_letter(ci)].width = max(16, len(label) + 4)
+    ws.row_dimensions[1].height = 36
+    ws.freeze_panes = "F2"  # freeze up to (and including) Status column
+
+    # Write employee rows
+    for ri, emp in enumerate(employees, start=2):
+        sal = emp.get("salary") or {}
+        row_vals = {
+            "employee_id":          emp.get("employee_id", ""),
+            "name":                 f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip(),
+            "designation":          emp.get("designation", ""),
+            "department":           emp.get("department", ""),
+            "status":               emp.get("status", ""),
+            "basic":                sal.get("basic") or 0,
+            "hra":                  sal.get("hra") or 0,
+            "special_allowance":    sal.get("special_allowance") or 0,
+            "canteen_allowance":    sal.get("canteen_allowance") or 0,
+            "conveyance_allowance": sal.get("conveyance_allowance") or 0,
+            "epf_employee":         sal.get("epf_employee") or "",
+            "ctc_monthly":          sal.get("ctc_monthly") or "",
+        }
+        for ci, (key, _) in enumerate(SALARY_COLUMNS, start=1):
+            cell = ws.cell(row=ri, column=ci, value=row_vals.get(key, ""))
+            cell.border = border
+            if key in SALARY_EDITABLE:
+                cell.fill = edit_fill
+                cell.font = edit_font
+                cell.alignment = Alignment(horizontal="right")
+            else:
+                cell.fill = lock_fill
+                cell.font = lock_font
+                cell.alignment = Alignment(horizontal="left")
+
+    # Legend sheet
+    ws2 = wb.create_sheet("Instructions")
+    ws2["A1"] = "Radhya Micro Finance — Bulk Salary Revision"
+    ws2["A1"].font = Font(bold=True, size=13, color="E85B1E")
+    notes = [
+        "",
+        "Instructions:",
+        "1. Only the orange-shaded columns (Basic, HRA, Allowances, EPF, CTC Monthly) can be changed.",
+        "2. Do NOT change Employee ID or Name — they are used to match records.",
+        "3. Leave a cell blank / 0 to keep the existing value unchanged.",
+        "4. CTC Monthly: if left blank, the system will auto-compute it from gross salary.",
+        "5. EPF Employee: monthly employee-side PF contribution (typically 12% of Basic, capped at ₹1,800).",
+        "6. Save as .xlsx and upload via 'Upload Salary Revision' on the Employees page.",
+    ]
+    for i, line in enumerate(notes, start=2):
+        ws2.cell(row=i, column=1, value=line)
+    ws2.column_dimensions["A"].width = 100
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="salary_revision.xlsx"'},
+    )
+
+
+@router.post("/bulk-salary/upload")
+async def bulk_salary_upload(file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
+    """Apply salary revisions from uploaded Excel file."""
+    if current_user.get("role") not in ["hr_admin"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    content = await file.read()
+    try:
+        wb = load_workbook(filename=io.BytesIO(content), data_only=True)
+        ws = wb["Salary Revision"] if "Salary Revision" in wb.sheetnames else wb.active
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read Excel file: {e}")
+
+    col_keys = [k for k, _ in SALARY_COLUMNS]
+
+    updated, skipped, errors = 0, 0, []
+
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if not any(row):
+            continue
+        row_dict = {col_keys[i]: row[i] for i in range(min(len(col_keys), len(row)))}
+        emp_id = str(row_dict.get("employee_id") or "").strip().upper()
+        if not emp_id:
+            skipped += 1
+            continue
+
+        emp = await db.employees.find_one({"employee_id": emp_id})
+        if not emp:
+            errors.append(f"{emp_id}: Employee not found")
+            skipped += 1
+            continue
+
+        def _f(k: str):
+            v = row_dict.get(k)
+            if v in (None, ""):
+                return None
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return None
+
+        existing_sal = emp.get("salary") or {}
+        salary = dict(existing_sal)
+
+        changed = False
+        for field in ["basic", "hra", "special_allowance", "canteen_allowance", "conveyance_allowance", "epf_employee"]:
+            val = _f(field)
+            if val is not None and val >= 0:
+                salary[field] = val
+                changed = True
+
+        ctc_val = _f("ctc_monthly")
+        if ctc_val is not None and ctc_val > 0:
+            salary["ctc_monthly"] = ctc_val
+            salary["ctc_annual"] = round(ctc_val * 12, 2)
+            changed = True
+
+        if not changed:
+            skipped += 1
+            continue
+
+        gross_keys = ["basic", "hra", "special_allowance", "canteen_allowance", "conveyance_allowance"]
+        salary["gross"] = sum(salary.get(k, 0) or 0 for k in gross_keys)
+        if not salary.get("ctc_monthly"):
+            salary["ctc_monthly"] = salary["gross"]
+            salary["ctc_annual"] = round(salary["gross"] * 12, 2)
+
+        try:
+            await db.employees.update_one(
+                {"employee_id": emp_id},
+                {"$set": {
+                    "salary": salary,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                    "salary_revised_by": current_user.get("employee_id") or current_user.get("username"),
+                    "salary_revised_at": datetime.now(timezone.utc).isoformat(),
+                }},
+            )
+            updated += 1
+        except Exception as e:
+            errors.append(f"{emp_id}: DB error — {e}")
+
+    return {"updated": updated, "skipped": skipped, "errors": errors}
