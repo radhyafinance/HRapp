@@ -1,0 +1,42 @@
+{
+  "summary": "Iteration 11 — backend-only regression + verification of 7 new features delivered since iter-10. 34/34 backend tests pass (1 skipped: /api/attendance/monthly endpoint does not exist — frontend MonthlyAttendanceReport composes matrix client-side from /attendance + /leaves + /holidays + /shifts, so this is a docs mismatch with review_request, NOT a functional bug). Verified: (1) Bulk Salary Excel template download — actual paths are /api/employees/bulk-salary/template (NOT /salary-template) and /api/employees/bulk-salary/upload (NOT /bulk-salary-update); both are 403 for employee + manager, 200 for hr_admin; upload round-trip writes basic/hra/epf_employee/ctc_monthly correctly. (2) epf_employee field accepted in EmployeeCreate Pydantic model — creation succeeds both WITH and WITHOUT it; salary.epf_employee persisted to db. (3) email is MANDATORY (422 if omitted) and last_name is OPTIONAL (defaults to '' — create succeeds). (4) saturday_rule field on shifts persists through POST + PUT for all 4 documented values (all_working / alt_1_3_off / alt_2_4_off / all_off); shift create blocked 403 for non-HR. (5) ACL hardening verified: GET /employees/{id}/documents = 403 for employee AND manager; GET /tracker/config/{id} = 403 for employee AND manager; GET /dashboard/stats returns payroll_processed_this_month=int for hr_admin, None for employee (soft-gated, NOT 403, but data IS gated — matches review_request intent). (6) Manager hierarchy intact — RMF0017 and RMF0010 each see strictly-smaller scoped lists than admin; RMF0001 (which is actually role='managers', not 'employee' as docs claim) sees its subtree (RMF0001+RMF0009+RMF0050). (7) Regression on auth (password + OTP request), /employees, /attendance (incl. date_from/date_to range used by matrix), /leaves, /shifts, /dashboard/my-stats, /attendance/today, /attendance/my — all 200.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/attendance/monthly", "issue": "Endpoint mentioned in review_request does NOT exist. Frontend MonthlyAttendanceReport.js builds the matrix client-side from /attendance + /leaves + /holidays + /shifts. Either implement the server-side endpoint or update review_request to drop it. NOT a regression."},
+      {"endpoint": "/api/employees POST", "issue": "Response returns BOTH 'id' (mongo ObjectId string) AND 'employee_id' (RMFxxxx). All other employee endpoints (GET/PUT/DELETE /employees/{employee_id}) key off the RMFxxxx form. The returned 'id' field is misleading because GET /employees/{id_value} 404s if you pass the mongo string. Recommend either: (a) drop 'id' from the create response, OR (b) make GET /employees/{x} accept both forms. Currently it works because the frontend uses employee_id, but it is a footgun for new consumers."},
+      {"endpoint": "/api/dashboard/stats", "issue": "ACL gating on payroll_processed_this_month is soft (field returned as None for non-admin) instead of hard 403. Acceptable per current design — flagging for review."}
+    ]
+  },
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_iter11_regression.py",
+    "/app/test_reports/pytest/pytest_iter11.xml"
+  ],
+  "action_items": [
+    "Update /app/memory/test_credentials.md — table currently lists RMF0001 as role='employee', but /auth/me returns role='managers' for RMF0001. Either re-seed RMF0001 as plain employee or correct the docs. (Several previous test iterations have been fooled by this.)",
+    "Decide whether /api/attendance/monthly should exist server-side. If yes — implement it. If no — remove from review_requests / specs to avoid future test agent confusion.",
+    "Consider removing or aliasing the misleading 'id' field on POST /api/employees response (or accept ObjectId in GET /employees/{x}). See minor issue #2.",
+    "Bulk-salary endpoint paths in review_request (/salary-template, /bulk-salary-update) DO NOT match implementation (/bulk-salary/template, /bulk-salary/upload). Update spec/docs to match the implemented paths."
+  ],
+  "critical_code_review_comments": [
+    "routes/employees.py POST: data.email is forced to .lower() before duplicate check + insert — good. data.last_name defaults to '' (Optional with default '') — required-vs-optional behaviour matches review_request.",
+    "routes/employees.py /bulk-salary/upload: openpyxl `data_only=True` correctly returns evaluated formula values, not formula strings. Field whitelist (basic/hra/special_allowance/canteen_allowance/conveyance_allowance/epf_employee/ctc_monthly) prevents unauthorised key writes. Errors are accumulated per-row (good UX). updated/skipped/errors counts returned — matches spec.",
+    "routes/employees.py /bulk-salary/template & /upload: 403 gate uses ONLY hr_admin (not management). This is inconsistent with the rest of the codebase where management = hr_admin in privilege. If intentional (HR-Admin-only feature), document it; if not, add 'management' to the allow-list.",
+    "routes/shifts.py: saturday_rule has default='all_working' so old shifts in db without the field still resolve. ShiftIn Field validator covers it. No enum validator on the rule string — typos like 'alt_1_3' (missing _off) would silently persist. Recommend Pydantic Literal['all_working','alt_1_3_off','alt_2_4_off','all_off'].",
+    "routes/dashboard.py /stats: payroll_processed_this_month is gated correctly to ('hr_admin','management'). For 'managers' role it returns None — consider returning 0 or 403 for clarity; current None looks like 'no data' instead of 'no access'.",
+    "routes/employees.py /{employee_id}/documents, routes/tracker.py /config/{id}, /regenerate, /toggle: all consistently 403 for non-(hr_admin|management). ACL hardening verified.",
+    "Bulk salary upload: emp_id matching is case-insensitive (`.upper()`) and trims whitespace — robust. Salary recompute (gross = sum of components) runs even if only one field changed — could overwrite an existing manually-set gross. Probably desired but worth a comment.",
+    "test_credentials.md drift: RMF0001 listed as role='employee' but actually 'managers'. This is a frequent footgun — update docs."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_iter11_regression.py"
+  ],
+  "success_rate": {"backend": "100% (34/34, 1 skipped because target endpoint not implemented)", "frontend": "N/A — backend-only scope"},
+  "test_credentials": "admin/Admin@12345 (hr_admin), RMF0001/Radhya@123 (role IS managers despite docs), RMF0017/Radhya@123 (managers — Branch Manager Beena), RMF0010/Radhya@123 (managers — Divisional Manager).",
+  "seed_data_creation": "Each test run creates ~5 employees with email prefix `test_emp_a*_<run_tag>` and ~8 shifts named `TEST Shift *`. A module-scope autouse fixture pre-cleans leftover test_emp_a* employees AND post-cleans both employees and shifts created during the run. Run is idempotent — re-running back-to-back produces identical results.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Regression suite is at /app/backend/tests/test_iter11_regression.py and runs in ~10s. Re-run with: `cd /app/backend && python -m pytest tests/test_iter11_regression.py -v --junitxml=/app/test_reports/pytest/pytest_iter12.xml`. Authoritative facts learned: (1) Bulk Salary endpoints are /api/employees/bulk-salary/template + /bulk-salary/upload (NOT /salary-template / /bulk-salary-update). (2) /api/attendance/monthly DOES NOT EXIST — the frontend matrix is built client-side. (3) RMF0001 has role='managers' regardless of what test_credentials.md says — if you need a true plain 'employee' login, you must seed one. (4) GET /api/employees/{x} keys off employee_id (RMFxxxx), not the mongo ObjectId returned in create response. (5) Dashboard /stats hides payroll_processed_this_month (returns None) for non-admin instead of returning 403 — by-design soft gate. (6) Shift ACL: HR allows hr_admin AND management; bulk-salary ACL only allows hr_admin — possible inconsistency, flagged.",
+  "rca_of_the_issue": "Two transient test failures during development were tester-side: (a) initial GET-after-create used the mongo ObjectId form returned in POST response — fixed by switching to employee_id; (b) initial hierarchy test assumed RMF0001 role='employee' per test_credentials.md — actually 'managers' per /auth/me, so the test was rewritten to assert scope-bounded-but-not-full-list. No backend bug fixes were made by this agent."
+}

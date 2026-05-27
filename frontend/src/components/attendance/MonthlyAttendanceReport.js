@@ -183,12 +183,18 @@ export function MonthlyAttendanceReport({ user }) {
     let status = rec?.status;
     let leaveType = leave?.leave_type || "";
 
-    if (!status) {
-      if (isWO)       status = "weekly_off";
-      else if (isHoliday) status = "holiday";
-      else if (leave)  status = "leave";
+    // WO and Holiday take priority over absent/empty records.
+    // Only positive attendance (present / half_day) overrides a WO day.
+    const hasPositiveAtt = ["present", "half_day", "full_day"].includes(rec?.status);
+
+    if (isWO && !hasPositiveAtt) {
+      status = "weekly_off";
+    } else if (isHoliday && !hasPositiveAtt && !status) {
+      status = "holiday";
+    } else if (!status) {
+      if (leave)       status = "leave";
       else if (!isFuture) status = "absent";
-      else status = "future";
+      else             status = "future";
     }
     if (status === "leave" && leave) leaveType = leave.leave_type;
 
