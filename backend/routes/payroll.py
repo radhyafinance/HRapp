@@ -329,7 +329,7 @@ async def list_payroll(
         query["employee_id"] = my_emp_id
     elif employee_id:
         query["employee_id"] = employee_id
-    records = await db.payroll_records.find(query).sort("period", -1).to_list(500)
+    records = await db.payroll_records.find(query).sort([("period", -1), ("employee_id", 1)]).to_list(500)
     return [pay_to_dict(r) for r in records]
 
 
