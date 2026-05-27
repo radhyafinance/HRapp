@@ -3,12 +3,29 @@ from pydantic import BaseModel
 from typing import Optional, List
 from database import db
 from auth_utils import get_current_user
+from services.shift_rules import resolve_shift_for
 from datetime import datetime, timezone, date, timedelta
 import calendar as _cal
 from bson import ObjectId
 import io
 
 router = APIRouter()
+
+
+def _is_non_working_saturday(d: date, sat_rule: Optional[str]) -> bool:
+    """Mirror of frontend isWeeklyOff() for Saturdays — see /app/frontend/src/utils/shiftRules.js"""
+    if d.weekday() != 5:
+        return False
+    if not sat_rule or sat_rule == "all_working":
+        return False
+    if sat_rule == "all_off":
+        return True
+    week_in_month = (d.day - 1) // 7 + 1  # 1..5
+    if sat_rule == "alt_1_3_off":
+        return week_in_month in (1, 3, 5)
+    if sat_rule == "alt_2_4_off":
+        return week_in_month in (2, 4)
+    return False
 
 
 def calc_payroll_components(emp: dict, days_in_month: int = 30, lop_days: float = 0.0):
@@ -93,7 +110,8 @@ async def calculate_lop_days(employee_id: str, year: int, month: int, joining_da
     """Auto-calculate LOP days for the month.
 
     LOP = working days where the employee has no punch-in, no approved leave,
-    and the day is not a public holiday or Sunday.
+    and the day is not a public holiday, Sunday, or a non-working Saturday
+    (resolved per the employee's shift saturday_rule).
     Half-day attendance is counted as present (not LOP).
     """
     days_in_month = _cal.monthrange(year, month)[1]
@@ -103,6 +121,11 @@ async def calculate_lop_days(employee_id: str, year: int, month: int, joining_da
         joining_date = date.fromisoformat(joining_date_str[:10])
     except Exception:
         joining_date = date(year, month, 1)
+
+    # Resolve the employee's effective shift to get saturday_rule
+    emp = await db.employees.find_one({"employee_id": employee_id}, {"_id": 0, "role": 1}) or {}
+    shift = await resolve_shift_for(emp.get("role", "employee"), employee_id, db)
+    sat_rule = (shift or {}).get("saturday_rule", "all_working")
 
     # Fetch attendance records
     att_records = await db.attendance_records.find(
@@ -146,6 +169,10 @@ async def calculate_lop_days(employee_id: str, year: int, month: int, joining_da
 
         # Sunday = weekly off — not LOP
         if d.weekday() == 6:
+            continue
+
+        # Non-working Saturday per employee's shift saturday_rule — not LOP
+        if _is_non_working_saturday(d, sat_rule):
             continue
 
         # Public holiday — not LOP

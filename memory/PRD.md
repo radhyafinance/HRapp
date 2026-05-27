@@ -376,6 +376,13 @@ Three compounded bugs caused 1st/3rd Saturdays (and even Sundays) to display as 
 
 Files changed: `/app/frontend/src/utils/shiftRules.js` (new), `/app/frontend/src/components/attendance/MonthlyAttendanceReport.js`, `/app/frontend/src/components/attendance/AttendanceRegisterTab.js`.
 
+## LOP Saturday WO Gap Fix (Feb 2026)
+`calculate_lop_days()` in `/app/backend/routes/payroll.py` previously only skipped Sundays — it counted 1st/3rd Saturdays (and any other non-working Saturday per the employee's shift `saturday_rule`) as LOP. For HO Shift staff (`alt_1_3_off`) with no manual punch on those Saturdays, the payroll was wrongly pro-rating salary down by 2 days/month.
+
+**Fix**: Resolve each employee's effective shift via `services.shift_rules.resolve_shift_for(role, employee_id, db)`, extract `saturday_rule`, and skip non-working Saturdays in the LOP loop. New helper `_is_non_working_saturday(d, sat_rule)` mirrors the frontend `isWeeklyOff()` from `/app/frontend/src/utils/shiftRules.js`. Supports `all_working` / `alt_1_3_off` / `alt_2_4_off` / `all_off`.
+
+**Verified**: Unit-tested all 5 Saturdays of May 2026 against `alt_1_3_off` rule (2, 16, 30 → WO ✓; 9, 23 → working ✓). RMF0009 May 2026 LOP recomputed: was previously over-counting 1st/3rd Saturdays → now 11 LOP days (correct).
+
 ## Bug Fix — Regularised attendance shown as Absent + Punch-Time TZ Mismatch (Feb 2026)
 Three connected fixes:
 1. **Mandatory punch times** — Previously, the Employee "Request Regularisation" modal sent `punch_in_time: null` always, and the Admin "Add Record" modal allowed saving Present/Half Day without any punch. With no punch time, the StatusBadge fell through to "Absent" rendering even though `status === "present"`. Now both modals require BOTH Punch-In and Punch-Out when status is `present` or `half_day`. Validated client-side AND on the backend via new `_enforce_punch_required()` helper across all three regularisation endpoints (`PATCH /attendance/records/{id}`, `POST /attendance/records`, `POST /attendance/regularisation-requests`).
