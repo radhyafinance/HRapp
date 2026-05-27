@@ -244,7 +244,7 @@ export function AttendanceRegisterTab() {
           {/* scrollable container — both axes */}
           <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: "68vh" }}>
             <table
-              className="border-collapse text-xs"
+              className="border-separate text-xs"
               style={{ minWidth: "max-content", borderSpacing: 0 }}
               data-testid="att-register-table"
             >
@@ -255,7 +255,7 @@ export function AttendanceRegisterTab() {
                   <th
                     colSpan={2}
                     className="bg-[#1E2A47] text-white text-left px-3 py-2 border-b border-r border-slate-600 text-[11px] font-bold tracking-widest uppercase"
-                    style={{ position: "sticky", left: 0, top: 0, zIndex: 12, minWidth: FROZEN_WIDTHS[0] + FROZEN_WIDTHS[1] }}
+                    style={{ position: "sticky", left: 0, top: 0, zIndex: 14, minWidth: FROZEN_WIDTHS[0] + FROZEN_WIDTHS[1] }}
                   >
                     Employees
                   </th>
@@ -263,7 +263,7 @@ export function AttendanceRegisterTab() {
                   <th
                     colSpan={2}
                     className="bg-[#1E2A47] text-white text-left px-3 py-2 border-b border-r border-slate-600 text-[11px] font-bold tracking-widest uppercase"
-                    style={{ position: "sticky", left: FROZEN_LEFTS[2], top: 0, zIndex: 12, minWidth: FROZEN_WIDTHS[2] + FROZEN_WIDTHS[3] }}
+                    style={{ position: "sticky", left: FROZEN_LEFTS[2], top: 0, zIndex: 14, minWidth: FROZEN_WIDTHS[2] + FROZEN_WIDTHS[3] }}
                   >
                     Hierarchy
                   </th>
@@ -279,7 +279,7 @@ export function AttendanceRegisterTab() {
                         key={dateStr}
                         className={`border-b border-r border-slate-600 text-center py-1.5 text-[10px]
                           ${isSun ? "bg-slate-600 text-slate-200" : isHol ? "bg-purple-700 text-purple-100" : "bg-[#1E2A47] text-white"}`}
-                        style={{ position: "sticky", top: 0, zIndex: 9, minWidth: DATE_COL_W, width: DATE_COL_W }}
+                        style={{ position: "sticky", top: 0, zIndex: 10, minWidth: DATE_COL_W, width: DATE_COL_W }}
                       >
                         <div className="font-bold">{dd}-{mon}</div>
                         <div className="opacity-60 text-[9px]">{DAY_SHORT[dow]}</div>
@@ -294,7 +294,7 @@ export function AttendanceRegisterTab() {
                     <th
                       key={label}
                       className="bg-slate-100 border-b border-r border-slate-200 text-slate-600 font-semibold px-2 py-1.5 text-left text-[11px] whitespace-nowrap"
-                      style={{ position: "sticky", left: FROZEN_LEFTS[i], top: 0, zIndex: 11, minWidth: FROZEN_WIDTHS[i], width: FROZEN_WIDTHS[i] }}
+                      style={{ position: "sticky", left: FROZEN_LEFTS[i], top: 41, zIndex: 13, minWidth: FROZEN_WIDTHS[i], width: FROZEN_WIDTHS[i] }}
                     >
                       {label}
                     </th>
@@ -306,7 +306,7 @@ export function AttendanceRegisterTab() {
                       <th
                         key={dateStr}
                         className={`border-b border-r border-slate-100 text-center py-1 ${isSun ? "bg-slate-100" : "bg-slate-50"}`}
-                        style={{ position: "sticky", top: 0, zIndex: 9, minWidth: DATE_COL_W, width: DATE_COL_W }}
+                        style={{ position: "sticky", top: 41, zIndex: 10, minWidth: DATE_COL_W, width: DATE_COL_W }}
                       >
                         {sum && (
                           <div className="flex flex-col items-center gap-0.5">
