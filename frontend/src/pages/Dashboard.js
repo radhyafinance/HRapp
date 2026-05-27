@@ -5,6 +5,7 @@ import API from "../utils/api";
 import { Users, CalendarCheck, FileText, CreditCard, TrendingUp, UserPlus, Clock, Video, Mail, Phone, CalendarX, FileEdit, AlertCircle } from "lucide-react";
 import { QuickPunchCard } from "../components/dashboard/QuickPunchCard";
 import { WebAuthnSetupCard } from "../components/dashboard/WebAuthnSetupCard";
+import { toLocalDateStr } from "../utils/shiftRules";
 
 const StatCard = ({ label, value, icon: Icon, color, sub, onClick }) => (
   <div onClick={onClick}
@@ -161,7 +162,7 @@ function AdminDashboard({ user }) {
           </div>
           <div className="divide-y divide-slate-100">
             {myInterviews.slice(0, 6).map(i => {
-              const today_iso = new Date().toISOString().split("T")[0];
+              const today_iso = toLocalDateStr();
               const isToday = i.interview_date === today_iso;
               const isPast = i.interview_date && i.interview_date < today_iso;
               return (

@@ -375,3 +375,12 @@ Three compounded bugs caused 1st/3rd Saturdays (and even Sundays) to display as 
 - 30-May (5th Sat) = WO, 31-May (Sun) = WO
 
 Files changed: `/app/frontend/src/utils/shiftRules.js` (new), `/app/frontend/src/components/attendance/MonthlyAttendanceReport.js`, `/app/frontend/src/components/attendance/AttendanceRegisterTab.js`.
+
+## TZ Sweep (Feb 2026)
+Followed-up the WO bug fix by sweeping all remaining `new Date().toISOString().split('T')[0]` civil-date usages — these returned UTC dates in IST browsers, so "today" looked like yesterday for any IST user after 18:30 IST and date inputs / "max" attributes / history-default-dates were one day behind. Replaced with `toLocalDateStr()` from `/app/frontend/src/utils/shiftRules.js` across:
+- `/app/frontend/src/pages/Attendance.js` (today_iso, thirty_days_ago, fetch-attendance today lookup, render-time today)
+- `/app/frontend/src/pages/Dashboard.js` (My Interviews today/past comparison)
+- `/app/frontend/src/pages/FieldTracking.js` (Live tab date selector, history date selector, date `max` constraints, "track today" quick-action)
+- `/app/frontend/src/components/attendance/Regularisation.js` (Admin Add Record default date, Employee Request Regularisation date + max constraint)
+
+Full-ISO timestamps (`queued_at`, `verified_at`, audit `created_at`) intentionally kept as `toISOString()` — those need UTC instants. `HolidayCalendar.js` already had its own `toLocalISO(y,m,d)` helper and is unaffected.

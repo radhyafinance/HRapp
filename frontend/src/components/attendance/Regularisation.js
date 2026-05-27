@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import API from "../../utils/api";
 import { Edit3, Plus, X, Clock, CheckCircle2, XCircle, AlertTriangle, History } from "lucide-react";
+import { toLocalDateStr } from "../../utils/shiftRules";
 
 const STATUS_OPTIONS = [
   { value: "present", label: "Present" },
@@ -42,7 +43,7 @@ function BaseModal({ title, onClose, children }) {
 export function AdminRegulariseModal({ mode, record, employees, onClose, onSaved }) {
   // mode: "edit" (has record) | "create" (has employees list)
   const [empId, setEmpId] = useState(record?.employee_id || "");
-  const [date, setDate] = useState(record?.date || new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(record?.date || toLocalDateStr());
   const [punchIn, setPunchIn] = useState(isoToTime(record?.punch_in_time));
   const [punchOut, setPunchOut] = useState(isoToTime(record?.punch_out_time));
   const [status, setStatus] = useState(record?.status || "present");
@@ -149,7 +150,7 @@ export function AdminRegulariseModal({ mode, record, employees, onClose, onSaved
 
 // ---------- EMPLOYEE: Request regularisation ----------
 export function EmployeeRegulariseRequestModal({ onClose, onSaved }) {
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(toLocalDateStr());
   const [attendance, setAttendance] = useState("present"); // "present" | "half_day"
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
@@ -185,7 +186,7 @@ export function EmployeeRegulariseRequestModal({ onClose, onSaved }) {
         <div>
           <label className="block text-xs font-semibold text-slate-600 mb-1">Date <span className="text-red-500">*</span></label>
           <input type="date" value={date} onChange={(e) => setDate(e.target.value)} data-testid="empreg-date"
-            max={new Date().toISOString().slice(0, 10)}
+            max={toLocalDateStr()}
             className="w-full border border-slate-300 rounded-lg px-3 py-2" />
         </div>
 

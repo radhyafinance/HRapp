@@ -3,6 +3,7 @@ import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
 import { MapPin, Activity, Clock, AlertCircle, ArrowLeft, RefreshCw, Battery, Smartphone, Search } from "lucide-react";
 import RouteMap from "../components/RouteMap";
+import { toLocalDateStr } from "../utils/shiftRules";
 
 const FRESHNESS_STYLES = {
   live:    { label: "Live",    dot: "bg-green-500",    bg: "bg-green-50",    text: "text-green-700",  border: "border-green-200" },
@@ -29,12 +30,12 @@ export default function FieldTracking() {
   const [selected, setSelected] = useState(null);   // { employee_id, name, ... }
   const [trackData, setTrackData] = useState(null);
   const [trackLoading, setTrackLoading] = useState(false);
-  const [date, setDate] = useState(new Date().toISOString().split("T")[0]);
+  const [date, setDate] = useState(toLocalDateStr());
   const [devFilter, setDevFilter] = useState("");
 
   // History mode
   const [histEmpSearch, setHistEmpSearch] = useState("");
-  const [histDate, setHistDate] = useState(new Date().toISOString().split("T")[0]);
+  const [histDate, setHistDate] = useState(toLocalDateStr());
   const [histEmployees, setHistEmployees] = useState([]);
   const [histSelected, setHistSelected] = useState(null);
   const [histTrack, setHistTrack] = useState(null);
@@ -279,7 +280,7 @@ export default function FieldTracking() {
                         <td className="px-4 py-3 text-xs text-slate-500">{d.interval_seconds}s</td>
                         <td className="px-4 py-3">
                           <button
-                            onClick={() => { setHistDate(new Date().toISOString().split("T")[0]); setHistSelected({ employee_id: d.employee_id, name: d.name, designation: d.designation }); setTab("history"); }}
+                            onClick={() => { setHistDate(toLocalDateStr()); setHistSelected({ employee_id: d.employee_id, name: d.name, designation: d.designation }); setTab("history"); }}
                             data-testid={`device-route-${d.employee_id}`}
                             disabled={d.freshness === "never"}
                             className="text-xs px-3 py-1.5 bg-[#E85B1E] text-white rounded-lg hover:bg-[#D04A15] disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1">
@@ -314,7 +315,7 @@ export default function FieldTracking() {
                   data-testid="hist-emp-search" />
               </div>
               <input type="date" value={histDate} onChange={e => setHistDate(e.target.value)}
-                max={new Date().toISOString().split("T")[0]}
+                max={toLocalDateStr()}
                 className="border border-slate-300 rounded-lg px-3 py-2.5 text-sm bg-white"
                 data-testid="hist-date-input" />
             </div>
@@ -359,7 +360,7 @@ export default function FieldTracking() {
               <input type="date"
                 value={selected ? date : histDate}
                 onChange={e => selected ? setDate(e.target.value) : setHistDate(e.target.value)}
-                max={new Date().toISOString().split("T")[0]}
+                max={toLocalDateStr()}
                 className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white"
                 data-testid="track-date-input" />
               <button onClick={() => selected ? fetchTrack(selected.employee_id, date) : fetchHistTrack(histSelected.employee_id, histDate)}

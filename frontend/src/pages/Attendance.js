@@ -9,6 +9,7 @@ import { SessionsBadge } from "../components/attendance/SessionsBadge";
 import { CameraCapture } from "../components/attendance/CameraCapture";
 import { MonthlyAttendanceReport } from "../components/attendance/MonthlyAttendanceReport";
 import { AttendanceRegisterTab } from "../components/attendance/AttendanceRegisterTab";
+import { toLocalDateStr } from "../utils/shiftRules";
 
 export default function Attendance() {
   const { user } = useAuth();
@@ -18,8 +19,8 @@ export default function Attendance() {
   const [teamLoading, setTeamLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
-  const today_iso = new Date().toISOString().split("T")[0];
-  const thirty_days_ago = new Date(Date.now() - 30 * 86400000).toISOString().split("T")[0];
+  const today_iso = toLocalDateStr();
+  const thirty_days_ago = toLocalDateStr(new Date(Date.now() - 30 * 86400000));
   const [dateFrom, setDateFrom] = useState(thirty_days_ago);
   const [dateTo, setDateTo] = useState(today_iso);
   const [loading, setLoading] = useState(true);
@@ -60,7 +61,7 @@ export default function Attendance() {
       const promises = [API.get("/attendance/my")];
       if (isManager) promises.push(API.get("/attendance/today"));
       const [myRes, todayRes] = await Promise.all(promises);
-      const today = new Date().toISOString().split("T")[0];
+      const today = toLocalDateStr();
       const todayRec = myRes.data.find(r => r.date === today);
       setTodayRecord(todayRec || null);
       setHistory(myRes.data);
@@ -153,7 +154,7 @@ export default function Attendance() {
     await doPunch(punchType, photo_base64);
   };
 
-  const today = new Date().toISOString().split("T")[0];
+  const today = toLocalDateStr();
   const sessions = todayRecord?.sessions || [];
   const lastSessionOpen = sessions.length > 0 && !sessions[sessions.length - 1]?.punch_out_time;
   // Has at least one punch-in today
