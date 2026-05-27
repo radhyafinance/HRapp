@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useMemo, useCallback } from "react";
 import API from "../../utils/api";
 import { ChevronLeft, ChevronRight, Loader, Download } from "lucide-react";
+import { toLocalDateStr, buildMonthDates, isWeeklyOff, resolveEmpSatRule } from "../../utils/shiftRules";
 
 /* ── constants ─────────────────────────────────────────────── */
 const DAY_SHORT = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
@@ -15,75 +16,18 @@ const DATE_COL_W = 46;
 /* ── helpers ────────────────────────────────────────────────── */
 const pad = n => String(n).padStart(2, "0");
 
-function buildDates(year, month) {
-  const list = [];
-  const d = new Date(year, month - 1, 1);
-  while (d.getMonth() === month - 1) {
-    list.push({ dateStr: d.toISOString().split("T")[0], dow: d.getDay() });
-    d.setDate(d.getDate() + 1);
-  }
-  return list;
-}
-
-/** Returns date string of the Nth Saturday (1-indexed) in the given year/month, or null if overflow */
-function getNthSaturday(year, month, n) {
-  const d = new Date(year, month - 1, 1);
-  while (d.getDay() !== 6) d.setDate(d.getDate() + 1);
-  d.setDate(d.getDate() + (n - 1) * 7);
-  return d.getMonth() === month - 1 ? d.toISOString().split("T")[0] : null;
-}
-
-/** Which Saturday number (1-5) is this date? Returns 0 if not a Saturday. */
-function saturdayIndex(dateStr, year, month) {
-  for (let n = 1; n <= 5; n++) {
-    if (getNthSaturday(year, month, n) === dateStr) return n;
-  }
-  return 0;
-}
-
-/**
- * Is this date a weekly off?
- *  - Always true for Sunday (dow 0)
- *  - For Saturday: depends on shift saturday_rule
- *    "all_working"  → Saturday is working
- *    "alt_1_3_off"  → 1st & 3rd Saturdays off
- *    "alt_2_4_off"  → 2nd & 4th Saturdays off
- *    "all_off"      → all Saturdays off
- */
-function isWeeklyOff(dateStr, dow, satRule, year, month) {
-  if (dow === 0) return true;
-  if (dow !== 6) return false;
-  if (!satRule || satRule === "all_working") return false;
-  if (satRule === "all_off") return true;
-  const idx = saturdayIndex(dateStr, year, month);
-  if (satRule === "alt_1_3_off") return idx === 1 || idx === 3 || idx === 5;
-  if (satRule === "alt_2_4_off") return idx === 2 || idx === 4;
-  return false;
-}
-
-/** Resolve saturday_rule for an employee given shifts list */
-function resolveEmpSatRule(emp, shifts) {
-  if (!emp || !shifts?.length) return "all_working";
-  if (emp.shift_id) {
-    const s = shifts.find(sh => sh.id === emp.shift_id);
-    if (s) return s.saturday_rule || "all_working";
-  }
-  const byRole = shifts.find(sh => sh.assigned_roles?.includes(emp.role));
-  if (byRole) return byRole.saturday_rule || "all_working";
-  const def = shifts.find(sh => sh.is_default);
-  return def?.saturday_rule || "all_working";
-}
-
-/** Expand multi-day leave into per-date entries */
+/** Expand multi-day leave into per-date entries (local civil dates) */
 function expandLeave(leave) {
   const s = leave.start_date || leave.from_date || "";
   const e = leave.end_date   || leave.to_date   || "";
   if (!s || !e) return [];
   const dates = [];
-  const cur = new Date(s);
-  const end = new Date(e);
+  const [sy, sm, sd] = s.split("-").map(Number);
+  const [ey, em, ed] = e.split("-").map(Number);
+  const cur = new Date(sy, sm - 1, sd);
+  const end = new Date(ey, em - 1, ed);
   while (cur <= end) {
-    dates.push(cur.toISOString().split("T")[0]);
+    dates.push(toLocalDateStr(cur));
     cur.setDate(cur.getDate() + 1);
   }
   return dates;
@@ -102,8 +46,13 @@ function buildLeaveMap(leaves) {
 
 /** Return { code, color } for a cell */
 function cellInfo(att, leaveType, dow, isHoliday, isFuture, satRule, dateStr, year, month) {
-  // Attendance record wins over WO/holiday (overtime/manual records)
-  if (!isFuture && att) {
+  const isWO = isWeeklyOff(dateStr, dow, satRule, year, month);
+  // Only an ACTUAL punch-in (real or regularised but with punch_in_time) is
+  // allowed to visually override a WO / Holiday cell. A regularised record
+  // with no punch_in time must defer to calendar rules.
+  const hasActualPunch = !!att?.punch_in_time;
+
+  if (!isFuture && att && hasActualPunch) {
     const { status, geofence_verified, regularised } = att;
     if (status === "present" || status === "full_day") {
       if (regularised)        return { code: "FD", color: "reg"    };
@@ -111,23 +60,15 @@ function cellInfo(att, leaveType, dow, isHoliday, isFuture, satRule, dateStr, ye
                               return { code: "FD", color: "black"  };
     }
     if (status === "half_day") return { code: "HD", color: "amber"  };
-    if (status === "leave") {
-      const code = leaveType ? leaveType.substring(0, 3).toUpperCase() : "L";
-      return { code, color: "blue" };
-    }
-    if (status === "absent") {
-      if (leaveType) return { code: leaveType.substring(0, 3).toUpperCase(), color: "blue" };
-      return { code: "A", color: "red" };
-    }
-    if (status === "weekly_off") return { code: "WO", color: "slate"  };
-    if (status === "holiday")    return { code: "H",  color: "purple" };
   }
 
-  // No attendance record — apply calendar rules
-  if (isWeeklyOff(dateStr, dow, satRule, year, month)) return { code: "WO", color: "slate"  };
+  // Calendar rules (no punch — WO / Holiday / Leave / Absent)
+  if (isWO)       return { code: "WO", color: "slate"  };
   if (isHoliday)  return { code: "H",  color: "purple" };
   if (isFuture)   return { code: "",   color: "empty"  };
   if (leaveType)  return { code: leaveType.substring(0, 3).toUpperCase(), color: "blue" };
+  // Explicit half-day even without punch (manual entry) still shows HD
+  if (att?.status === "half_day") return { code: "HD", color: "amber" };
   return { code: "A", color: "red" };
 }
 
@@ -176,8 +117,8 @@ export function AttendanceRegisterTab() {
   const [loading,    setLoading]    = useState(false);
   const [deptFilter, setDeptFilter] = useState("");
 
-  const today     = now.toISOString().split("T")[0];
-  const allDates  = useMemo(() => buildDates(year, month), [year, month]);
+  const today     = toLocalDateStr(now);
+  const allDates  = useMemo(() => buildMonthDates(year, month), [year, month]);
   const monthLabel = new Date(year, month - 1, 1).toLocaleString("en-IN", { month: "long", year: "numeric" });
 
   const prevMonth = () => {
@@ -331,7 +272,8 @@ export function AttendanceRegisterTab() {
                     const isSun = dow === 0;
                     const isHol = holidays.has(dateStr);
                     const dd  = dateStr.slice(8);
-                    const mon = new Date(dateStr).toLocaleString("en-IN", { month: "short" });
+                    const [yy, mm] = dateStr.split("-").map(Number);
+                    const mon = new Date(yy, mm - 1, 1).toLocaleString("en-IN", { month: "short" });
                     return (
                       <th
                         key={dateStr}

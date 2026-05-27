@@ -352,9 +352,26 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 - [ ] Integration with statutory compliance (PF portal, ESIC portal)
 
 ## Refactoring Backlog
-- [ ] Extract duplicated Saturday-rule logic from `AttendanceRegisterTab.js` + `MonthlyAttendanceReport.js` into a shared `/app/frontend/src/utils/shiftRules.js` helper.
+- [x] ~~Extract duplicated Saturday-rule logic from `AttendanceRegisterTab.js` + `MonthlyAttendanceReport.js` into a shared `/app/frontend/src/utils/shiftRules.js` helper.~~ DONE (Feb 2026, as part of Monthly Report WO bug fix).
 
 ## Recent Iter-11 Regression Pass (Feb 2026)
 - **34/34 backend tests pass** (`/app/backend/tests/test_iter11_regression.py`). Verified all 7 new features since iter-10: Bulk Salary Excel template + upload, `epf_employee` Pydantic field, email-mandatory / last_name-optional, `saturday_rule` shift field (now `Literal` validated), ACL hardening on documents / tracker / dashboard payroll-stats, manager hierarchy visibility, and full auth/employees/attendance/leaves/shifts regression.
 - **Minor improvements applied** post-test: `shifts.saturday_rule` now strictly typed as `Literal["all_working","alt_1_3_off","alt_2_4_off","all_off"]` (422 on typos); `test_credentials.md` corrected (RMF0001 is `managers`, not `employee`).
 - **Known minor (non-bugs, documented)**: `/api/attendance/monthly` does NOT exist server-side — frontend builds matrix client-side from `/attendance` + `/leaves` + `/holidays` + `/shifts`. Bulk-salary endpoints are `/employees/bulk-salary/template` and `/employees/bulk-salary/upload` (only `hr_admin` — by design). Dashboard `/stats` soft-gates `payroll_processed_this_month` to `None` for non-admin (by design).
+
+## Bug Fix — Monthly Report & Matrix Saturday WO (Feb 2026)
+Three compounded bugs caused 1st/3rd Saturdays (and even Sundays) to display as "Absent" instead of "Weekly Off" in IST browsers:
+1. **TZ bug** — `Date.prototype.toISOString().split('T')[0]` returns UTC date strings, which lag by one day in IST evenings (and even at midnight for `new Date(year, month-1, 1)`). All date generation/comparison helpers in `MonthlyAttendanceReport.js` + `AttendanceRegisterTab.js` were affected — Saturdays computed dow=5 (Fri), Sundays dow=6 (Sat), so WO logic never fired correctly.
+2. **Spread order bug** — `MonthlyAttendanceReport.js` passed `record={{ status, ...(rec || {}) }}` to `AttendanceStatusBadge`. Since spread came AFTER `status`, the record's original "absent"/"present" status overrode the computed `weekly_off`. Flipped to `{ ...(rec || {}), status }`.
+3. **WO-override priority bug** — Regularised "present" records with NO `punch_in_time` were being treated as "positive attendance" and visually blocking the WO label. Refined the rule: only an **actual punch-in** (`!!rec.punch_in_time`) can override a Weekly-Off / Holiday cell. A regularised record without a real punch defers to calendar rules.
+
+**Refactor delivered (P2 backlog item)**: Extracted shared date / Saturday-rule helpers into `/app/frontend/src/utils/shiftRules.js` (`toLocalDateStr`, `buildMonthDates`, `daysInMonth`, `getNthSaturday`, `saturdayIndex`, `isWeeklyOff`, `resolveEmpSatRule`). Both `MonthlyAttendanceReport.js` and `AttendanceRegisterTab.js` now import from this single source of truth.
+
+**Verified** in Playwright with TZ-correct logic: HO Shift (`alt_1_3_off`) — May 2026:
+- 2-May (1st Sat) = WO, 3-May (Sun) = WO
+- 9-May (2nd Sat) = working/A, 10-May (Sun) = WO
+- 16-May (3rd Sat, with overlapping SL leave) = WO (WO wins)
+- 23-May (4th Sat) = working/A, 24-May (Sun) = WO
+- 30-May (5th Sat) = WO, 31-May (Sun) = WO
+
+Files changed: `/app/frontend/src/utils/shiftRules.js` (new), `/app/frontend/src/components/attendance/MonthlyAttendanceReport.js`, `/app/frontend/src/components/attendance/AttendanceRegisterTab.js`.

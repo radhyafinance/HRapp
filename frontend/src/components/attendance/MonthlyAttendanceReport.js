@@ -2,19 +2,10 @@ import React, { useEffect, useState, useCallback } from "react";
 import API from "../../utils/api";
 import { Calendar, ChevronLeft, ChevronRight, User, TrendingDown, Clock, CheckCircle, XCircle, AlertCircle, Loader } from "lucide-react";
 import { AttendanceStatusBadge } from "./StatusBadge";
+import { toLocalDateStr, daysInMonth, isWeeklyOff, resolveEmpSatRule } from "../../utils/shiftRules";
 
 /* ── helpers ──────────────────────────────────────────────────── */
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-function daysInMonth(year, month) {
-  const dates = [];
-  const d = new Date(year, month - 1, 1);
-  while (d.getMonth() === month - 1) {
-    dates.push(d.toISOString().split("T")[0]);
-    d.setDate(d.getDate() + 1);
-  }
-  return dates;
-}
 
 function fmtTime(iso) {
   if (!iso) return "—";
@@ -28,38 +19,6 @@ function leavesCovering(leaves, dateStr) {
     const e = l.end_date || l.to_date || "";
     return s <= dateStr && dateStr <= e && l.status === "approved";
   });
-}
-
-/* ── Saturday WO helpers (shared logic) ─────────────────────── */
-function getNthSaturday(year, month, n) {
-  const d = new Date(year, month - 1, 1);
-  while (d.getDay() !== 6) d.setDate(d.getDate() + 1);
-  d.setDate(d.getDate() + (n - 1) * 7);
-  return d.getMonth() === month - 1 ? d.toISOString().split("T")[0] : null;
-}
-
-function isWeeklyOff(dateStr, dow, satRule, year, month) {
-  if (dow === 0) return true;
-  if (dow !== 6) return false;
-  if (!satRule || satRule === "all_working") return false;
-  if (satRule === "all_off") return true;
-  let idx = 0;
-  for (let n = 1; n <= 5; n++) { if (getNthSaturday(year, month, n) === dateStr) { idx = n; break; } }
-  if (satRule === "alt_1_3_off") return idx === 1 || idx === 3 || idx === 5;
-  if (satRule === "alt_2_4_off") return idx === 2 || idx === 4;
-  return false;
-}
-
-function resolveShiftSatRule(shifts, emp) {
-  if (!shifts?.length || !emp) return "all_working";
-  if (emp.shift_id) {
-    const s = shifts.find(sh => sh.id === emp.shift_id);
-    if (s) return s.saturday_rule || "all_working";
-  }
-  const byRole = shifts.find(sh => sh.assigned_roles?.includes(emp.role));
-  if (byRole) return byRole.saturday_rule || "all_working";
-  const def = shifts.find(sh => sh.is_default);
-  return def?.saturday_rule || "all_working";
 }
 
 const STATUS_ROW = {
@@ -166,13 +125,15 @@ export function MonthlyAttendanceReport({ user }) {
   };
 
   /* build day-by-day rows */
-  const today = new Date().toISOString().split("T")[0];
+  const today = toLocalDateStr();
   const recMap = Object.fromEntries(records.map(r => [r.date, r]));
   const allDates = daysInMonth(year, month);
-  const empSatRule = resolveShiftSatRule(shifts, empObj);
+  const empSatRule = resolveEmpSatRule(empObj, shifts);
 
   const rows = allDates.map(dateStr => {
-    const dow  = new Date(dateStr).getDay();
+    // Parse YYYY-MM-DD as local-civil (NOT UTC) to get correct dow
+    const [yy, mm, dd] = dateStr.split("-").map(Number);
+    const dow  = new Date(yy, mm - 1, dd).getDay();
     const isFuture  = dateStr > today;
     const isSunday  = dow === 0;
     const isWO      = isWeeklyOff(dateStr, dow, empSatRule, year, month);
@@ -183,13 +144,17 @@ export function MonthlyAttendanceReport({ user }) {
     let status = rec?.status;
     let leaveType = leave?.leave_type || "";
 
-    // WO and Holiday take priority over absent/empty records.
-    // Only positive attendance (present / half_day) overrides a WO day.
-    const hasPositiveAtt = ["present", "half_day", "full_day"].includes(rec?.status);
+    // WO and Holiday take priority over records that lack an actual punch-in.
+    // Only a REAL punch (rec.punch_in_time present) can override a WO/Holiday
+    // label — a regularised "present"/half_day with no punch shouldn't visually
+    // displace the Weekly-Off / Holiday tag.
+    const hasActualPunch = !!rec?.punch_in_time;
+    const isPositiveStatus = ["present", "half_day", "full_day"].includes(rec?.status);
+    const hasPositiveAtt = hasActualPunch && isPositiveStatus;
 
     if (isWO && !hasPositiveAtt) {
       status = "weekly_off";
-    } else if (isHoliday && !hasPositiveAtt && !status) {
+    } else if (isHoliday && !hasPositiveAtt) {
       status = "holiday";
     } else if (!status) {
       if (leave)       status = "leave";
@@ -209,7 +174,8 @@ export function MonthlyAttendanceReport({ user }) {
     return acc;
   }, {});
   const workingDays = allDates.filter(d => {
-    const dow = new Date(d).getDay();
+    const [yy, mm, dd] = d.split("-").map(Number);
+    const dow = new Date(yy, mm - 1, dd).getDay();
     return !isWeeklyOff(d, dow, empSatRule, year, month) && !holidays.has(d) && d <= today;
   }).length;
   const totalHours = records.reduce((sum, r) => sum + (r.hours_worked && r.hours_worked > 0 ? r.hours_worked : 0), 0);
@@ -326,7 +292,7 @@ export function MonthlyAttendanceReport({ user }) {
                           {isFuture ? (
                             <span className="text-xs text-slate-400 italic">—</span>
                           ) : (
-                            <AttendanceStatusBadge record={{ status, ...(rec || {}) }} />
+                            <AttendanceStatusBadge record={{ ...(rec || {}), status }} />
                           )}
                         </td>
                         <td className="px-4 py-2.5 text-slate-600 font-mono text-xs">{fmtTime(rec?.punch_in_time)}</td>
