@@ -62,13 +62,19 @@ function cellInfo(att, leaveType, dow, isHoliday, isFuture, satRule, dateStr, ye
     if (status === "half_day") return { code: "HD", color: "amber"  };
   }
 
-  // Calendar rules (no punch — WO / Holiday / Leave / Absent)
+  // Calendar rules (WO/Holiday/future always win over no-punch records)
   if (isWO)       return { code: "WO", color: "slate"  };
   if (isHoliday)  return { code: "H",  color: "purple" };
   if (isFuture)   return { code: "",   color: "empty"  };
-  if (leaveType)  return { code: leaveType.substring(0, 3).toUpperCase(), color: "blue" };
-  // Explicit half-day even without punch (manual entry) still shows HD
+
+  // On a working day with a no-punch record (e.g. legacy regularised), respect the
+  // recorded positive status so HR doesn't see false Absents.
+  if (att?.status === "present" || att?.status === "full_day") {
+    return { code: "FD", color: "reg" };
+  }
   if (att?.status === "half_day") return { code: "HD", color: "amber" };
+
+  if (leaveType)  return { code: leaveType.substring(0, 3).toUpperCase(), color: "blue" };
   return { code: "A", color: "red" };
 }
 

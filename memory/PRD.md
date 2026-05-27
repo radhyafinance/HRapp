@@ -376,6 +376,22 @@ Three compounded bugs caused 1st/3rd Saturdays (and even Sundays) to display as 
 
 Files changed: `/app/frontend/src/utils/shiftRules.js` (new), `/app/frontend/src/components/attendance/MonthlyAttendanceReport.js`, `/app/frontend/src/components/attendance/AttendanceRegisterTab.js`.
 
+## Bug Fix — Regularised attendance shown as Absent + Punch-Time TZ Mismatch (Feb 2026)
+Three connected fixes:
+1. **Mandatory punch times** — Previously, the Employee "Request Regularisation" modal sent `punch_in_time: null` always, and the Admin "Add Record" modal allowed saving Present/Half Day without any punch. With no punch time, the StatusBadge fell through to "Absent" rendering even though `status === "present"`. Now both modals require BOTH Punch-In and Punch-Out when status is `present` or `half_day`. Validated client-side AND on the backend via new `_enforce_punch_required()` helper across all three regularisation endpoints (`PATCH /attendance/records/{id}`, `POST /attendance/records`, `POST /attendance/regularisation-requests`).
+2. **Timezone mismatch** — `_normalise_time()` previously interpreted HR-entered `HH:MM` as **UTC** and stored it as `+00:00`. The UI then displayed via `toLocaleTimeString("en-IN")` which converts UTC → IST, so typing `09:30` rendered back as `15:00` IST. Now manual HH:MM input is interpreted as **IST (Asia/Kolkata, +05:30)** so what HR types is what HR sees. Frontend `isoToTime()` switched from `getUTCHours()` to `getHours()` (local IST). Labels updated from "HH:MM UTC" → "Punch In (IST)" / "Punch Out (IST)".
+3. **Defensive StatusBadge + Matrix fallback** — Added explicit `status === "present" || status === "full_day"` case in `StatusBadge.js` so any legacy regularised record without `punch_in_time` still renders as Present. AttendanceRegisterTab `cellInfo()` similarly returns `FD (regularised)` on working days for no-punch positive records.
+4. **Data migration** — Re-anchored 6 legacy regularised records that were stored with `+00:00` offset to `+05:30` (preserving the wallclock value the HR originally typed) — affects RMF0001, RMF0008, RMF0009 records for Jan/Feb/May 2026 dates. Real-punch records (10 records using `datetime.now(timezone.utc)`) were left alone since they store TRUE UTC instants and convert correctly on display.
+
+Files: `/app/backend/routes/attendance.py` (IST_TZ, `_normalise_time`, `_enforce_punch_required`), `/app/frontend/src/components/attendance/Regularisation.js`, `/app/frontend/src/components/attendance/StatusBadge.js`, `/app/frontend/src/components/attendance/AttendanceRegisterTab.js`.
+
+Verified via curl:
+- POST /records `{status:"present", reason:"..."}` → 400 "Punch-In time is mandatory…"
+- POST /records `{status:"present", punch_in_time:"09:30"}` → 400 "Punch-Out time is mandatory…"
+- POST /records `{status:"present", punch_in_time:"09:30", punch_out_time:"18:00"}` → 200, stored as `2026-04-15T09:30:00+05:30`
+- POST /records `{status:"absent"}` → 200 (punch times not required for negative statuses)
+- Round-trip: 09:30 IST input → en-IN display = "09:30 am" ✅
+
 ## TZ Sweep (Feb 2026)
 Followed-up the WO bug fix by sweeping all remaining `new Date().toISOString().split('T')[0]` civil-date usages — these returned UTC dates in IST browsers, so "today" looked like yesterday for any IST user after 18:30 IST and date inputs / "max" attributes / history-default-dates were one day behind. Replaced with `toLocalDateStr()` from `/app/frontend/src/utils/shiftRules.js` across:
 - `/app/frontend/src/pages/Attendance.js` (today_iso, thirty_days_ago, fetch-attendance today lookup, render-time today)

@@ -19,6 +19,9 @@ router = APIRouter()
 
 OFFICE_LOCATIONS_CACHE = []
 
+# Asia/Kolkata fixed offset — used for interpreting HR-entered HH:MM regularisation times
+IST_TZ = timezone(timedelta(hours=5, minutes=30))
+
 
 def haversine_distance(lat1, lon1, lat2, lon2):
     R = 6371000
@@ -798,6 +801,23 @@ async def list_attendance(
 
 HR_ROLES = ("hr_admin", "management")
 VALID_STATUSES = {"present", "absent", "half_day", "leave", "weekly_off", "holiday"}
+# Statuses that REQUIRE punch_in_time + punch_out_time to be provided.
+STATUSES_REQUIRING_PUNCH = {"present", "half_day"}
+
+
+def _enforce_punch_required(status: Optional[str], punch_in: Optional[str], punch_out: Optional[str]) -> None:
+    """For positive attendance statuses, both punch_in and punch_out are mandatory."""
+    if status in STATUSES_REQUIRING_PUNCH:
+        if not punch_in or not str(punch_in).strip():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Punch-In time is mandatory when marking attendance as '{status}'.",
+            )
+        if not punch_out or not str(punch_out).strip():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Punch-Out time is mandatory when marking attendance as '{status}'.",
+            )
 
 
 class RegulariseEditBody(BaseModel):
@@ -838,23 +858,29 @@ def _reg_to_dict(r: dict) -> dict:
 
 
 def _normalise_time(date_str: str, time_str: Optional[str]) -> Optional[str]:
-    """Accept 'HH:MM', 'HH:MM:SS' or full ISO; return ISO string anchored to date_str."""
+    """Accept 'HH:MM', 'HH:MM:SS' or full ISO; return ISO string anchored to date_str.
+
+    Manual HH:MM input is interpreted as **IST (Asia/Kolkata, +05:30)** — the only
+    civil timezone Radhya operates in — so that what HR types in is what the user
+    sees displayed (since every UI surface localises via `toLocaleTimeString("en-IN")`).
+    """
     if not time_str:
         return None
     time_str = time_str.strip()
-    # If already ISO-looking
-    try:
-        dt = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.isoformat()
-    except ValueError:
-        pass
-    # Otherwise treat as HH:MM[:SS]
+    # If already ISO-looking (has 'T' or explicit offset/Z) — trust the caller's tz
+    if "T" in time_str or "Z" in time_str or "+" in time_str[10:] or "-" in time_str[10:]:
+        try:
+            dt = datetime.fromisoformat(time_str.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=IST_TZ)
+            return dt.isoformat()
+        except ValueError:
+            pass
+    # Otherwise treat as HH:MM[:SS] in IST
     try:
         t = datetime.strptime(time_str, "%H:%M:%S") if time_str.count(":") == 2 else datetime.strptime(time_str, "%H:%M")
         d = datetime.strptime(date_str, "%Y-%m-%d")
-        combined = datetime(d.year, d.month, d.day, t.hour, t.minute, t.second, tzinfo=timezone.utc)
+        combined = datetime(d.year, d.month, d.day, t.hour, t.minute, t.second, tzinfo=IST_TZ)
         return combined.isoformat()
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Could not parse time '{time_str}'. Use HH:MM or full ISO.")
@@ -994,6 +1020,11 @@ async def regularise_edit(record_id: str, body: RegulariseEditBody, current_user
     rec = await db.attendance_records.find_one({"_id": ObjectId(record_id)})
     if not rec:
         raise HTTPException(status_code=404, detail="Attendance record not found")
+    # If status is positive, punch times are mandatory (use new values or fall back to existing)
+    effective_status = body.status or rec.get("status")
+    effective_in = body.punch_in_time or rec.get("punch_in_time")
+    effective_out = body.punch_out_time or rec.get("punch_out_time")
+    _enforce_punch_required(effective_status, effective_in, effective_out)
     changes = {k: v for k, v in body.model_dump().items() if v is not None and k != "reason"}
     if not changes:
         raise HTTPException(status_code=400, detail="No changes provided")
@@ -1007,6 +1038,8 @@ async def regularise_edit(record_id: str, body: RegulariseEditBody, current_user
 async def regularise_create(body: RegulariseCreateBody, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in HR_ROLES:
         raise HTTPException(status_code=403, detail="Only HR / Management can regularise attendance")
+    # Mandatory punch times for positive attendance
+    _enforce_punch_required(body.status, body.punch_in_time, body.punch_out_time)
     # Reject if a record already exists for that day
     existing = await db.attendance_records.find_one({"employee_id": body.employee_id, "date": body.date})
     if existing:
@@ -1046,6 +1079,8 @@ async def create_reg_request(body: RegulariseRequestBody, current_user: dict = D
     emp_id = current_user.get("employee_id")
     if not emp_id:
         raise HTTPException(status_code=400, detail="Only employees can submit regularisation requests")
+    # Mandatory punch times for positive attendance
+    _enforce_punch_required(body.requested_status, body.requested_punch_in_time, body.requested_punch_out_time)
     # Reject duplicate pending request for the same day
     existing = await db.attendance_reg_requests.find_one(
         {"employee_id": emp_id, "date": body.date, "status": "pending"}

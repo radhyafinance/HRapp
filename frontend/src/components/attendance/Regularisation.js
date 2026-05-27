@@ -21,7 +21,8 @@ function isoToTime(iso) {
   try {
     const d = new Date(iso);
     if (Number.isNaN(d.getTime())) return "";
-    return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+    // Local hours/minutes — for IST browsers this matches what the user typed.
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   } catch { return ""; }
 }
 
@@ -55,6 +56,11 @@ export function AdminRegulariseModal({ mode, record, employees, onClose, onSaved
     setErr("");
     if (!reason.trim()) return setErr("Reason is required.");
     if (mode === "create" && !empId) return setErr("Select an employee.");
+    // Mandatory punch times for positive attendance
+    if (status === "present" || status === "half_day") {
+      if (!punchIn) return setErr("Punch-In time is required for Present / Half Day status.");
+      if (!punchOut) return setErr("Punch-Out time is required for Present / Half Day status.");
+    }
     setSaving(true);
     try {
       if (mode === "edit") {
@@ -112,12 +118,16 @@ export function AdminRegulariseModal({ mode, record, employees, onClose, onSaved
         )}
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Punch In (HH:MM UTC)</label>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">
+              Punch In (IST){(status === "present" || status === "half_day") && <span className="text-red-500"> *</span>}
+            </label>
             <input type="time" value={punchIn} onChange={(e) => setPunchIn(e.target.value)} data-testid="reg-punch-in"
               className="w-full border border-slate-300 rounded-lg px-3 py-2" />
           </div>
           <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Punch Out (HH:MM UTC)</label>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">
+              Punch Out (IST){(status === "present" || status === "half_day") && <span className="text-red-500"> *</span>}
+            </label>
             <input type="time" value={punchOut} onChange={(e) => setPunchOut(e.target.value)} data-testid="reg-punch-out"
               className="w-full border border-slate-300 rounded-lg px-3 py-2" />
           </div>
@@ -152,6 +162,8 @@ export function AdminRegulariseModal({ mode, record, employees, onClose, onSaved
 export function EmployeeRegulariseRequestModal({ onClose, onSaved }) {
   const [date, setDate] = useState(toLocalDateStr());
   const [attendance, setAttendance] = useState("present"); // "present" | "half_day"
+  const [punchIn, setPunchIn] = useState("");
+  const [punchOut, setPunchOut] = useState("");
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -159,12 +171,14 @@ export function EmployeeRegulariseRequestModal({ onClose, onSaved }) {
   const submit = async () => {
     setErr("");
     if (!reason.trim()) return setErr("Please explain why you're requesting this change.");
+    if (!punchIn) return setErr("Punch-In time is required.");
+    if (!punchOut) return setErr("Punch-Out time is required.");
     setSaving(true);
     try {
       await API.post("/attendance/regularisation-requests", {
         date,
-        requested_punch_in_time: null,
-        requested_punch_out_time: null,
+        requested_punch_in_time: punchIn,
+        requested_punch_out_time: punchOut,
         requested_status: attendance,
         reason,
       });
@@ -212,6 +226,24 @@ export function EmployeeRegulariseRequestModal({ onClose, onSaved }) {
               }`}>
               Half Day Present
             </button>
+          </div>
+        </div>
+
+        {/* Punch In / Out (mandatory in IST) */}
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">
+              Punch In (IST) <span className="text-red-500">*</span>
+            </label>
+            <input type="time" value={punchIn} onChange={(e) => setPunchIn(e.target.value)} data-testid="empreg-punch-in"
+              className="w-full border border-slate-300 rounded-lg px-3 py-2" />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">
+              Punch Out (IST) <span className="text-red-500">*</span>
+            </label>
+            <input type="time" value={punchOut} onChange={(e) => setPunchOut(e.target.value)} data-testid="empreg-punch-out"
+              className="w-full border border-slate-300 rounded-lg px-3 py-2" />
           </div>
         </div>
 

@@ -27,6 +27,11 @@ export function AttendanceStatusBadge({ record: r }) {
   else if (status === "half_day") { label = "Half Day"; cls = "bg-orange-100 text-orange-700"; }
   else if (status === "weekly_off") { label = "Off"; cls = "bg-slate-100 text-slate-600"; }
   else if (status === "holiday") { label = "Holiday"; cls = "bg-rose-100 text-rose-700"; }
+  else if (status === "present" || status === "full_day") {
+    // Explicit positive status (e.g. regularised record without a real punch_in_time).
+    if (geofence_verified === false) { label = "Outside Fence"; cls = "bg-amber-100 text-amber-700"; }
+    else { label = "Present"; cls = "bg-green-100 text-green-700"; }
+  }
   else if (punch_in_time) {
     if (geofence_verified) { label = "Present"; cls = "bg-green-100 text-green-700"; }
     else { label = "Outside Fence"; cls = "bg-amber-100 text-amber-700"; }
