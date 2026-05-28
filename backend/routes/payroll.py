@@ -28,6 +28,28 @@ def _is_non_working_saturday(d: date, sat_rule: Optional[str]) -> bool:
     return False
 
 
+def _is_payslip_visible_to_employee(record: dict) -> bool:
+    """Gating rule for non-admin payslip visibility:
+
+    1. Status must be `processed` or `paid` (drafts are hidden).
+    2. The period's month must have ENDED — i.e., today must be on or after
+       the 1st of the month after the payroll period.
+
+    HR Admin / Management bypass this and see everything.
+    """
+    if record.get("status") not in ("processed", "paid"):
+        return False
+    period = record.get("period", "") or ""
+    try:
+        y, m = map(int, period.split("-"))
+    except (ValueError, AttributeError):
+        return False
+    # 1st of the month AFTER the payroll period
+    next_y = y + (1 if m == 12 else 0)
+    next_m = 1 if m == 12 else m + 1
+    return date.today() >= date(next_y, next_m, 1)
+
+
 def calc_payroll_components(emp: dict, days_in_month: int = 30, lop_days: float = 0.0):
     """Compute salary components.
 
@@ -330,6 +352,9 @@ async def list_payroll(
     elif employee_id:
         query["employee_id"] = employee_id
     records = await db.payroll_records.find(query).sort([("period", -1), ("employee_id", 1)]).to_list(500)
+    # Gate visibility for non-admin roles: only processed/paid AND past month-end
+    if role not in ["hr_admin", "management"]:
+        records = [r for r in records if _is_payslip_visible_to_employee(r)]
     return [pay_to_dict(r) for r in records]
 
 
@@ -341,6 +366,9 @@ async def employee_payroll(employee_id: str, current_user: dict = Depends(get_cu
     if role not in ["hr_admin", "management"] and employee_id != my_emp_id:
         raise HTTPException(status_code=403, detail="Access denied")
     records = await db.payroll_records.find({"employee_id": employee_id}).sort("period", -1).to_list(50)
+    # Gate visibility for non-admin roles
+    if role not in ["hr_admin", "management"]:
+        records = [r for r in records if _is_payslip_visible_to_employee(r)]
     return [pay_to_dict(r) for r in records]
 
 
@@ -766,6 +794,12 @@ async def download_payslip_pdf(record_id: str, current_user: dict = Depends(get_
     if current_user.get("role") not in ["hr_admin", "management"]:
         if record.get("employee_id") != current_user.get("employee_id"):
             raise HTTPException(status_code=403, detail="Access denied")
+        # Gate: only after processing AND month-end
+        if not _is_payslip_visible_to_employee(record):
+            raise HTTPException(
+                status_code=403,
+                detail="Your payslip for this period is not available yet. It will be released after HR processes the payroll and the month ends.",
+            )
     employee = await db.employees.find_one({"employee_id": record.get("employee_id")})
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -792,4 +826,10 @@ async def get_payslip(record_id: str, current_user: dict = Depends(get_current_u
     record = await db.payroll_records.find_one({"_id": ObjectId(record_id)})
     if not record:
         raise HTTPException(status_code=404, detail="Not found")
+    role = current_user.get("role")
+    if role not in ["hr_admin", "management"]:
+        if record.get("employee_id") != current_user.get("employee_id"):
+            raise HTTPException(status_code=403, detail="Access denied")
+        if not _is_payslip_visible_to_employee(record):
+            raise HTTPException(status_code=403, detail="Payslip not yet released.")
     return pay_to_dict(record)
