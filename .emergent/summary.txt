@@ -2,33 +2,39 @@
 
 **User's preferred language**: English (INSTRUCT NEXT AGENT: You MUST respond in English only)
 
-**what currently exists?**: A robust PWA HR application with multi-tier role-based access control. Features include geofenced/selfie attendance, leave management, complex payroll logic, transitive manager hierarchy visibility, and DigiLocker document verification via Perfios API for authenticating candidate/employee documents. 
+**what currently exists?**: A robust PWA HR application with role-based access control. Features include geofenced/selfie attendance, leave management, complex payroll logic, transitive manager hierarchy visibility, DigiLocker document verification, bulk salary revision via Excel, highly configurable shift rules (e.g., 1st/3rd Saturdays off), detailed monthly/matrix attendance reporting, and WebAuthn (Passkey) biometric login. 
 
 **Last working item**:
-    - **Last item agent was working**: Fixing a PWA blank screen on refresh bug occurring in the production deployment. The agent modified the Service Worker () to handle SPA navigation requests () as network-first rather than cache-first. Also forced  on page load in  to bust stale caches.
-    - **Status**: USER VERIFICATION PENDING
-    - **Agent Testing Done**: Y
-    - **Which testing method agent to use?**: NA (Testing on preview complete; awaiting user deploy and test on production)
-    - **User Testing Done**: N
+    - Last item agent was working: Answering a user query regarding WebAuthn/Passkey settings for the production environment. The agent explained that Passkeys are cryptographically tied to the domain () and proposed optional UI improvements (like filtering out wrong  credentials from the status response and showing a banner on production for new domain registration). 
+    - Status: USER VERIFICATION PENDING (Awaiting user's decision on the proposed WebAuthn UI improvements)
+    - Agent Testing Done: N/A (Consultation only)
+    - Which testing method agent to use?: Frontend testing agent (If user approves the WebAuthn UI changes).
+    - User Testing Done: N
 
-**All Pending/In progress Issue list**: 
-  - Issue 1: 15-Minute Ping System Configuration (P2)
+**All Pending/In progress Issue list**:
+  Issue 1: Passkey/WebAuthn domain UI improvements (P2)
+     - Attempted fixes: None yet.
+     - Next debug checklist: Await user approval. If approved, update  to filter out passkeys that do not match the current request's / and add a banner to the UI for production users.
+     - Why fix this issue and what will be achieved with the fix?: Prevents user confusion when they see biometric is registered from the preview domain, but the login button fails on the production domain.
+     - Status: USER VERIFICATION PENDING
+     - Is recurring issue?: N
+     - Should Test frontend/backend/both after fix?: Both
+
+  Issue 2: 15-Minute Ping System Configuration (P2)
      - Attempted fixes: None.
      - Next debug checklist: Prompt user for clarification regarding what 15 minutes exactly means (health monitor vs battery saver feature vs active location pinging).
      - Why fix this issue and what will be achieved with the fix?: Clarifies and implements background tracking requirements.
      - Status: BLOCKED (Awaiting User Clarification)
      - Is recurring issue?: N
      - Should Test frontend/backend/both after fix?: Both
-     - Blocked on other issue: None
 
-  - Issue 2: JWT Session Timeout Adjustment (P2)
+  Issue 3: JWT Session Timeout Adjustment (P2)
      - Attempted fixes: None.
      - Next debug checklist: Check if user wants to keep the 24-hour limit, extend it, or move to a sliding window session strategy.
      - Why fix this issue and what will be achieved with the fix?: Better UX for field agents to avoid frequent logouts.
      - Status: USER VERIFICATION PENDING
      - Is recurring issue?: N
      - Should Test frontend/backend/both after fix?: Backend
-     - Blocked on other issue: None
 
 **In progress Task List**: None
 
@@ -42,17 +48,36 @@
     - Task 7: Document Completeness Scope Refinement (P3) - Scope  to manager's sub-tree instead of whole company.
 
 **Completed work in this session**
-- Fixed Aadhaar JSON Data saving to MongoDB (DONE): Repaired  definition in .
-- Separated Aadhaar Storage (DONE): Mapped DigiLocker Aadhaar to a new  DB field, preserving  and  for manual image uploads. Added third row to KYC UI.
-- Fixed Production Manager Visibility (DONE): Added  logic in , , and  to automatically upgrade users to  if they have direct reports, fixing visibility issues caused by production DB drift (e.g., RMF0010 having 'employee' role in DB).
-- Fixed PWA Blank Page on Refresh (DONE): Corrected Service Worker SPA navigation caching to use network-first.
+- Executed E2E Backend Regression Tests via  with 34/34 tests passing (DONE)
+- 1st/3rd Saturday WO visual bug in Attendance Reports (Timezone/UTC bug fixed using local date logic) (DONE)
+- Timezone (UTC to IST) display sweep across Attendance, Dashboard, FieldTracking, and Regularisation pages (DONE)
+- Attendance Register Matrix Sticky Headers layout fix (DONE)
+- Regularisation fixes: Made punch-in/out times mandatory for present status, fixed UTC-to-IST conversion, and migrated legacy DB records (DONE)
+- LOP Saturday WO Gap:  now correctly skips non-working Saturdays (DONE)
+- Payroll List Sort Order: Sorted by Period (desc) and Employee ID (asc) (DONE)
+- Payslip Visibility Gating: Restricted employee payslip viewing until payroll is fully processed/paid and the month has ended (DONE)
 
 **Earlier issues found/mentioned but not fixed**
-   - Issue 1:  self-regularisation UI.
-     - Debug checklist: Allow  to request regularisation on themselves directly from the standard UI instead of forcing the Add Record bypass workflow.
-     - Why to solve this issue and what will be achieved with this?: Keeps the audit trail consistent.
-     - Should Test frontend/backend/both after fix: Both
-     - Is recurring issue?: N
+   Issue 1:  self-regularisation UI.
+   - Debug checklist: Allow  to request regularisation on themselves directly from the standard UI instead of forcing the Add Record bypass workflow.
+   - Why to solve this issue and what will be achieved with this?: Keeps the audit trail consistent.
+   - Should Test frontend/backend/both after fix: Both
+   - Is recurring issue?: N
+
+   Issue 2: Payroll recalculate button missing
+   - Debug checklist: Add a Recalculate LOP/Payroll button for draft payroll records so HR doesn't have to manually update them when systemic changes (like Saturday LOP logic) are applied.
+   - Why to solve this issue: Ease of use for HR.
+   - Should test: Frontend/Backend
+
+   Issue 3: Payroll Employee Search Bar
+   - Debug checklist: Implement a quick search-by-employee filter on the Payroll list UI.
+   - Why to solve this issue: Scrolling through 70+ records is tedious.
+   - Should test: Frontend
+
+   Issue 4: Regularisation integration with Leaves
+   - Debug checklist: When HR selects leave during regularisation, show a dropdown to pick leave type (CL/SL/EL) and auto-deduct from the balance.
+   - Why to solve this issue: Closes a gap between attendance regularisation and leave management.
+   - Should test: Backend/Frontend
 
 **Known issue recurrence from previous fork**
   - Issue recurrence in previous fork: None
@@ -63,26 +88,26 @@
 
 
 **Key Technical Concepts**
-Frontend: React, Tailwind, PWA Service Workers (Workbox patterns).
-Backend: FastAPI, MongoDB, JWT Authentication.
-External Integration: Perfios DigiLocker OAuth flow. 
+Frontend: React, Tailwind, PWA Service Workers.
+Backend: FastAPI, MongoDB, Pydantic, Python Excel handling, WebAuthn.
 
 **key DB schema**
-  - :  ( stores verified JSON identity data, others store manual uploads).
-  -  & :  field (dynamically overridden at runtime if the user has direct reports).
+  - : period, employee_id, status (draft, processed, paid), lop_days
+  - : credential_id, user_id, rp_id
+  - : status, punch_in_time, punch_out_time
 
 **changes in tech stack**
   - None
 
 **All files of reference**
-  -  (Fixed missing map logic).
-  -  (Added  type).
-  -  (UI support for distinct DigiLocker row).
-  -  &  (Added dynamic role computation).
-  -  &  (PWA caching logic fixes).
+  -  (NEW: Extracted common local date logic to fix UTC/IST shifting bugs)
+  -  (Fixed regularisation mandatory fields and IST logic)
+  -  (UI fixes for mandatory punch times)
+  -  (Fixed LOP Saturday bug, List sorting, and Payslip access gates)
+  -  (Fixed sticky header scroll bug)
 
 **Areas that need refactoring**: 
--  has nested  blocks added during Perfios schema debugging. It works robustly now but could benefit from structural cleanup.
+- None identified in this session.
 
 **key api endpoints**
   - 
@@ -91,23 +116,26 @@ External Integration: Perfios DigiLocker OAuth flow.
   - 
 
 **Critical Info for New Agent**
-  - **ENVIRONMENT AWARENESS**: The user has an active Production Deployment. You are working in Preview. Do NOT use deployment URLs in the code. Whenever the user complains about production or deployment issues, remind them they must use the Save to Github feature to push your preview fixes to their live environment.
-  - **Dynamic Role Computation**: To prevent DB drift between staging/production (e.g. user RMF0010 stored as ),  automatically overrides and returns  if they have valid direct reports in the  tree.
-  - **Aadhaar Dual-Storage**: DigiLocker verified data goes strictly into .  are strictly for manually uploaded files.
+  - **ENVIRONMENT AWARENESS**: The user has deployed the app to PRODUCTION. You are in the PREVIEW environment. Do NOT share or use the exact preview or production URLs in your code. Ensure cross-origin implementations like WebAuthn rely strictly on dynamic headers (like ) rather than hardcoded URLs.
+  - **Timezone Handling**: Always use  from  on the frontend for civil dates (YYYY-MM-DD) to prevent browser IST vs UTC discrepancies.  defaults to UTC and shifts dates backward after 6:30 PM IST.
+  - **Regularisation Rule**: When regularising attendance to present or half_day,  and  are now absolutely mandatory.
 
 **documents and test reports created in this job**
-  - /app/memory/PRD.md (Updated with Aadhaar and Role override changes)
+  -  (Regression test report: 34/34 passed)
+  -  
+  -  (Updated RMF0001 role)
 
 **Last 10 User Messages and any pending HUMAN messages** 
- 1. *User*: Confirmed agent should proceed with Aadhaar save bug.
- 2. *Agent*: Fixed bug, verified in DB, finished task.
- 3. *User*: Requested separate storage for DigiLocker Aadhaar vs manual Aadhaar images.
- 4. *Agent*: Implemented separate  logic, verified, finished task.
- 5. *User*: Reported RMF0010 unable to see team details in deployment.
- 6. *Agent*: Diagnosed DB role mismatch in production. Implemented dynamic auto-upgrade to 'managers' role based on direct reports. Finished task.
- 7. *User*: Reported PWA goes blank on page refresh in deployment.
- 8. *Agent*: Diagnosed Service Worker caching stale SPA routes. Changed navigation requests to network-first, updated SW version, and instructed user to redeploy.
-*(No pending human messages. Awaiting user to redeploy and verify the SW caching fix)*
+ 1. *User*: Asked how LOP days are calculated.
+ 2. *Agent*: Explained logic and highlighted a gap where non-working Saturdays were incorrectly counted as LOP.
+ 3. *User*: Asked agent to fix the Saturday LOP gap.
+ 4. *Agent*: Fixed it, finished, and proposed adding a Recalculate button for HR.
+ 5. *User*: Requested Payroll list be displayed in employee ID order.
+ 6. *Agent*: Sorted the list by period desc, emp_id asc. Finished and proposed adding a quick search filter.
+ 7. *User*: Instructed to only show payslips to employees after payroll is processed and month ends.
+ 8. *Agent*: Gated the employee payroll APIs. Finished and proposed adding an Info Card for empty states.
+ 9. *User*: Notified agent about Production deployment and asked what settings are required for passkey login to work in production.
+ 10. *Agent*: Explained  domain binding for WebAuthn,  settings, and HTTPS requirements. Proposed optional UI tweaks to prune invalid credentials for the domain. *(Pending human response)*
 
 **Project Health Check:**
 Healthy. No Mocked endpoints.
@@ -120,7 +148,7 @@ Healthy. No Mocked endpoints.
 	 •	WebAuthn (Device Biometrics) — Direct API logic.
 
 **Testing status**
-  - Testing agent used after significant changes: NO (Self-tested via logs and bash scripts).
+  - Testing agent used after significant changes: YES (iteration 11)
   - Troubleshoot agent used after agent stuck in loop: NO
   - Test files created: None
   - Known regressions: None
@@ -132,4 +160,4 @@ Healthy. No Mocked endpoints.
   - Divisional Manager:  / 
 
 **What agent forgot to execute**
-None. All reported issues were addressed.</analysis>
+- The agent proposed several high-value UX enhancements (Payroll recalculate button, Payroll Employee Search Bar, Regularisation leave deduction, Info card for gated payslips), but the user continuously asked new questions without confirming them. These should be tracked as potential UX debts/improvements.</analysis>

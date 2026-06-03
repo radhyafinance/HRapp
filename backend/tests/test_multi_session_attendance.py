@@ -15,7 +15,7 @@ from datetime import datetime, timezone, timedelta
 from pymongo import MongoClient
 import pytest
 
-BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://radhya-hr-system-1.preview.emergentagent.com").rstrip("/")
+BASE = os.environ.get("REACT_APP_BACKEND_URL", "https://hr-payroll-pwa-1.preview.emergentagent.com").rstrip("/")
 API = f"{BASE}/api"
 
 ADMIN = ("admin", "Admin@123")

@@ -584,7 +584,7 @@ async def download_template(current_user: dict = Depends(get_current_user)):
         n = len(values)
         formula = f"_Lookups!${lkp_letter}$1:${lkp_letter}${n}"
         dv = DataValidation(type="list", formula1=formula, allow_blank=True, showDropDown=False)
-        dv.error = f"Pick one of the allowed values"
+        dv.error = "Pick one of the allowed values"
         dv.errorTitle = "Invalid value"
         ws.add_data_validation(dv)
         dv.add(f"{col_letter}2:{col_letter}1001")
@@ -758,6 +758,7 @@ async def bulk_upload(file: UploadFile = File(...), current_user: dict = Depends
 #  Perfios bank account verification
 # ─────────────────────────────────────────────
 PERFIOS_URL = "https://hub.perfios.com/api/kyc/v3/bankacc-verification"
+PERFIOS_EPF_URL = "https://hub.perfios.com/api/kyc/v3/epf-auth"
 
 @router.post("/{employee_id}/verify-bank")
 async def verify_bank_account(employee_id: str, current_user: dict = Depends(get_current_user)):
@@ -841,6 +842,144 @@ async def verify_bank_account(employee_id: str, current_user: dict = Depends(get
         "verified_name":   reg_name,
         "name_match_score": name_match,
         "raw":             raw,
+    }
+
+
+def _normalise_epf_history(items: list) -> list:
+    """Normalise EPF employment history from various Perfios response shapes."""
+    normalised = []
+    for item in (items or []):
+        if not isinstance(item, dict):
+            continue
+        # Perfios actual shape: establishmentName, memberId, startMonthYear, lastMonthYear, address
+        addr = item.get("address") or {}
+        city = addr.get("city") or addr.get("district") or ""
+        state = addr.get("state") or ""
+        office = f"{city}, {state}".strip(", ") if city or state else ""
+        normalised.append({
+            "employer": (
+                item.get("establishmentName") or
+                item.get("employer") or item.get("establishment") or
+                item.get("establishmentId") or "—"
+            ),
+            "member_id": (
+                item.get("memberId") or item.get("epfoMemberId") or
+                item.get("member_id") or "—"
+            ),
+            "member_name": (
+                item.get("memberName") or item.get("member") or item.get("name") or ""
+            ),
+            "joining_date": (
+                item.get("startMonthYear") or item.get("joiningDate") or
+                item.get("joining_date") or item.get("doj") or ""
+            ),
+            "exit_date": (
+                item.get("lastMonthYear") or item.get("exitDate") or
+                item.get("exit_date") or item.get("dol") or ""
+            ),
+            "office": office,
+            "status": item.get("status") or "",
+        })
+    return normalised
+
+
+@router.post("/{employee_id}/verify-uan")
+async def verify_uan(employee_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    emp = await db.employees.find_one({"employee_id": employee_id})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    uan = (emp.get("uan_number") or "").strip()
+    if not uan:
+        raise HTTPException(status_code=400, detail="UAN number is not set for this employee. Please add it first.")
+
+    api_key = os.environ.get("PERFIOS_API_KEY", "")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Perfios API key not configured")
+
+    payload = {
+        "uan": uan,
+        "isLatestEmployer": False,
+        "consent": "Y",
+        "clientData": {"caseId": employee_id},
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                PERFIOS_EPF_URL,
+                json=payload,
+                headers={"x-auth-key": api_key, "Content-Type": "application/json"},
+            )
+        raw = resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Perfios EPF API unreachable: {e}")
+
+    # ── Parse Perfios EPF response ──────────────────────────────────────────
+    # Actual Perfios shape:
+    # {
+    #   "statusCode": 101,
+    #   "result": {
+    #     "personalDetails": { "name": "...", "fatherOrHusbandName": "..." },
+    #     "employers": [ { establishmentName, memberId, startMonthYear, lastMonthYear, address, status } ],
+    #     "summary": { ... }
+    #   }
+    # }
+    is_valid = raw.get("statusCode") == 101
+    result_block = raw.get("result") or {}
+    personal = result_block.get("personalDetails") or {}
+    registered_name = (
+        personal.get("name") or
+        # fallback to other shapes just in case
+        (result_block.get("data") or {}).get("name") or
+        raw.get("name")
+    )
+
+    # Employment history — primary path: result.employers
+    employers_list = (
+        result_block.get("employers") or
+        result_block.get("employment_history") or
+        result_block.get("employmentHistory") or
+        (result_block.get("data") or {}).get("employmentHistory") or
+        raw.get("items") or []
+    )
+    employment_history = _normalise_epf_history(employers_list)
+
+    # Name match check (first-name-in-registered heuristic — EPFO names are often in ALL CAPS)
+    emp_name = f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip().upper()
+    reg_name_upper = (registered_name or "").upper().strip()
+    name_matched = False
+    if emp_name and reg_name_upper:
+        first_name = emp.get("first_name", "").upper().strip()
+        name_matched = (
+            first_name in reg_name_upper or
+            reg_name_upper in emp_name or
+            emp_name in reg_name_upper
+        )
+
+    # Persist result on employee
+    await db.employees.update_one(
+        {"employee_id": employee_id},
+        {"$set": {
+            "uan_verification": {
+                "verified": bool(is_valid),
+                "registered_name": registered_name,
+                "name_matched": name_matched,
+                "employment_history": employment_history,
+                "verified_at": datetime.now(timezone.utc).isoformat(),
+            }
+        }},
+    )
+
+    return {
+        "verified": bool(is_valid),
+        "registered_name": registered_name,
+        "name_matched": name_matched,
+        "employment_history": employment_history,
+        "raw": raw,
     }
 
 
