@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, Lock, Unlock } from "lucide-react";
 import API from "../../utils/api";
 import { ReportingManagerInput } from "./ReportingManagerInput";
 import { SalaryBreakupForm } from "../shared/SalaryBreakupForm";
@@ -44,7 +44,12 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
   const [err, setErr] = useState("");
   const [branches, setBranches] = useState([]);
   const [shifts, setShifts] = useState([]);
+  const [bankUnlocked, setBankUnlocked] = useState(false);
+  const [uanUnlocked, setUanUnlocked] = useState(false);
   const ifscValid = !form.ifsc_code || /^[A-Z]{4}0[A-Z0-9]{6}$/.test((form.ifsc_code || "").toUpperCase());
+
+  const isBankVerified = !bankUnlocked && emp.bank_details?.verified === true;
+  const isUanVerified = !uanUnlocked && emp.uan_verification?.verified === true;
 
   // Uniqueness checks (exclude current employee)
   const mobileCheck  = useFieldUnique("mobile",         form.mobile,         { excludeEmployeeId: emp.employee_id }, 10);
@@ -213,7 +218,34 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
 
       <h4 className="font-bold text-[#1E2A47] text-sm pt-2 border-t">Statutory Numbers</h4>
       <div className="grid grid-cols-2 gap-3">
-        {F("uan_number", "UAN Number")}
+        {/* UAN: locked if verified */}
+        {isUanVerified ? (
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">UAN Number</label>
+            <div className="flex items-center gap-2">
+              <div className="flex-1 flex items-center gap-2 border border-green-300 bg-green-50 rounded-lg px-3 py-2 text-sm font-mono text-green-800">
+                <Lock size={12} className="text-green-500 flex-shrink-0" />
+                <span>{form.uan_number}</span>
+              </div>
+              <button
+                type="button"
+                data-testid="unlock-uan-btn"
+                onClick={() => { if (window.confirm("Editing the UAN number will clear the existing EPFO verification. Re-verification will be required. Continue?")) setUanUnlocked(true); }}
+                className="flex items-center gap-1 px-2 py-2 text-xs border border-amber-300 text-amber-700 rounded-lg hover:bg-amber-50"
+              >
+                <Unlock size={12} /> Edit
+              </button>
+            </div>
+            <p className="text-[10px] text-green-600 mt-1">EPF verified — editing will require re-verification</p>
+          </div>
+        ) : (
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">UAN Number</label>
+            <input type="text" value={form.uan_number} onChange={e => setForm({ ...form, uan_number: e.target.value })}
+              data-testid="edit-uan_number"
+              className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+          </div>
+        )}
         {F("esi_number", "ESI Number")}
       </div>
 
@@ -224,17 +256,49 @@ export function EmployeeEditForm({ emp, onSaved, onCancel }) {
       />
 
       <h4 className="font-bold text-[#1E2A47] text-sm pt-2 border-t">Bank</h4>
-      <div className="grid grid-cols-3 gap-3">
-        {F("bank_name", "Bank Name")}
-        {F("account_number", "Account #")}
-        <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">IFSC Code</label>
-          <input value={form.ifsc_code} onChange={e => setForm({ ...form, ifsc_code: e.target.value.toUpperCase() })}
-            maxLength={11} data-testid="edit-ifsc_code"
-            className={`w-full border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none ${form.ifsc_code && !ifscValid ? "border-red-300" : "border-slate-300"}`} />
-          {form.ifsc_code && !ifscValid && <p className="text-[11px] text-red-600 mt-1">Invalid format</p>}
+      {isBankVerified ? (
+        <div className="border border-green-200 bg-green-50/60 rounded-lg p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5 text-xs font-semibold text-green-700">
+              <Lock size={12} /> Bank details verified — fields are locked
+            </div>
+            <button
+              type="button"
+              data-testid="unlock-bank-btn"
+              onClick={() => { if (window.confirm("Editing any bank field will clear the existing verification. Re-verification will be required. Continue?")) setBankUnlocked(true); }}
+              className="flex items-center gap-1 px-2 py-1 text-xs border border-amber-300 text-amber-700 rounded-lg hover:bg-amber-50"
+            >
+              <Unlock size={11} /> Edit
+            </button>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {[["Bank Name", form.bank_name], ["Account #", form.account_number], ["IFSC Code", form.ifsc_code]].map(([label, val]) => (
+              <div key={label}>
+                <p className="text-[10px] text-slate-500 mb-0.5">{label}</p>
+                <p className="text-sm font-mono font-medium text-green-800">{val || "—"}</p>
+              </div>
+            ))}
+          </div>
+          {emp.bank_details?.verified_name && (
+            <p className="text-[11px] text-green-600">
+              Verified holder: <span className="font-semibold">{emp.bank_details.verified_name}</span>
+              {emp.bank_details.verified_at && <span className="ml-2 text-slate-400">· {new Date(emp.bank_details.verified_at).toLocaleDateString("en-IN")}</span>}
+            </p>
+          )}
         </div>
-      </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-3">
+          {F("bank_name", "Bank Name")}
+          {F("account_number", "Account #")}
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">IFSC Code</label>
+            <input value={form.ifsc_code} onChange={e => setForm({ ...form, ifsc_code: e.target.value.toUpperCase() })}
+              maxLength={11} data-testid="edit-ifsc_code"
+              className={`w-full border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none ${form.ifsc_code && !ifscValid ? "border-red-300" : "border-slate-300"}`} />
+            {form.ifsc_code && !ifscValid && <p className="text-[11px] text-red-600 mt-1">Invalid format</p>}
+          </div>
+        </div>
+      )}
 
       <h4 className="font-bold text-[#1E2A47] text-sm pt-2 border-t">Address</h4>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

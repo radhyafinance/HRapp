@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import API from "../utils/api";
-import { UserPlus, Search, Download, Upload, Eye, TrendingUp, X, CheckCircle, AlertCircle, SkipForward } from "lucide-react";
+import { UserPlus, Search, Download, Upload, Eye, TrendingUp, X, CheckCircle, AlertCircle, SkipForward, ShieldCheck } from "lucide-react";
 import { DocCompletenessRing } from "../components/employees/DocCompletenessRing";
 import { EmployeeModal } from "../components/employees/EmployeeModal";
 import { ReportingManagerInput } from "../components/employees/ReportingManagerInput";
@@ -216,7 +216,7 @@ export default function Employees() {
           <table className="w-full" data-testid="employees-table">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
-                {["Emp ID", "Name", "Designation", "Department", "Branch", "Reports To", "Status", "Docs", "Actions"].map(h => (
+                {["Emp ID", "Name", "Designation", "Department", "Branch", "Reports To", "EPF", "Bank", "Status", "Docs", "Actions"].map(h => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
                 ))}
               </tr>
@@ -224,10 +224,10 @@ export default function Employees() {
             <tbody>
               {loading ? (
                 [...Array(5)].map((_, i) => (
-                  <tr key={i}><td colSpan={9} className="px-4 py-3"><div className="h-8 bg-slate-100 animate-pulse rounded"></div></td></tr>
+                  <tr key={i}><td colSpan={11} className="px-4 py-3"><div className="h-8 bg-slate-100 animate-pulse rounded"></div></td></tr>
                 ))
               ) : employees.length === 0 ? (
-                <tr><td colSpan={9} className="px-4 py-12 text-center text-slate-400">No employees found</td></tr>
+                <tr><td colSpan={11} className="px-4 py-12 text-center text-slate-400">No employees found</td></tr>
               ) : employees.map(emp => (
                 <tr key={emp.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
                   <td className="px-4 py-3 text-sm font-mono font-semibold text-[#E85B1E]">{emp.employee_id}</td>
@@ -253,6 +253,16 @@ export default function Employees() {
                     {emp.reporting_to
                       ? <span className="font-mono text-xs px-2 py-1 bg-[#E85B1E]/10 text-[#E85B1E] rounded-full">{emp.reporting_to}</span>
                       : <span className="text-xs text-slate-400">—</span>}
+                  </td>
+                  <td className="px-4 py-3">
+                    {emp.uan_verification?.verified
+                      ? <span className="flex items-center gap-1 text-xs font-medium text-green-600" data-testid={`epf-verified-${emp.employee_id}`}><ShieldCheck size={12} />Verified</span>
+                      : <span className="text-xs text-slate-300">—</span>}
+                  </td>
+                  <td className="px-4 py-3">
+                    {emp.bank_details?.verified
+                      ? <span className="flex items-center gap-1 text-xs font-medium text-green-600" data-testid={`bank-verified-${emp.employee_id}`}><ShieldCheck size={12} />Verified</span>
+                      : <span className="text-xs text-slate-300">—</span>}
                   </td>
                   <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${STATUS_COLORS[emp.status] || "bg-slate-100"}`}>{STATUS_LABELS[emp.status] || emp.status}</span></td>
                   <td className="px-4 py-3">

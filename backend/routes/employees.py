@@ -421,17 +421,27 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
         bank = emp.get("bank_details", {}) or {}
         old_account = bank.get("account_number", "")
         old_ifsc    = bank.get("ifsc_code", "")
+        old_bank_name = bank.get("bank_name", "")
         for k in bank_keys:
             if k in update_data:
                 bank[k] = update_data.pop(k)
-        # If account number or IFSC changed, clear previous verification
-        if bank.get("account_number", "") != old_account or bank.get("ifsc_code", "") != old_ifsc:
+        # If any bank field changed, clear previous verification
+        if (bank.get("account_number", "") != old_account or
+                bank.get("ifsc_code", "") != old_ifsc or
+                bank.get("bank_name", "") != old_bank_name):
             bank.pop("verified", None)
             bank.pop("verified_name", None)
             bank.pop("verified_at", None)
             bank.pop("name_match_score", None)
             bank.pop("verification_raw", None)
         update_data["bank_details"] = bank
+
+    # UAN: if UAN number changed, clear EPF verification
+    if "uan_number" in update_data:
+        old_uan = (emp.get("uan_number") or "").strip()
+        new_uan = (update_data.get("uan_number") or "").strip()
+        if new_uan != old_uan and emp.get("uan_verification"):
+            update_data["uan_verification"] = {}
 
     # Address consolidation
     addr_keys = ["address_current", "address_permanent"]

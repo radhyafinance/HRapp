@@ -434,6 +434,17 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
         raise HTTPException(status_code=403, detail="Access denied")
     records = await db.payroll_records.find({"period": period}).to_list(1000)
     settings_doc = await db.app_settings.find_one({"key": "company"}) or {}
+
+    # Only include employees whose bank account has been verified
+    emp_ids = [r.get("employee_id") for r in records if r.get("employee_id")]
+    emp_docs = await db.employees.find(
+        {"employee_id": {"$in": emp_ids}},
+        {"employee_id": 1, "bank_details": 1, "_id": 0}
+    ).to_list(None)
+    bank_verified_ids = {
+        e["employee_id"] for e in emp_docs
+        if e.get("bank_details", {}).get("verified") is True
+    }
     # NEFT debit account is fixed by company policy — always use 019005008108
     debit_account = "019005008108"
     txn_type = (settings_doc.get("transaction_type") or "NFT").strip()
@@ -491,11 +502,14 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
             ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
 
         for r in records:
+            emp_id = (r.get("employee_id") or "").strip()
+            # Skip employees whose bank account is not verified
+            if emp_id not in bank_verified_ids:
+                continue
             net_amount = round(float(r.get("net_salary", 0) or 0), 2)
             beneficiary_acct = (r.get("bank_account") or "").strip()
             ifsc = (r.get("ifsc_code") or "").strip().upper()
             name = clean_name(r.get("employee_name", ""))
-            emp_id = (r.get("employee_id") or "").strip()
             row_remark = f"{emp_id} {remark_suffix}"   # e.g. "RMF0001 Salary APR26"
             row_remark_client = row_remark[:21]
             row_remark_beneficiary = row_remark[:30]

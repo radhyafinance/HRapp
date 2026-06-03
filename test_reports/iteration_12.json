@@ -1,0 +1,108 @@
+{
+  "summary": "Iteration 12 — Full backend + frontend testing of 3 new features: (1) Employee list EPF/Bank verification columns, (2) Lock EPF/Bank fields in edit form with confirmation unlock, (3) NEFT export skips unverified bank employees. Backend: 25/25 tests pass. Frontend: All 8 feature scenarios verified successfully.",
+
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [
+      {
+        "flow": "RMF0009 Employee Edit Form",
+        "issue": "Save button shows 'Duplicate — Fix Fields' immediately upon opening the edit form for RMF0009 (Shivani Pathak), before any edits are made. Red message says 'Already registered (candidate): Shivani Pathak'. This appears to be a pre-existing cross-collection uniqueness conflict (employee email/mobile also exists in candidates collection). Blocks HR from saving ANY edit for RMF0009 without manually working around the false-positive conflict. This is NOT related to the new bank/UAN locking features.",
+        "affected_selectors": ["[data-testid=\"save-edit-btn\"]", ".text-red"]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "Employee Edit Form — Shift Override dropdown",
+        "issues": ["Console warning: '<span> inside <option>' HTML validity error — Emergent visual editor is wrapping option content in span tags. Cosmetic/runtime-safe but produces browser console warnings."]
+      }
+    ]
+  },
+
+  "feature_test_results": {
+    "employee_list_epf_bank_columns": {
+      "status": "PASS",
+      "details": "Table headers correctly show 'EPF' and 'Bank' columns. RMF0006/RMF0008/RMF0009 show green 'Verified' badge with ShieldCheck icon in EPF column. RMF0005/RMF0009 show green 'Verified' badge in Bank column. Unverified employees show '—'."
+    },
+    "uan_locked_in_edit_form": {
+      "status": "PASS",
+      "details": "RMF0006 (verified UAN): edit form shows UAN as read-only field in green-bordered container with lock icon. 'Edit' button (amber border, unlock icon) present. Text below: 'EPF verified — editing will require re-verification'."
+    },
+    "bank_locked_in_edit_form": {
+      "status": "PASS",
+      "details": "RMF0009 (verified bank): edit form shows bank section as green-bordered container with 'Bank details verified — fields are locked' header. Bank Name, Account #, IFSC shown as read-only. 'Edit' button visible. Verified holder name and date displayed."
+    },
+    "uan_unlock_confirmation_dialog": {
+      "status": "PASS",
+      "details": "Clicking 'Edit' on locked UAN fires window.confirm with message: 'Editing the UAN number will clear the existing EPFO verification. Re-verification will be required. Continue?'"
+    },
+    "bank_unlock_confirmation_dialog": {
+      "status": "PASS",
+      "details": "Clicking 'Edit' on locked bank fires window.confirm with message: 'Editing any bank field will clear the existing verification. Re-verification will be required. Continue?'"
+    },
+    "uan_becomes_editable_after_confirm": {
+      "status": "PASS",
+      "details": "After accepting the UAN dialog, UAN input field (data-testid='edit-uan_number') appears with the existing UAN value. Lock UI replaced by normal text input."
+    },
+    "bank_becomes_editable_after_confirm": {
+      "status": "PASS",
+      "details": "After accepting the bank dialog, bank fields (Bank Name, Account #, IFSC) become editable text inputs. Lock container replaced by 3-column grid of inputs."
+    },
+    "backend_uan_change_clears_verification": {
+      "status": "PASS",
+      "details": "PUT /api/employees/RMF0006 with different uan_number clears uan_verification (verified becomes absent/falsy). GET after confirms persisted. Same UAN doesn't clear it."
+    },
+    "backend_bank_change_clears_verification": {
+      "status": "PASS",
+      "details": "PUT /api/employees/RMF0005 with different account_number clears bank_details.verified and bank_details.verified_name. IFSC change on RMF0009 also clears bank verification. Non-bank updates (designation, blood_group) do NOT clear bank/UAN verification."
+    },
+    "neft_export_skips_unverified": {
+      "status": "PASS",
+      "details": "GET /api/payroll/export/neft?period=2026-05 returns Excel with only 2 rows (RMF0005: account 32617846559, RMF0009: account 1714831362 — both bank-verified). All other 36 employees in the period are excluded (not bank-verified). Empty NEFT for unverified period (2025-01) returns 200 with empty data. Employee role (RMF0005) gets 403."
+    }
+  },
+
+  "test_report_links": [
+    "/app/backend/tests/test_iter12_lock_verify.py",
+    "/app/test_reports/pytest/pytest_iter12.xml"
+  ],
+
+  "action_items": [
+    "INVESTIGATE: RMF0009 (Shivani Pathak) edit form immediately shows 'Duplicate — Fix Fields' with 'Already registered (candidate): Shivani Pathak'. This blocks HR from saving any changes for this employee. Root cause: mobile/email probably exists in candidates collection AND employees collection — useFieldUnique might be checking both, or the candidate conflict check is too broad. Fix: tighten uniqueness checks to exclude candidates when editing employees, or cross-check only within employees collection.",
+    "MINOR: Console warning '<span> inside <option>' from Emergent visual editor in Shift Override dropdown. This is an HTML validity issue that produces browser warnings. Consider using a custom select component instead of native <option> for shift items."
+  ],
+
+  "critical_code_review_comments": [
+    "routes/employees.py line 362: `update_data = {k: v for k, v in data.model_dump().items() if v is not None}` — this silently drops fields set to 0 or empty string (e.g., clearing optional fields). For boolean fields this is handled separately, but for string fields like joining_location or esi_number, setting to empty string '' may not propagate. Consider allowing explicit null/empty updates.",
+    "EmployeeEditForm.js: The UAN unlock uses window.confirm() which is a native browser dialog — cannot be styled, blocks execution. Consider replacing with a custom confirmation modal for better UX and accessibility.",
+    "EmployeeEditForm.js: Bank unlock also uses window.confirm(). Same recommendation — custom modal is better UX.",
+    "Employees.js line 227: `colSpan={11}` in skeleton loader and no-data rows — but the table now has 11 columns (added EPF and Bank), so this is correct. Just noting it was verified.",
+    "routes/payroll.py NEFT export: bank_verified_ids filter is correctly applied. However, if an employee has no payroll record for the period, they won't appear in records and won't be in emp_ids to fetch, so they're already implicitly excluded. Code is correct.",
+    "Backend: The `restore_verification_state` session fixture in test_iter12_lock_verify.py directly modifies MongoDB — this is acceptable for test isolation but means the test file must be run with proper MONGO_URL available."
+  ],
+
+  "updated_files": [
+    "/app/backend/tests/test_iter12_lock_verify.py"
+  ],
+
+  "success_rate": {
+    "backend": "100% (25/25)",
+    "frontend": "90% (1 pre-existing issue with RMF0009 duplicate check, all new features PASS)"
+  },
+
+  "test_credentials": "admin/Admin@12345 (hr_admin). RMF0006/Radhya@123 has verified UAN. RMF0005 and RMF0009 have verified bank. RMF0002/RMF0003/RMF0004 are role='management' in users DB (NOT employee as some docs claim). RMF0005 is role='employee' in users DB.",
+
+  "seed_data_creation": "Session fixture in test_iter12_lock_verify.py seeds verified=True for RMF0005 and RMF0009 bank, and uan_verification for RMF0006 at start and end of test run. Tests that change verification (bank test, UAN test) restore account numbers but NOT verified flags — the session fixture handles re-seeding before NEFT tests.",
+
+  "retest_needed": false,
+
+  "main_agent_can_self_test": true,
+
+  "context_for_next_testing_agent": "All 3 new features (EPF/Bank list columns, lock/unlock in edit form, NEFT export filter) are working and tested at backend+frontend level. Test file: /app/backend/tests/test_iter12_lock_verify.py — run with REACT_APP_BACKEND_URL env var. Key verified employees: UAN verified = RMF0006/RMF0008/RMF0009; Bank verified = RMF0005/RMF0009. Payroll periods in DB: 2026-02, 2026-04, 2026-05. NEFT test uses 2026-05. Pre-existing issue: RMF0009 edit form shows 'Duplicate — Fix Fields' immediately (candidate/employee cross-collection conflict). RMF0002/RMF0003/RMF0004 are role='management' in users collection (not 'employee'). Use RMF0005 for employee-role testing.",
+
+  "rca_of_the_issue": "No new bugs introduced by the 3 features. One pre-existing issue found: RMF0009 edit form shows 'Duplicate — Fix Fields' immediately. Likely cause: the useFieldUnique hook checks mobile/email against the candidates collection in addition to employees (or a cross-collection duplicate exists). The hook excludes the employee's own employee_id from the employee collection check, but if Shivani Pathak is also in the candidates collection with the same mobile/email, the check returns conflict. This blocks HR from saving RMF0009 without addressing the conflict."
+}
