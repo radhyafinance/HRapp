@@ -30,6 +30,13 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 10. **Gratuity** - Eligibility check (5yr), calculation, monthly provision
 11. **Settings** - 5 office locations (Moradabad HO, Chandpur, Najibabad, Budaun, Chandausi)
 
+### ✅ Phase 3 Patch (Jun 2026) — Verification Lock + NEFT Filter
+- **EPF/UAN field locked after verification**: UAN field in edit form is read-only with a lock icon when `uan_verification.verified = true`. Edit button shows confirmation warning before unlocking. Changing UAN number clears the EPF verification in the backend.
+- **Bank fields locked after verification**: All bank fields (Bank Name, Account #, IFSC) are locked after `bank_details.verified = true`. Edit button shows confirmation. Changing any bank field clears the verification.
+- **Employee list EPF + Bank columns**: Two new "EPF" and "Bank" columns with green ShieldCheck icons show verification status at a glance on the Employees page.
+- **NEFT export skips unverified banks**: `GET /api/payroll/export/neft` now only includes employees whose `bank_details.verified == true`. Unverified employees are silently excluded from the NEFT sheet.
+- **Employee edit duplicate check fix**: `useFieldUnique` no longer checks the candidates collection when editing an existing employee (`exclude_employee_id` is set). This fixes the false-positive "Duplicate — Fix Fields" shown for employees converted from candidates.
+
 
 ### ✅ Phase 3 Patch (Feb 2026) — Production Hierarchy Drift Fix
 - **Auto-upgrade role to "managers"** when an employee has direct reports — protects against DB drift where someone's stored role got demoted to `employee` in production but they functionally manage a team (e.g. RMF0010 in prod).

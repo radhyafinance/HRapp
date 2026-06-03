@@ -198,17 +198,19 @@ async def check_unique_field(
         name = f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip() or emp.get("employee_id", "Employee")
         return {"exists": True, "conflict_in": "employee", "conflict_name": name, "conflict_id": emp.get("employee_id", "")}
 
-    # Check candidates
-    cand_q = {field: val}
-    if exclude_candidate_id:
-        try:
-            cand_q["_id"] = {"$ne": ObjectId(exclude_candidate_id)}
-        except Exception:
-            pass
-    cand = await db.candidates.find_one(cand_q, {"_id": 1, "first_name": 1, "last_name": 1})
-    if cand:
-        name = f"{cand.get('first_name', '')} {cand.get('last_name', '')}".strip() or "Candidate"
-        return {"exists": True, "conflict_in": "candidate", "conflict_name": name, "conflict_id": str(cand["_id"])}
+    # Check candidates — only when NOT editing an existing employee
+    # (employees converted from candidates share the same mobile/email)
+    if not exclude_employee_id:
+        cand_q = {field: val}
+        if exclude_candidate_id:
+            try:
+                cand_q["_id"] = {"$ne": ObjectId(exclude_candidate_id)}
+            except Exception:
+                pass
+        cand = await db.candidates.find_one(cand_q, {"_id": 1, "first_name": 1, "last_name": 1})
+        if cand:
+            name = f"{cand.get('first_name', '')} {cand.get('last_name', '')}".strip() or "Candidate"
+            return {"exists": True, "conflict_in": "candidate", "conflict_name": name, "conflict_id": str(cand["_id"])}
 
     return {"exists": False}
 
