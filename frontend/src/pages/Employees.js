@@ -11,7 +11,7 @@ import { useAuth } from "../contexts/AuthContext";
 const ROLES = ["hr_admin", "management", "managers", "employee", "field_agent"];
 const ROLE_LABELS = { hr_admin: "HR Admin", management: "Management", managers: "Managers", employee: "HO Staff", field_agent: "Field Staff" };
 const STATUS_COLORS = { active: "bg-green-100 text-green-700", probation: "bg-yellow-100 text-yellow-700", notice_period: "bg-orange-100 text-orange-700", resigned: "bg-red-100 text-red-700", terminated: "bg-gray-100 text-gray-700", exited: "bg-gray-100 text-gray-500" };
-const STATUS_LABELS = { active: "Active", probation: "Probation", notice_period: "Serving Notice Period", resigned: "Resigned", terminated: "Terminated", exited: "Exited" };
+const STATUS_LABELS = { active: "Active", probation: "Probation", notice_period: "Notice Period", resigned: "Resigned", terminated: "Terminated", exited: "Exited" };
 const DEPARTMENTS = ["Accounts", "Administration", "Compliance", "Human Resources", "IT", "Management", "Operations", "Risk and Credit"];
 const DESIGNATION_GROUPS = {
   "Management": ["Director", "Chief Executive Officer", "Chief Operating Officer"],
@@ -156,32 +156,30 @@ export default function Employees() {
 
   return (
     <div style={{ fontFamily: "'Work Sans', sans-serif" }}>
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Employees</h1>
           <p className="text-slate-500 text-sm">{employees.length} employees</p>
         </div>
-        <div className="flex gap-2">
-          {canManageEmployees && (
-            <>
-              <button onClick={() => fileRef.current.click()} className="flex items-center gap-2 px-4 py-2 border-2 border-[#1E2A47] text-[#1E2A47] rounded-lg text-sm font-medium hover:bg-slate-50 transition-colors" data-testid="bulk-upload-btn">
-                <Upload size={16} /> Bulk Upload
-              </button>
-              <button onClick={downloadTemplate} className="flex items-center gap-2 px-4 py-2 border border-slate-300 text-slate-600 rounded-lg text-sm hover:bg-slate-50 transition-colors" data-testid="download-template-btn">
-                <Download size={16} /> Template
-              </button>
-              <button onClick={downloadSalaryTemplate} className="flex items-center gap-2 px-4 py-2 border border-amber-400 text-amber-700 bg-amber-50 rounded-lg text-sm font-medium hover:bg-amber-100 transition-colors" data-testid="salary-template-btn">
-                <TrendingUp size={16} /> Salary Template
-              </button>
-              <button onClick={() => salaryFileRef.current.click()} className="flex items-center gap-2 px-4 py-2 border-2 border-amber-500 text-amber-700 rounded-lg text-sm font-medium hover:bg-amber-50 transition-colors" data-testid="salary-upload-btn">
-                <Upload size={16} /> Upload Revision
-              </button>
-              <button onClick={() => { setShowAdd(true); fetchNextId(); setError(""); }} className="flex items-center gap-2 px-4 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] transition-colors" data-testid="add-employee-btn">
-                <UserPlus size={16} /> Add Employee
-              </button>
-            </>
-          )}
-        </div>
+        {canManageEmployees && (
+          <div className="flex flex-wrap gap-2 justify-end">
+            <button onClick={() => fileRef.current.click()} className="flex items-center gap-1.5 px-3 py-1.5 border-2 border-[#1E2A47] text-[#1E2A47] rounded-lg text-xs font-medium hover:bg-slate-50 transition-colors" data-testid="bulk-upload-btn">
+              <Upload size={13} /> Bulk Upload
+            </button>
+            <button onClick={downloadTemplate} className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-300 text-slate-600 rounded-lg text-xs hover:bg-slate-50 transition-colors" data-testid="download-template-btn">
+              <Download size={13} /> Template
+            </button>
+            <button onClick={downloadSalaryTemplate} className="flex items-center gap-1.5 px-3 py-1.5 border border-amber-400 text-amber-700 bg-amber-50 rounded-lg text-xs font-medium hover:bg-amber-100 transition-colors" data-testid="salary-template-btn">
+              <TrendingUp size={13} /> Salary
+            </button>
+            <button onClick={() => salaryFileRef.current.click()} className="flex items-center gap-1.5 px-3 py-1.5 border-2 border-amber-500 text-amber-700 rounded-lg text-xs font-medium hover:bg-amber-50 transition-colors" data-testid="salary-upload-btn">
+              <Upload size={13} /> Revision
+            </button>
+            <button onClick={() => { setShowAdd(true); fetchNextId(); setError(""); }} className="flex items-center gap-1.5 px-3 py-1.5 bg-[#E85B1E] text-white rounded-lg text-xs font-semibold hover:bg-[#D04A15] transition-colors" data-testid="add-employee-btn">
+              <UserPlus size={13} /> Add
+            </button>
+          </div>
+        )}
         {canManageEmployees && (
           <>
             <input ref={fileRef} type="file" accept=".csv,.xlsx" className="hidden" onChange={handleBulkUpload} />
@@ -212,72 +210,89 @@ export default function Employees() {
       </div>
 
       <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full" data-testid="employees-table">
-            <thead>
-              <tr className="bg-slate-50 border-b border-slate-200">
-                {["Emp ID", "Name", "Designation", "Department", "Branch", "Reports To", "EPF", "Bank", "Status", "Docs", "Actions"].map(h => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                [...Array(5)].map((_, i) => (
-                  <tr key={i}><td colSpan={11} className="px-4 py-3"><div className="h-8 bg-slate-100 animate-pulse rounded"></div></td></tr>
-                ))
-              ) : employees.length === 0 ? (
-                <tr><td colSpan={11} className="px-4 py-12 text-center text-slate-400">No employees found</td></tr>
-              ) : employees.map(emp => (
-                <tr key={emp.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
-                  <td className="px-4 py-3 text-sm font-mono font-semibold text-[#E85B1E]">{emp.employee_id}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <div className="w-8 h-8 rounded-full bg-[#1E2A47] flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
-                        {emp.first_name?.charAt(0)}{emp.last_name?.charAt(0)}
-                      </div>
-                      <div>
-                        <p className="text-sm font-medium text-[#0F172A]">{emp.first_name} {emp.last_name}</p>
-                        <p className="text-xs text-slate-400">{emp.email}</p>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 text-sm text-slate-600">{emp.designation}</td>
-                  <td className="px-4 py-3 text-sm text-slate-600">{emp.department}</td>
-                  <td className="px-4 py-3 text-sm text-slate-600">
-                    {emp.branch
-                      ? <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded text-xs font-medium">{emp.branch}</span>
-                      : <span className="text-xs text-slate-400">—</span>}
-                  </td>
-                  <td className="px-4 py-3">
-                    {emp.reporting_to
-                      ? <span className="font-mono text-xs px-2 py-1 bg-[#E85B1E]/10 text-[#E85B1E] rounded-full">{emp.reporting_to}</span>
-                      : <span className="text-xs text-slate-400">—</span>}
-                  </td>
-                  <td className="px-4 py-3">
-                    {emp.uan_verification?.verified
-                      ? <span className="flex items-center gap-1 text-xs font-medium text-green-600" data-testid={`epf-verified-${emp.employee_id}`}><ShieldCheck size={12} />Verified</span>
-                      : <span className="text-xs text-slate-300">—</span>}
-                  </td>
-                  <td className="px-4 py-3">
-                    {emp.bank_details?.verified
-                      ? <span className="flex items-center gap-1 text-xs font-medium text-green-600" data-testid={`bank-verified-${emp.employee_id}`}><ShieldCheck size={12} />Verified</span>
-                      : <span className="text-xs text-slate-300">—</span>}
-                  </td>
-                  <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${STATUS_COLORS[emp.status] || "bg-slate-100"}`}>{STATUS_LABELS[emp.status] || emp.status}</span></td>
-                  <td className="px-4 py-3">
-                    <button onClick={() => setShowView({ ...emp, _initialTab: "docs" })} className="cursor-pointer" title="View documents" data-testid={`docs-ring-${emp.employee_id}`}>
-                      <DocCompletenessRing uploaded={completeness[emp.employee_id]?.uploaded || 0} total={completeness[emp.employee_id]?.total || 23} />
-                    </button>
-                  </td>
-                  <td className="px-4 py-3">
-                    <button onClick={() => setShowView(emp)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" data-testid={`view-emp-${emp.employee_id}`}><Eye size={16} /></button>
-                  </td>
-                </tr>
+        <table className="w-full table-fixed" data-testid="employees-table">
+          <colgroup>
+            <col style={{ width: "22%" }} />
+            <col style={{ width: "18%" }} />
+            <col style={{ width: "16%" }} />
+            <col style={{ width: "14%" }} />
+            <col style={{ width: "12%" }} />
+            <col style={{ width: "10%" }} />
+            <col style={{ width: "8%" }} />
+          </colgroup>
+          <thead>
+            <tr className="bg-slate-50 border-b border-slate-200">
+              {["Employee", "Role / Dept", "Branch / Manager", "Verifications", "Status", "Docs", ""].map((h, i) => (
+                <th key={i} className="px-3 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              [...Array(5)].map((_, i) => (
+                <tr key={i}><td colSpan={7} className="px-3 py-2"><div className="h-7 bg-slate-100 animate-pulse rounded"></div></td></tr>
+              ))
+            ) : employees.length === 0 ? (
+              <tr><td colSpan={7} className="px-3 py-10 text-center text-slate-400">No employees found</td></tr>
+            ) : employees.map(emp => (
+              <tr key={emp.id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
+                {/* Employee: avatar + name + emp ID */}
+                <td className="px-3 py-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div className="w-7 h-7 rounded-full bg-[#1E2A47] flex items-center justify-center text-white text-xs font-bold flex-shrink-0">
+                      {emp.first_name?.charAt(0)}{emp.last_name?.charAt(0)}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-[#0F172A] truncate">{emp.first_name} {emp.last_name}</p>
+                      <p className="text-xs font-mono text-[#E85B1E]">{emp.employee_id}</p>
+                    </div>
+                  </div>
+                </td>
+                {/* Designation / Department */}
+                <td className="px-3 py-2">
+                  <p className="text-xs font-medium text-slate-700 truncate">{emp.designation}</p>
+                  <p className="text-xs text-slate-400 truncate">{emp.department}</p>
+                </td>
+                {/* Branch / Reports To */}
+                <td className="px-3 py-2">
+                  {emp.branch
+                    ? <p className="text-xs font-medium text-blue-700 truncate">{emp.branch}</p>
+                    : <p className="text-xs text-slate-300">—</p>}
+                  {emp.reporting_to
+                    ? <span className="font-mono text-[10px] text-[#E85B1E]">{emp.reporting_to}</span>
+                    : null}
+                </td>
+                {/* EPF + Bank verifications */}
+                <td className="px-3 py-2">
+                  <div className="flex flex-col gap-0.5">
+                    {emp.uan_verification?.verified
+                      ? <span className="flex items-center gap-1 text-[10px] font-medium text-green-600" data-testid={`epf-verified-${emp.employee_id}`}><ShieldCheck size={10} />EPF</span>
+                      : <span className="text-[10px] text-slate-300">EPF —</span>}
+                    {emp.bank_details?.verified
+                      ? <span className="flex items-center gap-1 text-[10px] font-medium text-green-600" data-testid={`bank-verified-${emp.employee_id}`}><ShieldCheck size={10} />Bank</span>
+                      : <span className="text-[10px] text-slate-300">Bank —</span>}
+                  </div>
+                </td>
+                {/* Status */}
+                <td className="px-3 py-2">
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium whitespace-nowrap ${STATUS_COLORS[emp.status] || "bg-slate-100"}`}>
+                    {STATUS_LABELS[emp.status] || emp.status}
+                  </span>
+                </td>
+                {/* Docs ring */}
+                <td className="px-3 py-2">
+                  <button onClick={() => setShowView({ ...emp, _initialTab: "docs" })} className="cursor-pointer" title="View documents" data-testid={`docs-ring-${emp.employee_id}`}>
+                    <DocCompletenessRing uploaded={completeness[emp.employee_id]?.uploaded || 0} total={completeness[emp.employee_id]?.total || 23} />
+                  </button>
+                </td>
+                {/* Actions */}
+                <td className="px-3 py-2">
+                  <button onClick={() => setShowView(emp)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" data-testid={`view-emp-${emp.employee_id}`}><Eye size={15} /></button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
 
       {showAdd && (
