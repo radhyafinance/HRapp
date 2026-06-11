@@ -348,7 +348,7 @@ function ResetPasswordSection({ employeeId }) {
     setBusy(true);
     try {
       await API.post(`/auth/employees/${employeeId}/reset-password`, { new_password: pwd });
-      setMsg(`Password reset. Login as ${employeeId} / ${pwd}. Share with employee securely.`);
+      setMsg(`Password reset. Login: ${employeeId} / ${pwd}. Employee will be required to change password on their next login. Notification sent to HR Admin inbox.`);
       setPwd("");
     } catch (e) {
       setErr(e.response?.data?.detail || "Failed to reset password.");

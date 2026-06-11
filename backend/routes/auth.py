@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from database import db
 from auth_utils import hash_password, verify_password, create_token, get_current_user
-from services.email_service import send_otp_email
+from services.email_service import send_otp_email, send_forgot_password_otp_email, send_admin_reset_notification
 from datetime import datetime, timezone, timedelta
 from bson import ObjectId
 import secrets
@@ -28,6 +28,10 @@ class ChangePasswordRequest(BaseModel):
     new_password: str
 
 
+class ForcedPasswordChangeRequest(BaseModel):
+    new_password: str
+
+
 class ResetPasswordRequest(BaseModel):
     new_password: str
 
@@ -48,6 +52,12 @@ class OtpRequestPayload(BaseModel):
 class OtpVerifyPayload(BaseModel):
     username: str
     otp: str
+
+
+class ForgotPasswordVerifyPayload(BaseModel):
+    username: str
+    otp: str
+    new_password: str
 
 
 def _mask_email(email: str) -> str:
@@ -223,9 +233,11 @@ async def login(data: LoginRequest):
         user.get("employee_id"),
         user.get("name", ""),
     )
+    must_change = user.get("must_change_password", False)
     return {
         "access_token": token,
         "token_type": "bearer",
+        "must_change_password": bool(must_change),
         "user": {
             "id": str(user["_id"]),
             "username": user["username"],
@@ -259,9 +271,26 @@ async def change_password(data: ChangePasswordRequest, current_user: dict = Depe
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     await db.users.update_one(
         {"_id": user["_id"]},
-        {"$set": {"password_hash": hash_password(data.new_password)}},
+        {"$set": {"password_hash": hash_password(data.new_password), "must_change_password": False}},
     )
     return {"message": "Password changed successfully"}
+
+
+@router.post("/forced-password-change")
+async def forced_password_change(data: ForcedPasswordChangeRequest, current_user: dict = Depends(get_current_user)):
+    """For employees who must change password after an admin reset. No current password required."""
+    user = await db.users.find_one({"_id": ObjectId(current_user["sub"])})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not user.get("must_change_password"):
+        raise HTTPException(status_code=400, detail="Password change not required")
+    if not data.new_password or len(data.new_password) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"password_hash": hash_password(data.new_password), "must_change_password": False}},
+    )
+    return {"message": "Password updated successfully"}
 
 
 @router.post("/employees/{employee_id}/reset-password")
@@ -270,7 +299,8 @@ async def reset_employee_password(
     data: ResetPasswordRequest,
     current_user: dict = Depends(get_current_user),
 ):
-    """HR Admin can reset any employee's password. Returns the new password for HR to share."""
+    """HR Admin can reset any employee's password. Forces the employee to change password on next login.
+    Sends a notification email to the admin inbox (mail@radhyafinance.com)."""
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Only HR Admin / Management can reset passwords")
     if not data.new_password or len(data.new_password) < 4:
@@ -278,15 +308,30 @@ async def reset_employee_password(
     emp_id = employee_id.strip().upper()
     user = await db.users.find_one({"username": emp_id})
     if not user:
-        # fallback: legacy users keyed by employee_id field
         user = await db.users.find_one({"employee_id": emp_id})
     if not user:
         raise HTTPException(status_code=404, detail=f"No login account found for employee {emp_id}")
+
+    # Get employee name for the notification email
+    emp = await db.employees.find_one({"employee_id": emp_id}, {"first_name": 1, "last_name": 1})
+    emp_name = f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip() if emp else emp_id
+    reset_by = current_user.get("name") or current_user.get("username") or "HR Admin"
+
     await db.users.update_one(
         {"_id": user["_id"]},
-        {"$set": {"password_hash": hash_password(data.new_password)}},
+        {"$set": {"password_hash": hash_password(data.new_password), "must_change_password": True}},
     )
-    return {"message": f"Password reset for {emp_id}", "username": user.get("username", emp_id)}
+
+    # Send notification to admin inbox (non-blocking)
+    try:
+        await send_admin_reset_notification(emp_id, emp_name, reset_by)
+    except Exception as e:
+        logger.warning(f"Admin reset notification failed for {emp_id}: {e}")
+
+    return {
+        "message": f"Password reset for {emp_id}. Employee will be required to change password on next login.",
+        "username": user.get("username", emp_id),
+    }
 
 
 @router.post("/create-user")
@@ -331,3 +376,117 @@ async def toggle_user(user_id: str, current_user: dict = Depends(get_current_use
     new_status = not user.get("is_active", True)
     await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": {"is_active": new_status}})
     return {"is_active": new_status}
+
+
+
+# ─────────────────────────────────────────────
+#  Forgot Password — OTP-based reset (no login)
+# ─────────────────────────────────────────────
+
+@router.post("/forgot-password/request")
+async def forgot_password_request(data: OtpRequestPayload):
+    """Send an OTP to the user's registered email for password reset."""
+    username = data.username.strip()
+    user = await db.users.find_one({"username": username}) \
+        or await db.users.find_one({"username": username.lower()}) \
+        or await db.users.find_one({"username": username.upper()})
+    if not user:
+        raise HTTPException(status_code=404, detail="No account found for that username.")
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="Account is inactive. Contact HR.")
+    if user.get("employee_id"):
+        emp = await db.employees.find_one({"employee_id": user["employee_id"]}, {"status": 1})
+        if emp and emp.get("status") == "exited":
+            raise HTTPException(status_code=403, detail="Account disabled — employee has exited the organization.")
+
+    email = await _resolve_user_email(user)
+    if not email:
+        raise HTTPException(status_code=400, detail="No email address on file. Ask HR to update your record.")
+
+    # Cooldown
+    now = datetime.now(timezone.utc)
+    otp_key = f"fp_{user['username']}"
+    recent = await db.otp_codes.find_one({"username": otp_key}, sort=[("created_at", -1)])
+    if recent:
+        last_at = recent.get("created_at")
+        if isinstance(last_at, str):
+            try:
+                last_at = datetime.fromisoformat(last_at.replace("Z", "+00:00"))
+            except Exception:
+                last_at = None
+        elif isinstance(last_at, datetime) and last_at.tzinfo is None:
+            last_at = last_at.replace(tzinfo=timezone.utc)
+        if last_at and (now - last_at).total_seconds() < OTP_COOLDOWN_SECONDS:
+            wait = int(OTP_COOLDOWN_SECONDS - (now - last_at).total_seconds())
+            raise HTTPException(status_code=429, detail=f"Please wait {wait}s before requesting another OTP.")
+
+    otp = f"{secrets.randbelow(1_000_000):06d}"
+    expires_at = now + timedelta(minutes=OTP_TTL_MINUTES)
+    await db.otp_codes.delete_many({"username": otp_key})
+    await db.otp_codes.insert_one({
+        "username": otp_key,
+        "otp_hash": hash_password(otp),
+        "attempts": 0,
+        "used": False,
+        "created_at": now,
+        "expires_at": expires_at,
+    })
+
+    try:
+        await send_forgot_password_otp_email(email, otp, name=user.get("name"))
+    except Exception as e:
+        logger.error(f"Forgot-password OTP send failed for {username}: {e}")
+        await db.otp_codes.delete_many({"username": otp_key})
+        raise HTTPException(status_code=502, detail="Failed to send OTP email. Please try again.")
+
+    return {
+        "message": "OTP sent",
+        "email_masked": _mask_email(email),
+        "expires_in_seconds": OTP_TTL_MINUTES * 60,
+    }
+
+
+@router.post("/forgot-password/verify")
+async def forgot_password_verify(data: ForgotPasswordVerifyPayload):
+    """Verify OTP and set a new password. Returns success — user must log in normally after."""
+    username = data.username.strip()
+    if not data.new_password or len(data.new_password) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters.")
+    user = await db.users.find_one({"username": username}) \
+        or await db.users.find_one({"username": username.lower()}) \
+        or await db.users.find_one({"username": username.upper()})
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid OTP or username.")
+
+    otp_key = f"fp_{user['username']}"
+    record = await db.otp_codes.find_one({"username": otp_key})
+    if not record or record.get("used"):
+        raise HTTPException(status_code=401, detail="No active OTP. Request a new one.")
+
+    expires_at = record.get("expires_at")
+    if isinstance(expires_at, str):
+        try:
+            expires_at = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except Exception:
+            expires_at = None
+    elif isinstance(expires_at, datetime) and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if not expires_at or datetime.now(timezone.utc) > expires_at:
+        await db.otp_codes.delete_one({"_id": record["_id"]})
+        raise HTTPException(status_code=401, detail="OTP expired. Request a new one.")
+    if record.get("attempts", 0) >= OTP_MAX_ATTEMPTS:
+        await db.otp_codes.delete_one({"_id": record["_id"]})
+        raise HTTPException(status_code=429, detail="Too many wrong attempts. Request a new OTP.")
+
+    if not verify_password(data.otp.strip(), record["otp_hash"]):
+        await db.otp_codes.update_one({"_id": record["_id"]}, {"$inc": {"attempts": 1}})
+        remaining = OTP_MAX_ATTEMPTS - (record.get("attempts", 0) + 1)
+        raise HTTPException(status_code=401, detail=f"Wrong OTP. {max(remaining, 0)} attempts left.")
+
+    # Success — burn OTP and update password
+    await db.otp_codes.delete_one({"_id": record["_id"]})
+    await db.users.update_one(
+        {"_id": user["_id"]},
+        {"$set": {"password_hash": hash_password(data.new_password), "must_change_password": False}},
+    )
+    return {"message": "Password updated successfully. You can now log in with your new password."}

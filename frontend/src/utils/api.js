@@ -21,7 +21,8 @@ API.interceptors.response.use(
     // via its own catch block instead of triggering a hard page reload.
     const isAuthEndpoint =
       err.config?.url?.includes("/auth/login") ||
-      err.config?.url?.includes("/auth/otp");
+      err.config?.url?.includes("/auth/otp") ||
+      err.config?.url?.includes("/auth/forgot-password");
     if (err.response?.status === 401 && !isAuthEndpoint) {
       localStorage.removeItem("auth_token");
       localStorage.removeItem("auth_user");

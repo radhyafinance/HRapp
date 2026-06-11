@@ -18,11 +18,15 @@ export function AuthProvider({ children }) {
 
   const login = async (username, password) => {
     const res = await API.post("/auth/login", { username, password });
-    const { access_token, user: userData } = res.data;
+    const { access_token, user: userData, must_change_password } = res.data;
+    // Always store the token (needed for forced-password-change API call)
     localStorage.setItem("auth_token", access_token);
-    localStorage.setItem("auth_user", JSON.stringify(userData));
-    setUser(userData);
-    return userData;
+    if (!must_change_password) {
+      localStorage.setItem("auth_user", JSON.stringify(userData));
+      setUser(userData);
+    }
+    // Return full data including must_change_password so Login page can decide
+    return { ...userData, must_change_password: !!must_change_password };
   };
 
   const loginWithToken = (access_token, userData) => {
