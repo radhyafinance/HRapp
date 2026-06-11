@@ -8,14 +8,27 @@ from bson import ObjectId
 import secrets
 import logging
 
+import re
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
 
 # OTP config
 OTP_TTL_MINUTES = 10
 OTP_COOLDOWN_SECONDS = 60
 OTP_MAX_ATTEMPTS = 5
+
+PASSWORD_POLICY = "at least 8 characters, 1 uppercase letter, and 1 number"
+_PWD_RE = re.compile(r'^(?=.*[A-Z])(?=.*\d).{8,}$')
+
+
+def _validate_password(pwd: str) -> None:
+    """Raise HTTPException 400 if password doesn't meet the strength policy."""
+    if not pwd or not _PWD_RE.match(pwd):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Password must have {PASSWORD_POLICY}.",
+        )
 
 
 class LoginRequest(BaseModel):
@@ -266,6 +279,7 @@ async def get_me(current_user: dict = Depends(get_current_user)):
 
 @router.post("/change-password")
 async def change_password(data: ChangePasswordRequest, current_user: dict = Depends(get_current_user)):
+    _validate_password(data.new_password)
     user = await db.users.find_one({"_id": ObjectId(current_user["sub"])})
     if not user or not verify_password(data.current_password, user["password_hash"]):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
@@ -279,13 +293,12 @@ async def change_password(data: ChangePasswordRequest, current_user: dict = Depe
 @router.post("/forced-password-change")
 async def forced_password_change(data: ForcedPasswordChangeRequest, current_user: dict = Depends(get_current_user)):
     """For employees who must change password after an admin reset. No current password required."""
+    _validate_password(data.new_password)
     user = await db.users.find_one({"_id": ObjectId(current_user["sub"])})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if not user.get("must_change_password"):
         raise HTTPException(status_code=400, detail="Password change not required")
-    if not data.new_password or len(data.new_password) < 6:
-        raise HTTPException(status_code=400, detail="New password must be at least 6 characters")
     await db.users.update_one(
         {"_id": user["_id"]},
         {"$set": {"password_hash": hash_password(data.new_password), "must_change_password": False}},
@@ -303,8 +316,7 @@ async def reset_employee_password(
     Sends a notification email to the admin inbox (mail@radhyafinance.com)."""
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Only HR Admin / Management can reset passwords")
-    if not data.new_password or len(data.new_password) < 4:
-        raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
+    _validate_password(data.new_password)
     emp_id = employee_id.strip().upper()
     user = await db.users.find_one({"username": emp_id})
     if not user:
@@ -445,9 +457,8 @@ async def forgot_password_request(data: OtpRequestPayload):
 @router.post("/forgot-password/verify")
 async def forgot_password_verify(data: ForgotPasswordVerifyPayload):
     """Verify OTP and set a new password. Returns success — user must log in normally after."""
+    _validate_password(data.new_password)
     username = data.username.strip()
-    if not data.new_password or len(data.new_password) < 6:
-        raise HTTPException(status_code=400, detail="New password must be at least 6 characters.")
     user = await db.users.find_one({"username": username}) \
         or await db.users.find_one({"username": username.lower()}) \
         or await db.users.find_one({"username": username.upper()})

@@ -5,6 +5,14 @@ import API from "../utils/api";
 import { Eye, EyeOff, LogIn, KeyRound, Send, ArrowLeft, Fingerprint, ShieldAlert, CheckCircle } from "lucide-react";
 import { authenticateWithBiometric, isWebAuthnSupported } from "../utils/webauthn";
 
+// Password strength: min 8 chars, 1 uppercase, 1 number
+const PWD_RE = /^(?=.*[A-Z])(?=.*\d).{8,}$/;
+const PWD_HINT = "at least 8 characters, 1 uppercase letter, and 1 number";
+function validatePwd(p) {
+  if (!PWD_RE.test(p)) return `Password must have ${PWD_HINT}.`;
+  return "";
+}
+
 // mode: "password" | "forgot-request" | "forgot-verify" | "force-change"
 
 export default function Login() {
@@ -91,7 +99,8 @@ export default function Login() {
   const handleForgotVerify = async (e) => {
     e.preventDefault();
     reset();
-    if (newPwd.length < 6) { setError("New password must be at least 6 characters."); return; }
+    const pwdErr = validatePwd(newPwd);
+    if (pwdErr) { setError(pwdErr); return; }
     if (newPwd !== confirmPwd) { setError("Passwords do not match."); return; }
     setLoading(true);
     try {
@@ -115,7 +124,8 @@ export default function Login() {
   const handleForceChange = async (e) => {
     e.preventDefault();
     reset();
-    if (newPwd.length < 6) { setError("New password must be at least 6 characters."); return; }
+    const pwdErr = validatePwd(newPwd);
+    if (pwdErr) { setError(pwdErr); return; }
     if (newPwd !== confirmPwd) { setError("Passwords do not match."); return; }
     setLoading(true);
     try {
@@ -286,13 +296,14 @@ export default function Login() {
                   <label className="block text-sm font-semibold text-[#0F172A] mb-1.5">New Password</label>
                   <div className="relative">
                     <input type={showNew ? "text" : "password"} value={newPwd} onChange={(e) => setNewPwd(e.target.value)}
-                      placeholder="At least 6 characters" required minLength={6} data-testid="new-password-input"
+                      placeholder="Min 8 chars, 1 uppercase, 1 number" required data-testid="new-password-input"
                       className="w-full border border-slate-300 rounded-lg px-4 py-3 pr-12 text-[#0F172A] focus:ring-2 focus:ring-[#E85B1E] focus:border-transparent outline-none transition-all text-sm" />
                     <button type="button" onClick={() => setShowNew(!showNew)}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
                       {showNew ? <EyeOff size={18} /> : <Eye size={18} />}
                     </button>
                   </div>
+                  {newPwd && <p className={`text-xs mt-1 ${PWD_RE.test(newPwd) ? "text-green-600" : "text-amber-600"}`}>{PWD_RE.test(newPwd) ? "Looks good" : `Needs: ${PWD_HINT}`}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-[#0F172A] mb-1.5">Confirm New Password</label>
@@ -333,13 +344,14 @@ export default function Login() {
                   <label className="block text-sm font-semibold text-[#0F172A] mb-1.5">New Password</label>
                   <div className="relative">
                     <input type={showNew ? "text" : "password"} value={newPwd} onChange={(e) => setNewPwd(e.target.value)}
-                      placeholder="At least 6 characters" required minLength={6} data-testid="force-new-password-input" autoFocus
+                      placeholder="Min 8 chars, 1 uppercase, 1 number" required data-testid="force-new-password-input" autoFocus
                       className="w-full border border-slate-300 rounded-lg px-4 py-3 pr-12 text-[#0F172A] focus:ring-2 focus:ring-[#E85B1E] focus:border-transparent outline-none transition-all text-sm" />
                     <button type="button" onClick={() => setShowNew(!showNew)}
                       className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
                       {showNew ? <EyeOff size={18} /> : <Eye size={18} />}
                     </button>
                   </div>
+                  {newPwd && <p className={`text-xs mt-1 ${PWD_RE.test(newPwd) ? "text-green-600" : "text-amber-600"}`}>{PWD_RE.test(newPwd) ? "Looks good" : `Needs: ${PWD_HINT}`}</p>}
                 </div>
                 <div>
                   <label className="block text-sm font-semibold text-[#0F172A] mb-1.5">Confirm New Password</label>
