@@ -344,11 +344,10 @@ function ResetPasswordSection({ employeeId }) {
   const reset = async () => {
     setMsg(""); setErr("");
     if (!pwd || pwd.length < 4) { setErr("Password must be at least 4 characters."); return; }
-    if (!window.confirm(`Reset login password for ${employeeId}?\n\nThe employee will need to use this new password to log in.`)) return;
     setBusy(true);
     try {
       await API.post(`/auth/employees/${employeeId}/reset-password`, { new_password: pwd });
-      setMsg(`Password reset. Login: ${employeeId} / ${pwd}. Employee will be required to change password on their next login. Notification sent to HR Admin inbox.`);
+      setMsg(`Password reset. Login: ${employeeId} / ${pwd}. Employee will be required to change password on their next login.`);
       setPwd("");
     } catch (e) {
       setErr(e.response?.data?.detail || "Failed to reset password.");
