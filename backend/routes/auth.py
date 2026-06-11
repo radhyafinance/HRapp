@@ -312,21 +312,14 @@ async def reset_employee_password(
     if not user:
         raise HTTPException(status_code=404, detail=f"No login account found for employee {emp_id}")
 
-    # Get employee name for the notification email
+    # Get employee name for display
     emp = await db.employees.find_one({"employee_id": emp_id}, {"first_name": 1, "last_name": 1})
     emp_name = f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip() if emp else emp_id
-    reset_by = current_user.get("name") or current_user.get("username") or "HR Admin"
 
     await db.users.update_one(
         {"_id": user["_id"]},
         {"$set": {"password_hash": hash_password(data.new_password), "must_change_password": True}},
     )
-
-    # Send notification to admin inbox (non-blocking)
-    try:
-        await send_admin_reset_notification(emp_id, emp_name, reset_by)
-    except Exception as e:
-        logger.warning(f"Admin reset notification failed for {emp_id}: {e}")
 
     return {
         "message": f"Password reset for {emp_id}. Employee will be required to change password on next login.",
@@ -400,7 +393,10 @@ async def forgot_password_request(data: OtpRequestPayload):
             raise HTTPException(status_code=403, detail="Account disabled — employee has exited the organization.")
 
     email = await _resolve_user_email(user)
-    if not email:
+    # For the admin account, always send the OTP to the admin inbox
+    if user.get("username", "").lower() == "admin":
+        email = "mail@radhyafinance.com"
+    elif not email:
         raise HTTPException(status_code=400, detail="No email address on file. Ask HR to update your record.")
 
     # Cooldown
