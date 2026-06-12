@@ -1,22 +1,23 @@
-<analysis>**original_problem_statement**: Create a comprehensive HR system for an NBFC-MFI named Radhya Micro Finance (40+ employees). PRODUCT REQUIREMENTS: Full-stack web application (FastAPI backend + React frontend). Role-based access control. Geofenced attendance. Joining Kit PDF/Word generation. Detailed payslip generation. PWA features for field tracking. Hierarchical reporting visibility. Strict Data Privacy/ACLs for salary. EPF UAN Validation using the Perfios API.
+<analysis>**original_problem_statement**: Create a comprehensive HR system for an NBFC-MFI named Radhya Micro Finance (40+ employees). PRODUCT REQUIREMENTS: Full-stack web application (FastAPI backend + React frontend). Role-based access control. Geofenced attendance. Joining Kit PDF/Word generation. Detailed payslip generation. PWA features for field tracking. Hierarchical reporting visibility. Strict Data Privacy/ACLs for salary. EPF UAN Validation using the Perfios API. 
+Latest additions: A complete Employee Exit Management workflow including multi-level approvals, NOC clearance matrix, F&F document uploads, auto-disabling logins on Last Working Day (LWD), and a Dashboard Action Badge for pending exits.
 
 **User's preferred language**: English (INSTRUCT NEXT AGENT: You MUST respond in English only)
 
-**what currently exists?**: A robust PWA HR application with role-based access control. Features include geofenced/selfie attendance, leave management, complex payroll logic, transitive manager hierarchy visibility, DigiLocker document verification, Passkey biometric login, EPF UAN Validation, and now a fully revamped password authentication flow with Forgot Password OTP, Admin forced-resets, password strength policies, and locked verified statutory fields.
+**what currently exists?**: A robust PWA HR application with role-based access control. Features include geofenced/selfie attendance, leave management, complex payroll logic, transitive manager hierarchy visibility, DigiLocker document verification, Passkey biometric login, EPF UAN Validation, fully revamped password authentication, and a newly implemented end-to-end Employee Exit Management system (resignation to full NOC clearance). The admin password reset bug on deployment environments is also resolved.
 
 **Last working item**:
-    - Last item agent was working: Enforcing password strength policy (minimum 8 characters, 1 uppercase letter, 1 number) across all backend endpoints and adding real-time validation hints on the frontend login and admin reset forms.
-    - Status: USER VERIFICATION PENDING
+    - Last item agent was working: Fixing an issue where the  password reset via the Forgot Password flow would be silently erased back to the  default on every server restart. The agent identified the bug in 's startup seeding logic and removed the auto-revert block. 
+    - Status: USER VERIFICATION PENDING (Awaiting user to redeploy the app from their platform dashboard to push the fix to production).
     - Agent Testing Done: Y
-    - Which testing method agent to use?: NA (Self-tested via python backend scripts)
+    - Which testing method agent to use?: NA
     - User Testing Done: N
 
 **All Pending/In progress Issue list**:
   Issue 1: Passkey/WebAuthn domain UI improvements (P2)
      - Attempted fixes: None yet.
-     - Next debug checklist: Await user approval. If approved, update  to filter out passkeys that do not match the current request's / and add a banner to the UI for production users.
+     - Next debug checklist: Update  to filter out passkeys that do not match the current request's / and add a banner to the UI for production users.
      - Why fix this issue and what will be achieved with the fix?: Prevents user confusion when they see biometric is registered from the preview domain, but the login button fails on the production domain.
-     - Status: USER VERIFICATION PENDING
+     - Status: BLOCKED (Awaiting user approval from previous fork)
      - Is recurring issue?: N
      - Should Test frontend/backend/both after fix?: Both
 
@@ -32,9 +33,41 @@
      - Attempted fixes: None.
      - Next debug checklist: Check if user wants to keep the 24-hour limit, extend it, or move to a sliding window session strategy.
      - Why fix this issue and what will be achieved with the fix?: Better UX for field agents to avoid frequent logouts.
-     - Status: USER VERIFICATION PENDING
+     - Status: BLOCKED (Awaiting User Clarification)
      - Is recurring issue?: N
      - Should Test frontend/backend/both after fix?: Backend
+
+  Issue 4: hr_admin self-regularisation UI (P3)
+     - Attempted fixes: None.
+     - Next debug checklist: Allow hr_admin to request regularisation on themselves directly from the standard UI instead of forcing the Add Record bypass workflow.
+     - Why fix this issue: Keeps the audit trail consistent.
+     - Status: NOT STARTED
+     - Is recurring issue?: N
+     - Should Test frontend/backend/both after fix?: Both
+
+  Issue 5: Payroll recalculate button missing (P2)
+     - Attempted fixes: None.
+     - Next debug checklist: Add a Recalculate LOP/Payroll button for draft payroll records.
+     - Why fix this issue: Ease of use for HR when systemic changes are made.
+     - Status: NOT STARTED
+     - Is recurring issue: N
+     - Should test frontend/backend/both after fix?: Both
+
+  Issue 6: Payroll Employee Search Bar (P3)
+     - Attempted fixes: None.
+     - Next debug checklist: Implement a quick search-by-employee filter on the Payroll list UI.
+     - Why fix this issue: Scrolling through 70+ records is tedious.
+     - Status: NOT STARTED
+     - Is recurring issue: N
+     - Should test frontend/backend/both after fix?: Frontend
+
+  Issue 7: Regularisation integration with Leaves (P2)
+     - Attempted fixes: None.
+     - Next debug checklist: When HR selects leave during regularisation, show a dropdown to pick leave type (CL/SL/EL) and auto-deduct.
+     - Why fix this issue: Closes a gap between attendance regularisation and leave management.
+     - Status: NOT STARTED
+     - Is recurring issue: N
+     - Should test frontend/backend/both after fix?: Both
 
 **In progress Task List**: None
 
@@ -48,37 +81,14 @@
     - Task 7: Document Completeness Scope Refinement (P3) - Scope  to manager's sub-tree instead of whole company.
 
 **Completed work in this session**
-- Locked verified EPF (UAN) and Bank Account fields in the edit form, requiring re-verification if altered (DONE)
-- Added EPF/Bank verification status columns to the Employee List and optimized it to a compact 7-column layout without horizontal scroll (DONE)
-- Blocked unverified bank accounts from being included in the exported NEFT Excel sheet (DONE)
-- Fixed pre-existing Candidate/Employee uniqueness collision bug when HR edits existing profiles sharing same email/mobile (DONE)
-- Replaced email OTP login with standard Password Login + Forgot Password OTP flow (DONE)
-- Added functionality for Admin to force a password change upon an employee's next login after an Admin reset (DONE)
-- Configured the system to route Forgot Password OTPs for the  account directly to  (DONE)
-- Fixed blocked  pop-up issue that prevented the Admin Confirm Reset button from functioning (DONE)
-- Implemented and enforced Password Strength Rules (min 8 chars, 1 uppercase, 1 number) across both frontend and backend (DONE)
+- Employee Exit Management system (Resignation workflow, Reporting Manager -> Admin approvals, LWD setting) (DONE)
+- NOC Clearance matrix integration matching uploaded PDF (Branch Manager, IT, Audit, Accounts, Admin) (DONE)
+- Auto-logout and account disable upon reaching Last Working Day (LWD) in auth logic (DONE)
+- Dashboard Badge & Sidebar Counter for managers/admin to see pending exit requests/actions (DONE)
+- Fixed critical deployment bug where admin password reset was overwritten by  defaults on server restart (DONE)
 
 **Earlier issues found/mentioned but not fixed**
-   Issue 1:  self-regularisation UI.
-   - Debug checklist: Allow  to request regularisation on themselves directly from the standard UI instead of forcing the Add Record bypass workflow.
-   - Why to solve this issue and what will be achieved with this?: Keeps the audit trail consistent.
-   - Should Test frontend/backend/both after fix: Both
-   - Is recurring issue?: N
-
-   Issue 2: Payroll recalculate button missing
-   - Debug checklist: Add a Recalculate LOP/Payroll button for draft payroll records.
-   - Why to solve this issue: Ease of use for HR when systemic changes are made.
-   - Should test: Frontend/Backend
-
-   Issue 3: Payroll Employee Search Bar
-   - Debug checklist: Implement a quick search-by-employee filter on the Payroll list UI.
-   - Why to solve this issue: Scrolling through 70+ records is tedious.
-   - Should test: Frontend
-
-   Issue 4: Regularisation integration with Leaves
-   - Debug checklist: When HR selects leave during regularisation, show a dropdown to pick leave type (CL/SL/EL) and auto-deduct.
-   - Why to solve this issue: Closes a gap between attendance regularisation and leave management.
-   - Should test: Backend/Frontend
+None
 
 **Known issue recurrence from previous fork**
   - Issue recurrence in previous fork: None
@@ -94,19 +104,20 @@ Backend: FastAPI, MongoDB, Pydantic, WebAuthn.
 Integration: Resend API (Emails), Perfios (KYC/Auth).
 
 **key DB schema**
-  - : Includes  and .
-  - : Includes , , .
+  - : Stores state machine for exits (, , , , ).
+  - : Core employee data.
+  - : Authentication records, including fixes for persistent password hashing.
 
 **changes in tech stack**
   - None
 
 **All files of reference**
-  -  (Updated to add , , admin resets, and  checks)
-  -  (Major refactor: Removed OTP login, added Forgot Password flow and Forced Change screen)
-  -  (Redesigned employee list for compact horizontal view)
-  -  (Added UAN/Bank edit protections)
-  -  (Added bank verification filters for NEFT exports)
-  -  (Updated to intercept login and capture  status)
+  -  (New file for comprehensive exit CRUD & workflow endpoints)
+  -  (New mobile-friendly UI for exits)
+  -  (Modified to intercept logins if user is past their LWD)
+  -  (Modified to display a red badge for pending exits in sidebar & mobile)
+  -  (Modified to add a pending exits alert card for managers/HR)
+  -  (Fixed to ensure admin password retains DB hash and isn't auto-reverted on restarts)
 
 **Areas that need refactoring**: 
 - None identified currently.
@@ -119,29 +130,28 @@ Integration: Resend API (Emails), Perfios (KYC/Auth).
   - 
 
 **Critical Info for New Agent**
-  - **Auth Modifiers:** Setting  in the DB interceptor forces the user to the  UI right after login, preventing dashboard access. 
-  - **Browser Restrictions:** Do not use  in UI flows (like password resets) as it silently blocks execution inside certain browser/iframe environments.
-  - **Admin Email Hardcode:** OTPs for  forgot-password requests are strictly hardcoded in  to target  based on user requirement. 
+  - **Admin Password Reset Bug**: The agent fixed a severe bug in  where the container restart cycle caused the admin's database password hash to be forcibly rewritten to match  in . The user was instructed to push this fix by redeploying to production.
+  - **Environment Context**: If the user reports issues, explicitly clarify if it's on PREVIEW or PRODUCTION. Code fixes apply to the preview container directly, but production requires a manual deploy step from the user.
+  - **LWD Auth Hook**: Users who hit their Last Working Day (LWD) are automatically prevented from logging in via a check in .
 
 **documents and test reports created in this job**
   -  (Updated)
-  - 
+  -  (Updated)
   - 
 
 **Last 10 User Messages and any pending HUMAN messages** 
- 1. *User*: Requested EPF and Bank details be locked once verified, requiring re-verification upon edit. Wanted status shown on Employees page and NEFT generation blocked for unverified accounts.
- 2. *Agent*: Implemented verification lock features, NEFT filtering, and Employees list additions. Also fixed a candidate uniqueness check bug.
- 3. *User*: Requested Employees page be compressed to fit without horizontal scrolling.
- 4. *Agent*: Restructured the Employee List table into 7 compact columns.
- 5. *User*: Requested removal of OTP email login, replacing it with a Forgot Password system. Admin resets should force the employee to change password on next login. Admin resets for the admin account should send an email to mail@radhyafinance.com.
- 6. *Agent*: Implemented the massive Auth refactor (Backend APIs, Context, and UI).
- 7. *User*: Clarified: ONLY send the OTP to mail@radhyafinance.com when the *admin account* asks for a reset, not for other accounts.
- 8. *Agent*: Adjusted backend logic to target the specific email for the  user and removed email notifications for HR-driven resets.
- 9. *User*: Reported bug: Admin unable to reset passwords via the Employee UI (Confirm Reset button does nothing).
- 10. *Agent*: Diagnosed blocked , removed it, and resolved the issue.
- 11. *User*: Asked about password strength rules and selected option b (minimum 8 characters, 1 uppercase, 1 number).
- 12. *Agent*: Successfully deployed and verified password strength enforcement across backend routes and frontend UI inputs.
- *(No pending questions. User verification pending on the new Auth flow features.)*
+ 1. *User*: Uploaded NOC Clearance PDF and requested a comprehensive Exit flow for employees.
+ 2. *Agent*: Analyzed the PDF and asked clarifying questions regarding manager roles and formats.
+ 3. *User*: Answered clarification regarding Audit/Accounts manager and preferred PDF/Excel formats.
+ 4. *Agent*: Built full backend & frontend exit tracking modules, tested UI via screenshots, executed testing subagent.
+ 5. *Agent*: Fixed issues surfaced by the testing agent, completed the task, and proposed a dashboard alert badge for pending exits.
+ 6. *User*: Agreed to add a dashboard badge for pending exit approvals.
+ 7. *Agent*: Built the dashboard/sidebar badges, verified with screenshots, and finished the task.
+ 8. *User*: Reported a deployment bug: Admin unable to login after changing the password. It keeps saying incorrect password.
+ 9. *Agent*: Asked for clarification: is this happening in Preview or Production, and which flow changed the password?
+ 10. *User*: Confirmed it is happening in Production via the Forgot Password flow.
+ 11. *Agent*: Diagnosed the issue ( reverting the password on restart), patched the startup script, explained the fix, and told the user to redeploy.
+ *(No pending questions. User must redeploy to fix the production issue).*
 
 **Project Health Check:**
 Healthy. No Mocked endpoints.
@@ -156,13 +166,12 @@ Healthy. No Mocked endpoints.
 **Testing status**
   - Testing agent used after significant changes: YES
   - Troubleshoot agent used after agent stuck in loop: NO
-  - Test files created: Handled automatically by testing agent into  and 
+  - Test files created: 
   - Known regressions: None
 
 **Credentials to test flow:**
-  - HR Admin:  /  (May be altered based on latest tests but script enforces standard fallback)
-  - Field Agent/Employee:  
-  - Test Employee: 
+  - HR Admin:  /  
+  - Test Employee: , 
 
 **What agent forgot to execute**
-- The agent was successfully handling the continuous influx of new feature requests from the user, leaving the WebAuthn Domain fixes and 15-Minute Ping System clarifications unaddressed from the original problem statement. The next agent should clarify these older P2 issues with the user if the user has no new immediate tasks.</analysis>
+- The agent was completely occupied implementing the large Exit Management feature set and fixing the subsequent production server restart bug. The WebAuthn domain mismatch (P2), 15-Minute Ping System (P2), and JWT Timeout Adjustment (P2) issues from prior forks were pushed aside again and still remain in the Pending Issues list. The next agent should plan to handle these if the user does not supply immediate high-priority requests.</analysis>
