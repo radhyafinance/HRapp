@@ -230,11 +230,27 @@ async def login(data: LoginRequest):
         raise HTTPException(status_code=401, detail="Invalid username or password")
     if not user.get("is_active", True):
         raise HTTPException(status_code=403, detail="Account is inactive. Contact HR.")
-    # Block exited employees
+    # Block exited employees; auto-disable if Last Working Day has passed
     if user.get("employee_id"):
-        emp = await db.employees.find_one({"employee_id": user["employee_id"]}, {"status": 1})
-        if emp and emp.get("status") == "exited":
-            raise HTTPException(status_code=403, detail="Account disabled — employee has exited the organization.")
+        from datetime import date as _date
+        emp = await db.employees.find_one({"employee_id": user["employee_id"]}, {"status": 1, "last_working_day": 1})
+        if emp:
+            if emp.get("status") == "exited":
+                raise HTTPException(status_code=403, detail="Account disabled — employee has exited the organization.")
+            if emp.get("status") == "notice_period" and emp.get("last_working_day"):
+                try:
+                    lwd_str = emp["last_working_day"].split("T")[0].split(" ")[0]
+                    lwd = _date.fromisoformat(lwd_str)
+                    if _date.today() > lwd:
+                        await db.employees.update_one(
+                            {"employee_id": user["employee_id"]}, {"$set": {"status": "exited"}}
+                        )
+                        await db.users.update_one({"_id": user["_id"]}, {"$set": {"is_active": False}})
+                        raise HTTPException(status_code=403, detail="Your last working day has passed. Account has been disabled. Please contact HR.")
+                except HTTPException:
+                    raise
+                except Exception:
+                    pass
     # Effective role: auto-promote to "managers" if this user has direct reports,
     # regardless of the stored role. Keeps the UI / authz correct when DB role drifted.
     from services.hierarchy import compute_effective_role

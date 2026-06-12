@@ -1,14 +1,14 @@
-<analysis>**original_problem_statement**: Create a comprehensive HR system for an NBFC-MFI named Radhya Micro Finance (40+ employees). PRODUCT REQUIREMENTS: Full-stack web application (FastAPI backend + React frontend). Role-based access control. Geofenced attendance. Joining Kit PDF/Word generation. Detailed payslip generation. PWA features for field tracking. Hierarchical reporting visibility. Strict Data Privacy/ACLs for salary. EPF UAN Validation using the Perfios API to match employee names and display employment history.
+<analysis>**original_problem_statement**: Create a comprehensive HR system for an NBFC-MFI named Radhya Micro Finance (40+ employees). PRODUCT REQUIREMENTS: Full-stack web application (FastAPI backend + React frontend). Role-based access control. Geofenced attendance. Joining Kit PDF/Word generation. Detailed payslip generation. PWA features for field tracking. Hierarchical reporting visibility. Strict Data Privacy/ACLs for salary. EPF UAN Validation using the Perfios API.
 
 **User's preferred language**: English (INSTRUCT NEXT AGENT: You MUST respond in English only)
 
-**what currently exists?**: A robust PWA HR application with role-based access control. Features include geofenced/selfie attendance, leave management, complex payroll logic, transitive manager hierarchy visibility, DigiLocker document verification, Passkey biometric login, and now EPF UAN Validation with EPFO employment history extraction.
+**what currently exists?**: A robust PWA HR application with role-based access control. Features include geofenced/selfie attendance, leave management, complex payroll logic, transitive manager hierarchy visibility, DigiLocker document verification, Passkey biometric login, EPF UAN Validation, and now a fully revamped password authentication flow with Forgot Password OTP, Admin forced-resets, password strength policies, and locked verified statutory fields.
 
 **Last working item**:
-    - Last item agent was working: Implementing the EPF UAN Validation API using Perfios. The agent added the backend endpoint, successfully fetched/parsed the employment history and name-match status, and built the corresponding UI table inside the Employee Details View.
-    - Status: USER VERIFICATION PENDING (Awaiting user's review of the completed feature and their response to the proposed Verify All bulk action enhancement).
+    - Last item agent was working: Enforcing password strength policy (minimum 8 characters, 1 uppercase letter, 1 number) across all backend endpoints and adding real-time validation hints on the frontend login and admin reset forms.
+    - Status: USER VERIFICATION PENDING
     - Agent Testing Done: Y
-    - Which testing method agent to use?: NA (Self-tested via curl and screenshot tool).
+    - Which testing method agent to use?: NA (Self-tested via python backend scripts)
     - User Testing Done: N
 
 **All Pending/In progress Issue list**:
@@ -39,7 +39,7 @@
 **In progress Task List**: None
 
 **Upcoming and Future Tasks**
-    - Task 1: Letter Generation PDFs (P0) - Implement actual PDF generation and download for Offer Letters, Appointment Letters, Warning Letters, and Confirmation Letters (with company letterhead).
+    - Task 1: Letter Generation PDFs (P0) - Implement actual PDF generation and download for Offer Letters, Appointment Letters, Warning Letters, and Confirmation Letters.
     - Task 2: Punch In with Face Feature (P1) - Combine WebAuthn biometric login + immediate attendance punch-in into a single 1-tap flow for field staff.
     - Task 3: Leave Encashment Calculation (P2) - Logic to compute and disburse EL/PL encashment during payroll or exit.
     - Task 4: Employee Self-Portal for Document Upload (P2) - Allow existing employees to login and upload their own documents.
@@ -48,9 +48,15 @@
     - Task 7: Document Completeness Scope Refinement (P3) - Scope  to manager's sub-tree instead of whole company.
 
 **Completed work in this session**
--  backend endpoint added to call the Perfios API (DONE)
-- UAN Verification UI section added to  (DONE)
-- Parsed and persisted  data in the employee document, displaying a name-match badge and employment history table (DONE)
+- Locked verified EPF (UAN) and Bank Account fields in the edit form, requiring re-verification if altered (DONE)
+- Added EPF/Bank verification status columns to the Employee List and optimized it to a compact 7-column layout without horizontal scroll (DONE)
+- Blocked unverified bank accounts from being included in the exported NEFT Excel sheet (DONE)
+- Fixed pre-existing Candidate/Employee uniqueness collision bug when HR edits existing profiles sharing same email/mobile (DONE)
+- Replaced email OTP login with standard Password Login + Forgot Password OTP flow (DONE)
+- Added functionality for Admin to force a password change upon an employee's next login after an Admin reset (DONE)
+- Configured the system to route Forgot Password OTPs for the  account directly to  (DONE)
+- Fixed blocked  pop-up issue that prevented the Admin Confirm Reset button from functioning (DONE)
+- Implemented and enforced Password Strength Rules (min 8 chars, 1 uppercase, 1 number) across both frontend and backend (DONE)
 
 **Earlier issues found/mentioned but not fixed**
    Issue 1:  self-regularisation UI.
@@ -60,8 +66,8 @@
    - Is recurring issue?: N
 
    Issue 2: Payroll recalculate button missing
-   - Debug checklist: Add a Recalculate LOP/Payroll button for draft payroll records so HR doesn't have to manually update them when systemic changes (like Saturday LOP logic) are applied.
-   - Why to solve this issue: Ease of use for HR.
+   - Debug checklist: Add a Recalculate LOP/Payroll button for draft payroll records.
+   - Why to solve this issue: Ease of use for HR when systemic changes are made.
    - Should test: Frontend/Backend
 
    Issue 3: Payroll Employee Search Bar
@@ -70,7 +76,7 @@
    - Should test: Frontend
 
    Issue 4: Regularisation integration with Leaves
-   - Debug checklist: When HR selects leave during regularisation, show a dropdown to pick leave type (CL/SL/EL) and auto-deduct from the balance.
+   - Debug checklist: When HR selects leave during regularisation, show a dropdown to pick leave type (CL/SL/EL) and auto-deduct.
    - Why to solve this issue: Closes a gap between attendance regularisation and leave management.
    - Should test: Backend/Frontend
 
@@ -85,44 +91,57 @@
 **Key Technical Concepts**
 Frontend: React, Tailwind, PWA Service Workers.
 Backend: FastAPI, MongoDB, Pydantic, WebAuthn.
-Integration: Perfios (KYC/Auth).
+Integration: Resend API (Emails), Perfios (KYC/Auth).
 
 **key DB schema**
-  - : Includes a new  object storing (, , , , ).
+  - : Includes  and .
+  - : Includes , , .
 
 **changes in tech stack**
   - None
 
 **All files of reference**
-  -  (Updated to add the new UAN verification route utilizing the existing Perfios key)
-  -  (Updated to display UAN verification status and employment history matrix)
+  -  (Updated to add , , admin resets, and  checks)
+  -  (Major refactor: Removed OTP login, added Forgot Password flow and Forced Change screen)
+  -  (Redesigned employee list for compact horizontal view)
+  -  (Added UAN/Bank edit protections)
+  -  (Added bank verification filters for NEFT exports)
+  -  (Updated to intercept login and capture  status)
 
 **Areas that need refactoring**: 
-- None identified in this session.
+- None identified currently.
 
 **key api endpoints**
-  -  (NEW - Hits Perfios hub API)
+  - 
+  - 
+  - 
+  - 
   - 
 
 **Critical Info for New Agent**
-  - **ENVIRONMENT AWARENESS**: Ensure cross-origin implementations like WebAuthn rely strictly on dynamic headers.
-  - **Perfios API Pattern**: The EPF UAN Validation uses the  endpoint. The parsing logic is successfully mapped to expect a varying  payload (handled inside ).
+  - **Auth Modifiers:** Setting  in the DB interceptor forces the user to the  UI right after login, preventing dashboard access. 
+  - **Browser Restrictions:** Do not use  in UI flows (like password resets) as it silently blocks execution inside certain browser/iframe environments.
+  - **Admin Email Hardcode:** OTPs for  forgot-password requests are strictly hardcoded in  to target  based on user requirement. 
 
 **documents and test reports created in this job**
   -  (Updated)
+  - 
+  - 
 
 **Last 10 User Messages and any pending HUMAN messages** 
- 1. *Agent*: Fixed Saturday LOP gap, proposed Recalculate button.
- 2. *User*: Requested Payroll list be displayed in employee ID order.
- 3. *Agent*: Sorted the list, proposed a quick search filter.
- 4. *User*: Instructed to only show payslips to employees after payroll is processed and month ends.
- 5. *Agent*: Gated the employee payroll APIs.
- 6. *User*: Notified agent about Production deployment and asked what settings are required for passkey login to work in production.
- 7. *Agent*: Explained  domain binding for WebAuthn. Proposed UI tweaks to prune invalid credentials. *(Pending human response)*
- 8. *User*: Please use ask_human tool and confirm your plan now.
- 9. *Agent*: [Sent ask_human question]
- 10. *User*: Provided a Postman collection for the EPF UAN Validation API. Instructed the agent to verify UAN via Perfios, check name match, and display employment history in a table.
- *(Agent successfully implemented the UAN validation and finished the job. User response is pending for the finished feature.)*
+ 1. *User*: Requested EPF and Bank details be locked once verified, requiring re-verification upon edit. Wanted status shown on Employees page and NEFT generation blocked for unverified accounts.
+ 2. *Agent*: Implemented verification lock features, NEFT filtering, and Employees list additions. Also fixed a candidate uniqueness check bug.
+ 3. *User*: Requested Employees page be compressed to fit without horizontal scrolling.
+ 4. *Agent*: Restructured the Employee List table into 7 compact columns.
+ 5. *User*: Requested removal of OTP email login, replacing it with a Forgot Password system. Admin resets should force the employee to change password on next login. Admin resets for the admin account should send an email to mail@radhyafinance.com.
+ 6. *Agent*: Implemented the massive Auth refactor (Backend APIs, Context, and UI).
+ 7. *User*: Clarified: ONLY send the OTP to mail@radhyafinance.com when the *admin account* asks for a reset, not for other accounts.
+ 8. *Agent*: Adjusted backend logic to target the specific email for the  user and removed email notifications for HR-driven resets.
+ 9. *User*: Reported bug: Admin unable to reset passwords via the Employee UI (Confirm Reset button does nothing).
+ 10. *Agent*: Diagnosed blocked , removed it, and resolved the issue.
+ 11. *User*: Asked about password strength rules and selected option b (minimum 8 characters, 1 uppercase, 1 number).
+ 12. *Agent*: Successfully deployed and verified password strength enforcement across backend routes and frontend UI inputs.
+ *(No pending questions. User verification pending on the new Auth flow features.)*
 
 **Project Health Check:**
 Healthy. No Mocked endpoints.
@@ -135,15 +154,15 @@ Healthy. No Mocked endpoints.
 	 •	WebAuthn (Device Biometrics) — Direct API logic.
 
 **Testing status**
-  - Testing agent used after significant changes: NO (It was a single endpoint addition; agent self-tested via bash curl commands and screenshot tool).
+  - Testing agent used after significant changes: YES
   - Troubleshoot agent used after agent stuck in loop: NO
-  - Test files created: None
+  - Test files created: Handled automatically by testing agent into  and 
   - Known regressions: None
 
 **Credentials to test flow:**
-  - HR Admin:  / 
-  - Field Agent/Employee:  / 
-  - Test Employee with valid UAN: 
+  - HR Admin:  /  (May be altered based on latest tests but script enforces standard fallback)
+  - Field Agent/Employee:  
+  - Test Employee: 
 
 **What agent forgot to execute**
-- The agent successfully implemented the requested EPF UAN feature, but the user never responded to the previous inquiries regarding WebAuthn production Passkey UI configurations. The next agent should follow up on these pending questions if the user does not address them.</analysis>
+- The agent was successfully handling the continuous influx of new feature requests from the user, leaving the WebAuthn Domain fixes and 15-Minute Ping System clarifications unaddressed from the original problem statement. The next agent should clarify these older P2 issues with the user if the user has no new immediate tasks.</analysis>
