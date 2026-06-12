@@ -220,16 +220,7 @@ async def startup():
         })
         logger.info(f"Admin user created: username='{admin_username}'")
     else:
-        # Refresh password if .env value changed
-        try:
-            if not bcrypt.checkpw(admin_password.encode(), existing_admin["password_hash"].encode()):
-                await db.users.update_one(
-                    {"_id": existing_admin["_id"]},
-                    {"$set": {"password_hash": hash_password(admin_password)}},
-                )
-        except Exception:
-            pass
-        # Ensure admin has an email on file (needed for OTP login)
+        # Ensure admin has an email on file (needed for OTP / forgot-password flow)
         if not existing_admin.get("email"):
             await db.users.update_one(
                 {"_id": existing_admin["_id"]},
