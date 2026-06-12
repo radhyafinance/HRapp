@@ -47,6 +47,21 @@ export default function Layout() {
   const [photoUrl, setPhotoUrl] = useState(null);
   const [profileOpen, setProfileOpen] = useState(false);
   const [profileData, setProfileData] = useState(null);
+  const [exitPendingCount, setExitPendingCount] = useState(0);
+
+  // Poll for pending exit actions (managers + admin only)
+  useEffect(() => {
+    const POLLING_ROLES = ["hr_admin", "managers", "management"];
+    if (!POLLING_ROLES.includes(user?.role)) return;
+    const fetchCount = () => {
+      API.get("/exit/my-pending-count")
+        .then(r => setExitPendingCount(r.data?.total || 0))
+        .catch(() => {});
+    };
+    fetchCount();
+    const interval = setInterval(fetchCount, 60_000);
+    return () => clearInterval(interval);
+  }, [user?.role]);
 
   // Load passport photo for employees
   useEffect(() => {
@@ -133,7 +148,13 @@ export default function Layout() {
               data-testid={`nav-${label.toLowerCase().replace(/\s+/g, '-')}`}
             >
               <Icon size={18} />
-              <span>{label}</span>
+              <span className="flex-1">{label}</span>
+              {path === "/exit" && exitPendingCount > 0 && (
+                <span className="flex-shrink-0 min-w-[20px] h-5 flex items-center justify-center bg-red-500 text-white text-[10px] font-bold rounded-full px-1.5 leading-none"
+                  data-testid="exit-pending-badge">
+                  {exitPendingCount > 9 ? "9+" : exitPendingCount}
+                </span>
+              )}
             </NavLink>
           ))}
         </div>
@@ -325,11 +346,17 @@ export default function Layout() {
         {/* More button to open full menu */}
         <button
           onClick={() => setSidebarOpen(true)}
-          className="flex flex-col items-center justify-center gap-1 flex-1 py-2 min-h-[56px] text-slate-500 hover:text-slate-700 transition-colors"
+          className="flex flex-col items-center justify-center gap-1 flex-1 py-2 min-h-[56px] text-slate-500 hover:text-slate-700 transition-colors relative"
           data-testid="mobile-nav-more"
         >
-          <div className="p-1.5 rounded-lg">
+          <div className="p-1.5 rounded-lg relative">
             <Menu size={20} />
+            {exitPendingCount > 0 && (
+              <span className="absolute -top-0.5 -right-0.5 min-w-[14px] h-3.5 flex items-center justify-center bg-red-500 text-white text-[9px] font-bold rounded-full px-0.5 leading-none"
+                data-testid="mobile-exit-badge">
+                {exitPendingCount > 9 ? "9+" : exitPendingCount}
+              </span>
+            )}
           </div>
           <span className="text-[10px] font-semibold leading-none">More</span>
         </button>

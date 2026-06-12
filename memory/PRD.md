@@ -40,6 +40,7 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 - **Auto-disable login** when Last Working Day passes (checked at login time)
 - **Full audit timeline** with all events recorded
 - **Files**: `/app/backend/routes/exit_routes.py` (complete rewrite), `/app/frontend/src/pages/ExitManagement.js` (mobile-first complete rewrite), `/app/backend/routes/auth.py` (LWD auto-disable added)
+- **Exit pending badge**: `GET /api/exit/my-pending-count` endpoint + red badge on sidebar Exit nav item (polls every 60s) + dashboard alert card that breaks down approvals/NOC/docs pending + mobile "More" button badge. Files: `Layout.js`, `Dashboard.js`
 10. **Gratuity** - Eligibility check (5yr), calculation, monthly provision
 11. **Settings** - 5 office locations (Moradabad HO, Chandpur, Najibabad, Budaun, Chandausi)
 

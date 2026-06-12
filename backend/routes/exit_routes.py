@@ -342,6 +342,58 @@ async def get_noc_sections():
     return NOC_SECTIONS
 
 
+@router.get("/my-pending-count")
+async def get_my_pending_count(current_user: dict = Depends(get_current_user)):
+    """Return count of exit-related actions pending for the current user."""
+    role = current_user.get("role")
+    emp_id = current_user.get("employee_id")
+
+    if role not in ("hr_admin", "managers", "management"):
+        return {"total": 0, "approvals": 0, "noc": 0, "docs": 0}
+
+    exits = await db.exit_requests.find(
+        {"status": {"$in": ["submitted", "noc_in_progress", "noc_complete"]}}
+    ).to_list(500)
+
+    approval_count = 0
+    noc_count = 0
+    docs_count = 0
+
+    for e in exits:
+        status = e.get("status")
+
+        if status == "submitted":
+            chain = e.get("approval_chain", [])
+            pending = next((a for a in chain if a.get("status") == "pending"), None)
+            if pending:
+                is_mine = (
+                    (pending.get("approver_id") == "admin" and role == "hr_admin") or
+                    (pending.get("approver_id") == emp_id)
+                )
+                if is_mine:
+                    approval_count += 1
+
+        elif status == "noc_in_progress":
+            for section_key, sec_data in (e.get("noc_clearances") or {}).items():
+                if sec_data.get("status") == "cleared":
+                    continue
+                assignee_id = sec_data.get("assignee_id")
+                is_mine = (
+                    (section_key == "admin" and role == "hr_admin") or
+                    (assignee_id and assignee_id == emp_id) or
+                    role == "hr_admin"  # admin can fill any section
+                )
+                if is_mine:
+                    noc_count += 1
+                    break  # 1 per exit, not per section
+
+        elif status == "noc_complete" and role == "hr_admin":
+            docs_count += 1
+
+    total = approval_count + noc_count + docs_count
+    return {"total": total, "approvals": approval_count, "noc": noc_count, "docs": docs_count}
+
+
 @router.get("/{exit_id}")
 async def get_exit(exit_id: str, current_user: dict = Depends(get_current_user)):
     exit_req = await db.exit_requests.find_one({"_id": ObjectId(exit_id)})

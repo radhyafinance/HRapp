@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
 import API from "../utils/api";
-import { Users, CalendarCheck, FileText, CreditCard, TrendingUp, UserPlus, Clock, Video, Mail, Phone, CalendarX, FileEdit, AlertCircle } from "lucide-react";
+import { Users, CalendarCheck, FileText, CreditCard, TrendingUp, UserPlus, Clock, Video, Mail, Phone, CalendarX, FileEdit, AlertCircle, DoorOpen, ChevronRight, Shield, Check } from "lucide-react";
 import { QuickPunchCard } from "../components/dashboard/QuickPunchCard";
 import { WebAuthnSetupCard } from "../components/dashboard/WebAuthnSetupCard";
 import { toLocalDateStr } from "../utils/shiftRules";
@@ -102,6 +102,7 @@ function AdminDashboard({ user }) {
   const [activity, setActivity] = useState([]);
   const [myInterviews, setMyInterviews] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [exitPending, setExitPending] = useState(null);
   const canSeeInterviews = ["hr_admin", "management", "managers"].includes(user?.role);
   const canSeePayroll = ["hr_admin", "management"].includes(user?.role);
 
@@ -111,12 +112,14 @@ function AdminDashboard({ user }) {
         const calls = [
           API.get("/dashboard/stats"),
           API.get("/dashboard/recent-activity"),
+          API.get("/exit/my-pending-count"),
         ];
         if (canSeeInterviews) calls.push(API.get("/candidates/my-interviews"));
         const results = await Promise.all(calls);
         setStats(results[0].data);
         setActivity(results[1].data);
-        if (canSeeInterviews && results[2]) setMyInterviews(results[2].data);
+        setExitPending(results[2].data);
+        if (canSeeInterviews && results[3]) setMyInterviews(results[3].data);
       } catch (e) {
         console.error(e);
       } finally {
@@ -148,6 +151,49 @@ function AdminDashboard({ user }) {
           <StatCard label="Payroll (Month)" value={stats?.payroll_processed_this_month} icon={CreditCard} color="bg-[#E85B1E]" sub="Records processed" />
         )}
       </div>
+
+      {/* Exit Pending Actions Alert */}
+      {exitPending?.total > 0 && (
+        <div
+          onClick={() => navigate("/exit")}
+          className="mb-6 cursor-pointer group border border-red-200 bg-red-50 rounded-xl overflow-hidden hover:border-red-400 hover:shadow-md transition-all"
+          data-testid="exit-pending-dashboard-card"
+        >
+          <div className="flex items-center justify-between px-5 py-4">
+            <div className="flex items-center gap-4">
+              <div className="w-11 h-11 rounded-xl bg-red-500 flex items-center justify-center flex-shrink-0 shadow-sm">
+                <DoorOpen size={20} className="text-white" />
+              </div>
+              <div>
+                <p className="font-bold text-red-700 text-sm flex items-center gap-2">
+                  <span className="inline-flex items-center justify-center w-5 h-5 bg-red-500 text-white text-[10px] font-bold rounded-full">
+                    {exitPending.total > 9 ? "9+" : exitPending.total}
+                  </span>
+                  Exit Action{exitPending.total !== 1 ? "s" : ""} Pending
+                </p>
+                <div className="flex flex-wrap gap-3 mt-1">
+                  {exitPending.approvals > 0 && (
+                    <span className="text-xs text-red-600 flex items-center gap-1">
+                      <AlertCircle size={11} /> {exitPending.approvals} approval{exitPending.approvals !== 1 ? "s" : ""} needed
+                    </span>
+                  )}
+                  {exitPending.noc > 0 && (
+                    <span className="text-xs text-amber-700 flex items-center gap-1">
+                      <Shield size={11} /> {exitPending.noc} NOC section{exitPending.noc !== 1 ? "s" : ""} to fill
+                    </span>
+                  )}
+                  {exitPending.docs > 0 && (
+                    <span className="text-xs text-blue-700 flex items-center gap-1">
+                      <Check size={11} /> {exitPending.docs} doc{exitPending.docs !== 1 ? "s" : ""} upload pending
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+            <ChevronRight size={18} className="text-red-400 group-hover:translate-x-1 transition-transform flex-shrink-0" />
+          </div>
+        </div>
+      )}
 
       {canSeeInterviews && myInterviews.length > 0 && (
         <div className="bg-white border border-slate-200 rounded-lg shadow-sm mb-6" data-testid="my-interviews-panel">
