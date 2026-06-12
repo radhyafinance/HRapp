@@ -873,12 +873,10 @@ export default function ExitManagement() {
           <h1 className="text-2xl font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Exit Management</h1>
           <p className="text-slate-500 text-sm mt-0.5">Resignation & NOC clearance process</p>
         </div>
-        {!myActiveRequest && (
-          <button onClick={() => setShowResign(true)} data-testid="resign-btn"
-            className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2.5 bg-red-600 text-white rounded-xl text-sm font-semibold hover:bg-red-700 transition-colors shadow-sm">
-            <Plus size={15} /> Resign
-          </button>
-        )}
+        <button onClick={() => setShowResign(true)} data-testid="resign-btn"
+          className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2.5 bg-red-600 text-white rounded-xl text-sm font-semibold hover:bg-red-700 transition-colors shadow-sm">
+          <Plus size={15} /> {isAdmin ? "Submit on Behalf" : "Resign"}
+        </button>
       </div>
 
       {/* Stats (admin/management) */}

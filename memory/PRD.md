@@ -25,8 +25,21 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 5. **Leave Management** - CL/SL/EL/Maternity/Paternity, balance tracking, approval workflow
 6. **Payroll** - EPF 12%, ESIC 0.75%/3.25%, Gratuity provision, NEFT Excel export
 7. **Performance Management** - Half-yearly reviews, self/manager assessment, CTC increase
-8. **Exit Management** - Resignation, 3-level approval, Full & Final Settlement
+8. **Exit Management** — Full workflow: Resignation submission (text+file upload), sequential approval chain (Manager→Senior Manager→Admin), NOC clearances with 5 sections (Branch Manager/Accounts/IT/Audit/HR), auto-assigned NOC owners by designation, F&F settlement upload, auto-disable login after LWD, full timeline
 9. **Letter Generation** - Appointment, Offer, Promotion, Warning, Experience, Relieving, Increment
+
+
+### ✅ Phase 4 (Jun 2026) — Full Exit Management Overhaul
+- **Resignation with optional letter upload** (PDF/image/Excel)
+- **Sequential approval chain**: Direct Reporting Manager → Manager's Manager (if active/exists) → HR Admin
+- **Admin sets Last Working Day** on final approval — triggers NOC process
+- **5-section NOC clearances** from NOC form PDF: Branch Manager (7 items), Accounts (3 items), IT (3 items), Audit (2 items), HR (3 items)
+- **Auto-assign NOC owners**: Accounts Manager by designation, IT by department, RMF0022 for audit, reporting manager for branch
+- **Employee-visible status** only (not individual NOC items) for privacy
+- **Final documents upload**: F&F Settlement Sheet + Relieving Letter (PDF/Excel)
+- **Auto-disable login** when Last Working Day passes (checked at login time)
+- **Full audit timeline** with all events recorded
+- **Files**: `/app/backend/routes/exit_routes.py` (complete rewrite), `/app/frontend/src/pages/ExitManagement.js` (mobile-first complete rewrite), `/app/backend/routes/auth.py` (LWD auto-disable added)
 10. **Gratuity** - Eligibility check (5yr), calculation, monthly provision
 11. **Settings** - 5 office locations (Moradabad HO, Chandpur, Najibabad, Budaun, Chandausi)
 

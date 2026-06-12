@@ -147,12 +147,14 @@ async def _get_noc_assignments(reporting_to: str) -> dict:
 
 
 async def _build_approval_chain(emp: dict) -> list:
-    """Build sequential approval chain from employee hierarchy."""
+    """Build sequential approval chain from employee hierarchy. Skips inactive/exited approvers."""
     chain = []
     reporting_to = emp.get("reporting_to")
     if reporting_to:
         mgr = await db.employees.find_one({"employee_id": reporting_to}, {"_id": 0})
-        if mgr:
+        mgr_user = await db.users.find_one({"employee_id": reporting_to}, {"is_active": 1}) if mgr else None
+        # Only add if manager is still active
+        if mgr and mgr.get("status") not in ("exited",) and (not mgr_user or mgr_user.get("is_active", True)):
             chain.append({
                 "level": 1,
                 "approver_id": reporting_to,
@@ -165,7 +167,8 @@ async def _build_approval_chain(emp: dict) -> list:
             mgr_mgr = mgr.get("reporting_to")
             if mgr_mgr:
                 senior = await db.employees.find_one({"employee_id": mgr_mgr}, {"_id": 0})
-                if senior:
+                senior_user = await db.users.find_one({"employee_id": mgr_mgr}, {"is_active": 1}) if senior else None
+                if senior and senior.get("status") not in ("exited",) and (not senior_user or senior_user.get("is_active", True)):
                     chain.append({
                         "level": 2,
                         "approver_id": mgr_mgr,
@@ -234,6 +237,8 @@ async def submit_resignation(
     emp = await db.employees.find_one({"employee_id": target_emp_id})
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
+    if emp.get("status") == "exited":
+        raise HTTPException(status_code=400, detail="Cannot submit resignation for an already-exited employee")
 
     existing = await db.exit_requests.find_one({
         "employee_id": target_emp_id,
@@ -356,6 +361,8 @@ async def approve_exit(exit_id: str, data: ApproveExitRequest, current_user: dic
         raise HTTPException(status_code=404, detail="Exit request not found")
     if exit_req["status"] != "submitted":
         raise HTTPException(status_code=400, detail=f"Cannot approve/reject at current status: {exit_req['status']}")
+    if data.action not in ("approve", "reject"):
+        raise HTTPException(status_code=422, detail="Action must be 'approve' or 'reject'")
 
     role = current_user.get("role")
     emp_id = current_user.get("employee_id")
