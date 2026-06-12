@@ -3,10 +3,10 @@
 Strategy:
 - Compare a punch-time selfie against the employee's reference passport_photo.
 - Returns (matched: bool, distance: float, reason: str | None).
-- Lower distance = closer match. Default threshold 0.4 (balanced).
+- Lower distance = closer match. Default threshold 0.55 (lenient for mobile/outdoor).
 - Distances:
-    < 0.4  → strong match
-    0.4 - 0.55 → weak match
+    < 0.45 → strong match
+    0.45 - 0.55 → acceptable match
     > 0.55 → not the same person
 """
 import base64
@@ -20,7 +20,7 @@ from PIL import Image, ImageOps
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TOLERANCE = 0.40   # balanced
+DEFAULT_TOLERANCE = 0.55   # balanced — 0.55 reduces false mismatches for mobile/outdoor selfies
 MAX_DIM = 1200             # resize before encoding for speed (preserves enough detail for face detection)
 
 
