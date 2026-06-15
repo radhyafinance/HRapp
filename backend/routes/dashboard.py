@@ -163,23 +163,40 @@ async def dashboard_stats(current_user: dict = Depends(get_current_user)):
 @router.get("/recent-activity")
 async def recent_activity(current_user: dict = Depends(get_current_user)):
     activities = []
-    # Recent attendance
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
     att = await db.attendance_records.find({"date": today}).sort("punch_in_time", -1).to_list(5)
+    leaves = await db.leave_applications.find({}).sort("applied_at", -1).to_list(5)
+
+    # Batch-fetch employee names for all IDs referenced
+    all_ids = list({a.get("employee_id") for a in att} | {l.get("employee_id") for l in leaves} - {None})
+    emp_docs = await db.employees.find(
+        {"employee_id": {"$in": all_ids}},
+        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1},
+    ).to_list(len(all_ids) + 1)
+    name_map = {
+        e["employee_id"]: f"{e.get('first_name', '')} {e.get('last_name', '')}".strip()
+        for e in emp_docs
+    }
+
+    def _label(emp_id: str) -> str:
+        name = name_map.get(emp_id, "")
+        return f"{name} ({emp_id})" if name else emp_id
+
     for a in att:
         activities.append({
             "type": "attendance",
-            "message": f"{a.get('employee_id')} punched in",
+            "message": f"{_label(a.get('employee_id', ''))} punched in",
             "time": a.get("punch_in_time", ""),
         })
-    # Recent leave applications
-    leaves = await db.leave_applications.find({}).sort("applied_at", -1).to_list(5)
+
     for l in leaves:
         activities.append({
             "type": "leave",
-            "message": f"{l.get('employee_id')} applied for {l.get('leave_type')} leave",
+            "message": f"{_label(l.get('employee_id', ''))} applied for {l.get('leave_type', '')} leave",
             "time": l.get("applied_at", ""),
         })
+
     activities.sort(key=lambda x: x.get("time", ""), reverse=True)
     return activities[:10]
 
