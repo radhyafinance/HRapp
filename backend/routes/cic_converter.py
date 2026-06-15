@@ -72,21 +72,27 @@ def _build_cdf(rows: list, from_date: str, to_date: str, cic_key: str) -> str:
 @router.post("/generate")
 async def generate_cdf(
     file: UploadFile = File(...),
-    from_date: str = Form(...),      # DDMMYYYY  e.g. "11062026"
-    to_date: str = Form(...),        # DDMMYYYY  e.g. "13062026"
+    from_date: str = Form(...),      # DDMMYYYY  e.g. "11062026"  (Date of Data)
+    to_date: str = Form(...),        # DDMMYYYY  e.g. "13062026"  (Date of Upload)
     excluded_uids: str = Form(""),   # newline/comma-separated 12-digit UIDs
+    cic: str = Form(""),             # if set, return only that one CDF; else ZIP of all 4
     current_user: dict = Depends(get_current_user),
 ):
-    """Upload HighMark Excel → download ZIP of 4 CDF files."""
+    """Upload HighMark Excel → download ZIP of all 4 CDFs, or a single CDF if cic= is set."""
     emp_id = current_user.get("employee_id")
     role = current_user.get("role")
     if emp_id not in CIC_ALLOWED_EMPLOYEE_IDS and role != "hr_admin":
         raise HTTPException(status_code=403, detail="Access restricted to authorised personnel only.")
 
     # Validate date format (DDMMYYYY)
-    for label, d in [("From date", from_date), ("To date", to_date)]:
+    for label, d in [("Date of Data", from_date), ("Date of Upload", to_date)]:
         if len(d) != 8 or not d.isdigit():
             raise HTTPException(status_code=422, detail=f"{label} must be in DDMMYYYY format (e.g. 11062026).")
+
+    # Validate cic key if provided
+    cic_key = cic.lower().strip() if cic else ""
+    if cic_key and cic_key not in CIC_CONFIGS:
+        raise HTTPException(status_code=422, detail=f"Unknown CIC '{cic}'. Valid keys: {', '.join(CIC_CONFIGS.keys())}.")
 
     # Build exclusion set
     excluded = {u.strip() for u in excluded_uids.replace(",", "\n").splitlines() if u.strip()}
@@ -104,25 +110,40 @@ async def generate_cdf(
     for row in ws.iter_rows(min_row=2, values_only=True):  # row 1 = header
         cells = list(row)
         if not any(cells):
-            continue  # skip blank rows
+            continue
 
         uid = _cell_to_str(cells[UID_COL_INDEX]) if len(cells) > UID_COL_INDEX else ""
         if uid and uid in excluded:
             skipped += 1
             continue
 
-        # Overwrite Date of Account Information with user-chosen from_date
+        # Overwrite Date of Account Information with Date of Data (from_date)
         if len(cells) > DATE_ACC_INFO_INDEX:
             cells[DATE_ACC_INFO_INDEX] = from_date
 
         rows.append("|".join(_cell_to_str(c) for c in cells))
 
-    # Build ZIP with all 4 CDFs
+    record_headers = {
+        "X-Record-Count": str(len(rows)),
+        "X-Skipped-Count": str(skipped),
+    }
+
+    # ── Single CIC download ──────────────────────────────────────────
+    if cic_key:
+        cfg = CIC_CONFIGS[cic_key]
+        cdf_text = _build_cdf(rows, from_date, to_date, cic_key)
+        filename = cfg["filename"](from_date, to_date)
+        return StreamingResponse(
+            iter([cdf_text.encode("utf-8")]),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"', **record_headers},
+        )
+
+    # ── ZIP of all 4 CDFs ────────────────────────────────────────────
     zip_buf = io.BytesIO()
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for cic_key, cfg in CIC_CONFIGS.items():
-            cdf_text = _build_cdf(rows, from_date, to_date, cic_key)
-            zf.writestr(cfg["filename"](from_date, to_date), cdf_text)
+        for key, cfg in CIC_CONFIGS.items():
+            zf.writestr(cfg["filename"](from_date, to_date), _build_cdf(rows, from_date, to_date, key))
 
     zip_buf.seek(0)
     return StreamingResponse(
@@ -130,8 +151,7 @@ async def generate_cdf(
         media_type="application/zip",
         headers={
             "Content-Disposition": f"attachment; filename=CIC_CDF_{from_date}_{to_date}.zip",
-            "X-Record-Count": str(len(rows)),
-            "X-Skipped-Count": str(skipped),
+            **record_headers,
         },
     )
 
