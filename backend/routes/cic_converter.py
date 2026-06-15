@@ -2,14 +2,21 @@
 from a HighMark-format Excel sheet.
 
 Access: restricted to employee IDs RMF0007, RMF0003, OR role hr_admin.
+
+Download flow (avoids blob-URL / user-gesture browser restrictions):
+  1. POST /api/cic/generate  → processes Excel, stores files in memory, returns {download_token}
+  2. GET  /api/cic/download/{token}?cic=<key>  → streams the file (no auth needed; token is the secret)
 """
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from fastapi.responses import StreamingResponse
-from auth_utils import get_current_user
-import openpyxl
-import zipfile
 import io
-from datetime import datetime
+import uuid
+import zipfile
+from datetime import datetime, timedelta, timezone
+
+import openpyxl
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi.responses import JSONResponse, StreamingResponse
+
+from auth_utils import get_current_user
 
 router = APIRouter()
 
@@ -51,22 +58,34 @@ CIC_CONFIGS = {
 UID_COL_INDEX = 28        # "UID" column (Aadhaar 12-digit)
 DATE_ACC_INFO_INDEX = 69  # "Date of Account Information" — overwritten with from_date
 
+# In-memory download cache: {token: {zip, cibil, crif, equifax, experian, expires_at, ...}}
+DOWNLOAD_CACHE: dict = {}
+TOKEN_TTL_SECONDS = 300  # 5 minutes
+
 
 def _cell_to_str(val) -> str:
-    """Convert any Excel cell value to a CDF-safe string."""
     if val is None:
         return ""
     if isinstance(val, datetime):
-        return val.strftime("%d%m%Y")  # DDMMYYYY
+        return val.strftime("%d%m%Y")
     if isinstance(val, float):
         return str(int(val)) if val == int(val) else str(val)
     return str(val)
 
 
-def _build_cdf(rows: list, from_date: str, to_date: str, cic_key: str) -> str:
+def _build_cdf(rows: list, from_date: str, to_date: str, cic_key: str) -> bytes:
     cfg = CIC_CONFIGS[cic_key]
     header = cfg["header_prefix"] + from_date + to_date + cfg["header_suffix"]
-    return "\n".join([header] + rows + [cfg["footer"]])
+    content = "\n".join([header] + rows + [cfg["footer"]])
+    return content.encode("utf-8")
+
+
+def _evict_expired():
+    """Remove tokens older than TTL."""
+    now = datetime.now(timezone.utc)
+    expired = [k for k, v in DOWNLOAD_CACHE.items() if now > v["expires_at"]]
+    for k in expired:
+        del DOWNLOAD_CACHE[k]
 
 
 @router.post("/generate")
@@ -75,29 +94,20 @@ async def generate_cdf(
     from_date: str = Form(...),      # DDMMYYYY  e.g. "11062026"  (Date of Data)
     to_date: str = Form(...),        # DDMMYYYY  e.g. "13062026"  (Date of Upload)
     excluded_uids: str = Form(""),   # newline/comma-separated 12-digit UIDs
-    cic: str = Form(""),             # if set, return only that one CDF; else ZIP of all 4
     current_user: dict = Depends(get_current_user),
 ):
-    """Upload HighMark Excel → download ZIP of all 4 CDFs, or a single CDF if cic= is set."""
+    """Process Excel → store generated CDFs in memory → return download_token."""
     emp_id = current_user.get("employee_id")
     role = current_user.get("role")
     if emp_id not in CIC_ALLOWED_EMPLOYEE_IDS and role != "hr_admin":
         raise HTTPException(status_code=403, detail="Access restricted to authorised personnel only.")
 
-    # Validate date format (DDMMYYYY)
     for label, d in [("Date of Data", from_date), ("Date of Upload", to_date)]:
         if len(d) != 8 or not d.isdigit():
             raise HTTPException(status_code=422, detail=f"{label} must be in DDMMYYYY format (e.g. 11062026).")
 
-    # Validate cic key if provided
-    cic_key = cic.lower().strip() if cic else ""
-    if cic_key and cic_key not in CIC_CONFIGS:
-        raise HTTPException(status_code=422, detail=f"Unknown CIC '{cic}'. Valid keys: {', '.join(CIC_CONFIGS.keys())}.")
-
-    # Build exclusion set
     excluded = {u.strip() for u in excluded_uids.replace(",", "\n").splitlines() if u.strip()}
 
-    # Read Excel
     content = await file.read()
     try:
         wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
@@ -107,58 +117,74 @@ async def generate_cdf(
 
     rows = []
     skipped = 0
-    for row in ws.iter_rows(min_row=2, values_only=True):  # row 1 = header
+    for row in ws.iter_rows(min_row=2, values_only=True):
         cells = list(row)
         if not any(cells):
             continue
-
         uid = _cell_to_str(cells[UID_COL_INDEX]) if len(cells) > UID_COL_INDEX else ""
         if uid and uid in excluded:
             skipped += 1
             continue
-
-        # Overwrite Date of Account Information with Date of Data (from_date)
         if len(cells) > DATE_ACC_INFO_INDEX:
             cells[DATE_ACC_INFO_INDEX] = from_date
-
         rows.append("|".join(_cell_to_str(c) for c in cells))
 
-    record_headers = {
-        "X-Record-Count": str(len(rows)),
-        "X-Skipped-Count": str(skipped),
-    }
+    # Build all 4 CDFs
+    cdf_files = {}
+    for cic_key, cfg in CIC_CONFIGS.items():
+        cdf_files[cic_key] = {
+            "data": _build_cdf(rows, from_date, to_date, cic_key),
+            "filename": cfg["filename"](from_date, to_date),
+        }
 
-    # ── Single CIC download ──────────────────────────────────────────
-    if cic_key:
-        cfg = CIC_CONFIGS[cic_key]
-        cdf_text = _build_cdf(rows, from_date, to_date, cic_key)
-        filename = cfg["filename"](from_date, to_date)
-        return StreamingResponse(
-            iter([cdf_text.encode("utf-8")]),
-            media_type="application/octet-stream",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"', **record_headers},
-        )
-
-    # ── ZIP of all 4 CDFs ────────────────────────────────────────────
+    # Build ZIP
     zip_buf = io.BytesIO()
     with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for key, cfg in CIC_CONFIGS.items():
-            zf.writestr(cfg["filename"](from_date, to_date), _build_cdf(rows, from_date, to_date, key))
+        for key, item in cdf_files.items():
+            zf.writestr(item["filename"], item["data"].decode("utf-8"))
+    zip_data = zip_buf.getvalue()
 
-    zip_buf.seek(0)
-    return StreamingResponse(
-        zip_buf,
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": f"attachment; filename=CIC_CDF_{from_date}_{to_date}.zip",
-            **record_headers,
+    # Store in cache
+    _evict_expired()
+    token = str(uuid.uuid4())
+    DOWNLOAD_CACHE[token] = {
+        **cdf_files,
+        "zip": {
+            "data": zip_data,
+            "filename": f"CIC_CDF_{from_date}_{to_date}.zip",
         },
+        "expires_at": datetime.now(timezone.utc) + timedelta(seconds=TOKEN_TTL_SECONDS),
+    }
+
+    return JSONResponse({
+        "download_token": token,
+        "record_count": len(rows),
+        "skipped_count": skipped,
+        "expires_in_seconds": TOKEN_TTL_SECONDS,
+    })
+
+
+@router.get("/download/{token}")
+async def download_file(token: str, cic: str = ""):
+    """Stream a previously generated CDF or ZIP file. No JWT needed — token is the secret."""
+    _evict_expired()
+    entry = DOWNLOAD_CACHE.get(token)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Download link not found or expired. Please regenerate.")
+
+    key = cic.lower().strip() if cic and cic.lower().strip() in CIC_CONFIGS else "zip"
+    item = entry[key]
+
+    media_type = "application/zip" if key == "zip" else "application/octet-stream"
+    return StreamingResponse(
+        io.BytesIO(item["data"]),
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{item["filename"]}"'},
     )
 
 
 @router.get("/access-check")
 async def check_access(current_user: dict = Depends(get_current_user)):
-    """Returns allowed: bool so the frontend can show/hide the tool."""
     emp_id = current_user.get("employee_id")
     role = current_user.get("role")
     allowed = emp_id in CIC_ALLOWED_EMPLOYEE_IDS or role == "hr_admin"

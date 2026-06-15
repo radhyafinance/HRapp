@@ -1,14 +1,15 @@
 import React, { useState, useRef } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
-import API from "../utils/api";
 import { Upload, Download, X, FileSpreadsheet, Calendar, ShieldAlert, CheckCircle, Loader2, Package } from "lucide-react";
 
+const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+
 const CIC_LABELS = [
-  { key: "cibil",    label: "CIBIL",    color: "bg-blue-600",    light: "bg-blue-50 border-blue-200 text-blue-700",    btnCls: "border-blue-300 text-blue-700 hover:bg-blue-50" },
-  { key: "crif",     label: "CRIF",     color: "bg-emerald-600", light: "bg-emerald-50 border-emerald-200 text-emerald-700", btnCls: "border-emerald-300 text-emerald-700 hover:bg-emerald-50" },
-  { key: "equifax",  label: "Equifax",  color: "bg-orange-600",  light: "bg-orange-50 border-orange-200 text-orange-700",  btnCls: "border-orange-300 text-orange-700 hover:bg-orange-50" },
-  { key: "experian", label: "Experian", color: "bg-violet-600",  light: "bg-violet-50 border-violet-200 text-violet-700",  btnCls: "border-violet-300 text-violet-700 hover:bg-violet-50" },
+  { key: "cibil",    label: "CIBIL",    light: "bg-blue-50 border-blue-200 text-blue-700",    btnCls: "border-blue-300 text-blue-700 hover:bg-blue-50" },
+  { key: "crif",     label: "CRIF",     light: "bg-emerald-50 border-emerald-200 text-emerald-700", btnCls: "border-emerald-300 text-emerald-700 hover:bg-emerald-50" },
+  { key: "equifax",  label: "Equifax",  light: "bg-orange-50 border-orange-200 text-orange-700",  btnCls: "border-orange-300 text-orange-700 hover:bg-orange-50" },
+  { key: "experian", label: "Experian", light: "bg-violet-50 border-violet-200 text-violet-700",  btnCls: "border-violet-300 text-violet-700 hover:bg-violet-50" },
 ];
 
 function inputToDDMMYYYY(isoDate) {
@@ -25,13 +26,12 @@ export default function CICData() {
   const isAllowed = ALLOWED_IDS.includes(user?.employee_id) || user?.role === "hr_admin";
 
   const [file, setFile] = useState(null);
-  const [dataDate, setDataDate] = useState("");     // "Date of Data"   → from_date (YYYY-MM-DD)
-  const [uploadDate, setUploadDate] = useState(""); // "Date of Upload" → to_date   (YYYY-MM-DD)
+  const [dataDate, setDataDate] = useState("");
+  const [uploadDate, setUploadDate] = useState("");
   const [uidTags, setUidTags] = useState([]);
   const [uidInput, setUidInput] = useState("");
   const [loading, setLoading] = useState(false);
-  const [loadingCic, setLoadingCic] = useState("");  // which individual CIC is loading
-  const [result, setResult] = useState(null);
+  const [result, setResult] = useState(null); // { token, recordCount, skipped }
   const [error, setError] = useState("");
   const fileRef = useRef();
 
@@ -58,17 +58,6 @@ export default function CICData() {
     if (["Enter", ",", " "].includes(e.key)) { e.preventDefault(); addUidTag(uidInput); }
   };
 
-  const buildFormData = (cic = "") => {
-    const fd = new FormData();
-    fd.append("file", file);
-    fd.append("from_date", inputToDDMMYYYY(dataDate));
-    fd.append("to_date", inputToDDMMYYYY(uploadDate));
-    const allUids = [...uidTags, ...(uidInput.trim() ? [uidInput.trim()] : [])];
-    fd.append("excluded_uids", allUids.join("\n"));
-    fd.append("cic", cic);
-    return fd;
-  };
-
   const validate = () => {
     if (!file) return "Please upload an Excel (.xlsx) file.";
     if (!dataDate) return "Please select a Date of Data.";
@@ -76,78 +65,61 @@ export default function CICData() {
     return "";
   };
 
-  const triggerDownload = (blobData, filename, mime) => {
-    const url = URL.createObjectURL(new Blob([blobData], { type: mime }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    a.style.display = "none";
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  };
-
+  // Step 1: process the Excel and get a download token (no file download here)
   const handleGenerate = async () => {
     setError(""); setResult(null);
     const err = validate();
     if (err) return setError(err);
 
-    const fromDD = inputToDDMMYYYY(dataDate);
-    const toDD = inputToDDMMYYYY(uploadDate);
+    const allUids = [...uidTags, ...(uidInput.trim() ? [uidInput.trim()] : [])];
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("from_date", inputToDDMMYYYY(dataDate));
+    fd.append("to_date", inputToDDMMYYYY(uploadDate));
+    fd.append("excluded_uids", allUids.join("\n"));
 
     setLoading(true);
     try {
-      const res = await API.post("/cic/generate", buildFormData(), {
-        responseType: "blob",
-        headers: { "Content-Type": "multipart/form-data" },
+      // Use fetch (not Axios) so FormData Content-Type/boundary is set correctly by the browser
+      const authToken = localStorage.getItem("auth_token");
+      const res = await fetch(`${BACKEND_URL}/api/cic/generate`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${authToken}` },
+        body: fd,
       });
-      const recordCount = res.headers?.["x-record-count"];
-      const skipped = res.headers?.["x-skipped-count"];
-      setResult({ recordCount, skipped });
-      triggerDownload(res.data, `CIC_CDF_${fromDD}_${toDD}.zip`, "application/zip");
-    } catch (err) {
-      let msg = "Failed to generate CDF files.";
-      try { const t = await err.response?.data?.text(); msg = JSON.parse(t)?.detail || msg; } catch (_) {}
-      setError(msg);
+      const data = await res.json();
+      if (!res.ok) {
+        const detail = data?.detail;
+        const msg = Array.isArray(detail)
+          ? detail.map(e => e.msg || JSON.stringify(e)).join("; ")
+          : (typeof detail === "string" ? detail : "Failed to generate CDF files.");
+        setError(msg);
+        return;
+      }
+      setResult({
+        token: data.download_token,
+        recordCount: data.record_count,
+        skipped: data.skipped_count,
+      });
+    } catch (e) {
+      setError("Network error — please try again.");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSingleCic = async (cicKey, cicLabel) => {
-    setError("");
-    const err = validate();
-    if (err) return setError(err);
-
-    const fromDD = inputToDDMMYYYY(dataDate);
-    const toDD = inputToDDMMYYYY(uploadDate);
-    const cfg = CIC_LABELS.find(c => c.key === cicKey);
-
-    setLoadingCic(cicKey);
-    try {
-      const res = await API.post("/cic/generate", buildFormData(cicKey), {
-        responseType: "blob",
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      // Reconstruct filename per CIC naming convention
-      const filenameMap = {
-        cibil:    `MF8361_MFI_${fromDD}_${toDD}_DailyData.CDF`,
-        crif:     `NBF0005342_MFI_DailyData_${fromDD}_${toDD}.CDF`,
-        equifax:  `009FZ04381_MFI_DailyData_${fromDD}_${toDD}.CDF`,
-        experian: `259263_${fromDD}_${toDD}_MFI_DAILY.CDF`,
-      };
-      triggerDownload(res.data, filenameMap[cicKey], "application/octet-stream");
-    } catch (err) {
-      let msg = `Failed to generate ${cicLabel} CDF.`;
-      try { const t = await err.response?.data?.text(); msg = JSON.parse(t)?.detail || msg; } catch (_) {}
-      setError(msg);
-    } finally {
-      setLoadingCic("");
-    }
+  // Step 2: download via a real GET URL — browser handles it natively, no blob tricks
+  const downloadZip = () => {
+    if (!result?.token) return;
+    window.open(`${BACKEND_URL}/api/cic/download/${result.token}`, "_blank");
   };
 
-  const canSubmit = !!file && !!dataDate && !!uploadDate;
+  const downloadCic = (cicKey) => {
+    if (!result?.token) return;
+    window.open(`${BACKEND_URL}/api/cic/download/${result.token}?cic=${cicKey}`, "_blank");
+  };
+
+  const canGenerate = !!file && !!dataDate && !!uploadDate;
 
   return (
     <div style={{ fontFamily: "'Work Sans', sans-serif" }} className="max-w-3xl mx-auto">
@@ -158,7 +130,6 @@ export default function CICData() {
         <p className="text-slate-500 text-sm mt-1">Convert HighMark Excel data to CDF format for Credit Information Companies</p>
       </div>
 
-      {/* CIC badges */}
       <div className="flex flex-wrap gap-2 mb-6">
         {CIC_LABELS.map(c => (
           <span key={c.key} className={`px-3 py-1 rounded-full text-xs font-bold border ${c.light}`}>{c.label}</span>
@@ -183,7 +154,7 @@ export default function CICData() {
               <div className="flex items-center justify-center gap-3">
                 <FileSpreadsheet size={20} className="text-green-600" />
                 <span className="text-sm font-medium text-green-700">{file.name}</span>
-                <button onClick={(e) => { e.stopPropagation(); setFile(null); if (fileRef.current) fileRef.current.value = ""; setResult(null); }}
+                <button onClick={(e) => { e.stopPropagation(); setFile(null); setResult(null); if (fileRef.current) fileRef.current.value = ""; }}
                   className="text-green-600 hover:text-red-500"><X size={16} /></button>
               </div>
             ) : (
@@ -207,7 +178,7 @@ export default function CICData() {
               <label className="block text-xs font-medium text-slate-600 mb-1.5 flex items-center gap-1">
                 <Calendar size={12} /> Date of Data
               </label>
-              <input type="date" value={dataDate} onChange={e => setDataDate(e.target.value)} data-testid="cic-from-date"
+              <input type="date" value={dataDate} onChange={e => { setDataDate(e.target.value); setResult(null); }} data-testid="cic-from-date"
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#1E2A47]" />
               {dataDate && <p className="text-xs text-slate-400 mt-1">CDF: <span className="font-mono">{inputToDDMMYYYY(dataDate)}</span></p>}
             </div>
@@ -215,7 +186,7 @@ export default function CICData() {
               <label className="block text-xs font-medium text-slate-600 mb-1.5 flex items-center gap-1">
                 <Calendar size={12} /> Date of Upload
               </label>
-              <input type="date" value={uploadDate} onChange={e => setUploadDate(e.target.value)} data-testid="cic-to-date"
+              <input type="date" value={uploadDate} onChange={e => { setUploadDate(e.target.value); setResult(null); }} data-testid="cic-to-date"
                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#1E2A47]" />
               {uploadDate && <p className="text-xs text-slate-400 mt-1">CDF: <span className="font-mono">{inputToDDMMYYYY(uploadDate)}</span></p>}
             </div>
@@ -261,68 +232,78 @@ export default function CICData() {
           </div>
         )}
 
-        {/* Success banner */}
-        {result && (
-          <div className="flex items-start gap-3 p-4 bg-green-50 border border-green-200 rounded-xl">
-            <CheckCircle size={18} className="text-green-600 flex-shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm font-semibold text-green-700">CDF files generated successfully!</p>
-              <p className="text-xs text-green-600 mt-0.5">
-                {result.recordCount} records across 4 CDF files.
-                {result.skipped > 0 && ` ${result.skipped} record${result.skipped > 1 ? "s" : ""} excluded.`}
-                {" "}ZIP downloaded automatically.
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* Primary: Download All ZIP */}
+        {/* Generate button */}
         <button
           onClick={handleGenerate}
-          disabled={loading || !canSubmit}
+          disabled={loading || !canGenerate}
           data-testid="cic-generate-btn"
           className="w-full flex items-center justify-center gap-2 py-3 bg-[#1E2A47] text-white rounded-xl font-semibold text-sm
             hover:bg-[#2a3a5c] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {loading
-            ? <><Loader2 size={16} className="animate-spin" /> Generating…</>
-            : <><Package size={16} /> Download All 4 CDF Files (ZIP)</>
+            ? <><Loader2 size={16} className="animate-spin" /> Processing {file?.name}…</>
+            : <><Package size={16} /> Process &amp; Prepare CDF Files</>
           }
         </button>
 
-        {/* Individual CIC buttons */}
-        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5">
-          <p className="text-xs font-bold text-slate-600 mb-3 uppercase tracking-wide">Or download individually</p>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {CIC_LABELS.map(c => (
+        {/* Download panel — shown after successful generation */}
+        {result && (
+          <div className="bg-white border border-green-200 rounded-xl shadow-sm overflow-hidden">
+            {/* Header */}
+            <div className="flex items-start gap-3 p-4 bg-green-50 border-b border-green-200">
+              <CheckCircle size={18} className="text-green-600 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold text-green-700">Files are ready to download!</p>
+                <p className="text-xs text-green-600 mt-0.5">
+                  {result.recordCount} records processed.
+                  {result.skipped > 0 && ` ${result.skipped} excluded.`}
+                  {" "}Links expire in 5 minutes.
+                </p>
+              </div>
+            </div>
+
+            {/* ZIP download */}
+            <div className="p-4 border-b border-slate-100">
               <button
-                key={c.key}
-                onClick={() => handleSingleCic(c.key, c.label)}
-                disabled={!canSubmit || !!loadingCic}
-                data-testid={`cic-download-${c.key}`}
-                className={`flex flex-col items-center gap-1.5 py-3 px-2 rounded-lg border text-xs font-bold
-                  transition-all hover:-translate-y-0.5 disabled:opacity-40 disabled:cursor-not-allowed
-                  ${c.btnCls}`}
+                onClick={downloadZip}
+                data-testid="cic-download-zip"
+                className="w-full flex items-center justify-center gap-2 py-3 bg-[#1E2A47] text-white rounded-xl font-semibold text-sm
+                  hover:bg-[#2a3a5c] transition-colors"
               >
-                {loadingCic === c.key
-                  ? <Loader2 size={16} className="animate-spin" />
-                  : <Download size={16} />
-                }
-                {c.label}
-                <span className="font-normal text-[10px] opacity-70">.CDF</span>
+                <Package size={16} /> Download All 4 CDF Files (ZIP)
               </button>
-            ))}
+            </div>
+
+            {/* Individual CIC buttons */}
+            <div className="p-4">
+              <p className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-3">Or download individually</p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {CIC_LABELS.map(c => (
+                  <button
+                    key={c.key}
+                    onClick={() => downloadCic(c.key)}
+                    data-testid={`cic-download-${c.key}`}
+                    className={`flex flex-col items-center gap-1.5 py-3 px-2 rounded-lg border text-xs font-bold
+                      transition-all hover:-translate-y-0.5 ${c.btnCls}`}
+                  >
+                    <Download size={16} />
+                    {c.label}
+                    <span className="font-normal text-[10px] opacity-70">.CDF</span>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Info */}
         <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-xs text-slate-500 space-y-1">
-          <p className="font-semibold text-slate-600 mb-2">What gets generated:</p>
+          <p className="font-semibold text-slate-600 mb-2">Generated file names:</p>
           <p>• <strong>CIBIL</strong> — <span className="font-mono">MF8361_MFI_{"{DataDate}"}_{"{UploadDate}"}_DailyData.CDF</span></p>
           <p>• <strong>CRIF</strong> — <span className="font-mono">NBF0005342_MFI_DailyData_{"{DataDate}"}_{"{UploadDate}"}.CDF</span></p>
           <p>• <strong>Equifax</strong> — <span className="font-mono">009FZ04381_MFI_DailyData_{"{DataDate}"}_{"{UploadDate}"}.CDF</span></p>
           <p>• <strong>Experian</strong> — <span className="font-mono">259263_{"{DataDate}"}_{"{UploadDate}"}_MFI_DAILY.CDF</span></p>
-          <p className="pt-2 border-t border-slate-200 mt-2">The <strong>Date of Data</strong> replaces the "Date of Account Information" field in every record. Both dates appear in the file headers and names.</p>
+          <p className="pt-2 border-t border-slate-200 mt-2">The <strong>Date of Data</strong> replaces the "Date of Account Information" field in every record. Both dates appear in the file header and name.</p>
         </div>
 
       </div>
