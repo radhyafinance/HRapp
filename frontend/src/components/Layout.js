@@ -6,8 +6,10 @@ import API from "../utils/api";
 import {
   LayoutDashboard, Users, UserPlus, CalendarCheck, FileText,
   CreditCard, TrendingUp, LogOut, Settings, Menu, X,
-  DoorOpen, Award, MapPin, Calendar
+  DoorOpen, Award, MapPin, Calendar, Database
 } from "lucide-react";
+
+const CIC_ALLOWED_IDS = ["RMF0007", "RMF0003"];
 
 const NAV_ITEMS = [
   { path: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
@@ -23,6 +25,8 @@ const NAV_ITEMS = [
   { path: "/letters", label: "Letters", icon: Award, roles: ["hr_admin", "management"] },
   { path: "/gratuity", label: "Gratuity", icon: Award, roles: ["hr_admin", "management"] },
   { path: "/settings", label: "Settings", icon: Settings, roles: ["hr_admin"] },
+  // CIC Data — shown only to specific employee IDs or hr_admin
+  { path: "/cic-data", label: "CIC Data", icon: Database, roles: ["hr_admin"], employeeIds: CIC_ALLOWED_IDS },
 ];
 
 // Priority paths for mobile bottom navigation
@@ -99,7 +103,13 @@ export default function Layout() {
     } catch { /* silently ignore */ }
   };
 
-  const filteredNav = NAV_ITEMS.filter(item => item.roles.includes(user?.role));
+  const filteredNav = NAV_ITEMS.filter(item => {
+    if (item.employeeIds) {
+      // Special access: show if user's employee_id is in the list OR role matches
+      return item.employeeIds.includes(user?.employee_id) || item.roles.includes(user?.role);
+    }
+    return item.roles.includes(user?.role);
+  });
 
   // Mobile bottom nav: top 4 priority items accessible to this role
   const mobileNavItems = MOBILE_NAV_PRIORITY

@@ -19,6 +19,7 @@ import Settings from "./pages/Settings";
 import Gratuity from "./pages/Gratuity";
 import CandidateApply from "./pages/CandidateApply";
 import DigiLockerCallback from "./pages/DigiLockerCallback";
+import CICData from "./pages/CICData";
 import UpdatePrompt from "./components/UpdatePrompt";
 import "./App.css";
 
@@ -45,6 +46,7 @@ function App() {
             <Route path="letters" element={<Letters />} />
             <Route path="gratuity" element={<Gratuity />} />
             <Route path="settings" element={<Settings />} />
+            <Route path="cic-data" element={<CICData />} />
           </Route>
           <Route path="*" element={<Navigate to="/dashboard" replace />} />
         </Routes>

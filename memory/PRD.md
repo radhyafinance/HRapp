@@ -217,8 +217,16 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
     - **Security**: Only `hr_admin` and `management` roles can initiate; popup is same-origin so JWT flows naturally via localStorage.
     - **Note**: Requires active DigiLocker credits on the Perfios account. The API key is shared with bank verification. Current status: "Insufficient Credits" on the Perfios account — contact Perfios to enable DigiLocker service.
 
+44. **CIC Data Converter (Jun 2026)** — Special tool for Company Secretary (RMF0007, RMF0003) and HR Admin.
+    - Upload HighMark Excel (.xlsx) → generate 4 CDF files simultaneously (CIBIL, CRIF, Equifax, Experian)
+    - Date range pickers: from_date / to_date in DDMMYYYY format update headers, file names, and "Date of Account Information" field in every record
+    - UID exclusion: tag-based input — type a 12-digit Aadhaar UID and press Enter/comma to add; excluded records are removed from all 4 CDFs
+    - Downloads a single ZIP containing all 4 correctly named CDF files
+    - Access-gated: only employee_id in {RMF0007, RMF0003} or hr_admin can view/use
+    - Backend: `/app/backend/routes/cic_converter.py` — POST `/api/cic/generate` + GET `/api/cic/access-check`
+    - Frontend: `/app/frontend/src/pages/CICData.js` — route `/cic-data`
+
 ## P0 Backlog (Next Phase)
-- [x] NEFT sheet custom format (RMF0001 8-column bank format) ✅ Apr 2026
 - [x] Payslip PDF download ✅ Apr 2026
 - [x] UAN Number and ESI Number fields on employees ✅ Apr 2026
 - [x] Admin Leave Balance Management — Initialize, Manual Edit, Bulk Excel Upload, Audit Log ✅ Apr 2026

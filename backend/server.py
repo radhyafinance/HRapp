@@ -84,6 +84,9 @@ app.include_router(candidate_invites.public_router, prefix="/api/public/candidat
 from routes import digilocker
 app.include_router(digilocker.router, prefix="/api/digilocker", tags=["DigiLocker"])
 
+from routes import cic_converter
+app.include_router(cic_converter.router, prefix="/api/cic", tags=["CIC Converter"])
+
 
 @app.get("/api")
 async def root():
