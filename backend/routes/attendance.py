@@ -533,6 +533,17 @@ async def today_attendance(current_user: dict = Depends(get_current_user)):
         emp_query["employee_id"] = me_id
 
     records = await db.attendance_records.find(base_query).to_list(1000)
+
+    # Batch-enrich records with employee names
+    emp_ids = list({r["employee_id"] for r in records})
+    emps = await db.employees.find(
+        {"employee_id": {"$in": emp_ids}},
+        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1},
+    ).to_list(1000)
+    name_map = {e["employee_id"]: f"{e.get('first_name','')} {e.get('last_name','')}".strip() for e in emps}
+    for r in records:
+        r["employee_name"] = name_map.get(r["employee_id"], "")
+
     total_employees = await db.employees.count_documents(emp_query)
     present = len([r for r in records if r.get("punch_in_time")])
     punched_out = len([r for r in records if r.get("punch_out_time")])
@@ -544,6 +555,46 @@ async def today_attendance(current_user: dict = Depends(get_current_user)):
         "punched_out": punched_out,
         "records": [att_to_dict(r) for r in records],
     }
+
+
+import base64 as _b64
+from fastapi.responses import Response as _Response
+
+@router.get("/employee-photo/{employee_id}")
+async def get_employee_passport_photo(
+    employee_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Return the passport-size photo for an employee.
+    Accessible to hr_admin, management, and managers (scoped to their team)."""
+    role = current_user.get("role")
+    if role not in ["hr_admin", "management", "managers"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if role == "managers":
+        from services.hierarchy import get_descendant_employee_ids
+        me_id = current_user.get("employee_id")
+        allowed = await get_descendant_employee_ids(me_id) if me_id else set()
+        if me_id:
+            allowed.add(me_id)
+        if employee_id not in allowed:
+            raise HTTPException(status_code=403, detail="Not in your team")
+
+    doc = await db.employee_documents.find_one({"employee_id": employee_id})
+    if not doc or not doc.get("passport_photo"):
+        raise HTTPException(status_code=404, detail="No photo on file")
+
+    asset = doc["passport_photo"]
+    try:
+        binary = _b64.b64decode(asset["data"])
+    except Exception:
+        raise HTTPException(status_code=500, detail="Failed to decode photo")
+
+    return _Response(
+        content=binary,
+        media_type=asset.get("mime", "image/jpeg"),
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
 
 
 @router.get("/my")

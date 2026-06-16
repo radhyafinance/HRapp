@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import API from "../utils/api";
-import { Camera, MapPin, CheckCircle, AlertCircle, Clock, LogIn, LogOut, RefreshCw, Edit3, Plus, FileEdit, Search, Filter, Download, CalendarDays } from "lucide-react";
+import { Camera, MapPin, CheckCircle, AlertCircle, Clock, LogIn, LogOut, RefreshCw, Edit3, Plus, FileEdit, Search, Filter, Download, CalendarDays, User } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { AdminRegulariseModal, EmployeeRegulariseRequestModal, PendingRequestsPanel, MyRequestsList } from "../components/attendance/Regularisation";
 import { FaceMismatchBadge, FaceMismatchModal } from "../components/attendance/FaceMismatch";
@@ -10,6 +10,57 @@ import { CameraCapture } from "../components/attendance/CameraCapture";
 import { MonthlyAttendanceReport } from "../components/attendance/MonthlyAttendanceReport";
 import { AttendanceRegisterTab } from "../components/attendance/AttendanceRegisterTab";
 import { toLocalDateStr } from "../utils/shiftRules";
+
+/** Lazy-loads a passport photo for an employee and shows initials fallback. */
+function PassportAvatar({ employeeId, name, size = 40 }) {
+  const [photoUrl, setPhotoUrl] = useState(null);
+  const urlRef = useRef(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const token = localStorage.getItem("auth_token");
+    const base = process.env.REACT_APP_BACKEND_URL;
+    fetch(`${base}/api/attendance/employee-photo/${employeeId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(r => (r.ok ? r.blob() : null))
+      .then(blob => {
+        if (blob && !cancelled) {
+          const url = URL.createObjectURL(blob);
+          urlRef.current = url;
+          setPhotoUrl(url);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+    };
+  }, [employeeId]);
+
+  const initials = name
+    ? name.split(" ").map(n => n[0]).slice(0, 2).join("").toUpperCase()
+    : employeeId.slice(-2).toUpperCase();
+
+  if (photoUrl) {
+    return (
+      <img
+        src={photoUrl}
+        alt={name || employeeId}
+        style={{ width: size, height: size }}
+        className="rounded-full object-cover border-2 border-white shadow-sm flex-shrink-0"
+      />
+    );
+  }
+  return (
+    <div
+      style={{ width: size, height: size }}
+      className="rounded-full bg-gradient-to-br from-[#1E2A47] to-[#E85B1E] flex items-center justify-center text-white font-bold flex-shrink-0 border-2 border-white shadow-sm"
+    >
+      <span style={{ fontSize: size * 0.36 }}>{initials}</span>
+    </div>
+  );
+}
 
 export default function Attendance() {
   const { user } = useAuth();
@@ -468,8 +519,12 @@ export default function Attendance() {
               <div className="max-h-48 overflow-y-auto space-y-1">
                 {todaySummary.records?.slice(0, 10).map(r => (
                   <div key={r.id} className="flex items-center justify-between text-xs py-1.5 border-b border-slate-50">
-                    <span className="font-medium text-slate-700 flex items-center">
-                      {r.employee_id}
+                    <span className="font-medium text-slate-700 flex items-center gap-1.5">
+                      <PassportAvatar employeeId={r.employee_id} name={r.employee_name} size={24} />
+                      <span>
+                        {r.employee_name && <span className="block leading-tight">{r.employee_name}</span>}
+                        <span className="text-[10px] text-[#E85B1E] font-mono">{r.employee_id}</span>
+                      </span>
                       <FaceMismatchBadge record={r} onOpen={(side) => setFaceReview({ record: r, side })} />
                     </span>
                     <span className="text-slate-500">{r.punch_in_time ? new Date(r.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</span>
@@ -501,6 +556,43 @@ export default function Attendance() {
               </div>
               <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Pending Employee Requests</p>
               <PendingRequestsPanel key={pendingReload} onApproved={() => { setPendingReload(x => x + 1); fetchData(); }} />
+            </div>
+          )}
+
+          {/* ── Employee Roster (bottom half) — managers/admins only ── */}
+          {isManager && todaySummary?.records?.length > 0 && (
+            <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden" data-testid="today-roster">
+              <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+                <h3 className="font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>
+                  Employee Roster
+                  <span className="ml-2 text-xs font-normal text-slate-400">({todaySummary.records.length} punched in today)</span>
+                </h3>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-px bg-slate-100">
+                {todaySummary.records.map(r => (
+                  <div key={r.id} className="bg-white p-4 flex flex-col items-center gap-2 hover:bg-slate-50 transition-colors" data-testid={`roster-card-${r.employee_id}`}>
+                    <PassportAvatar employeeId={r.employee_id} name={r.employee_name} size={56} />
+                    <div className="text-center min-w-0 w-full">
+                      {r.employee_name && (
+                        <p className="text-sm font-semibold text-[#1E2A47] truncate leading-tight">{r.employee_name}</p>
+                      )}
+                      <p className="text-[11px] text-[#E85B1E] font-mono">{r.employee_id}</p>
+                      <div className="mt-1 flex justify-center">
+                        <AttendanceStatusBadge record={r} />
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-0.5">
+                        {r.punch_in_time ? new Date(r.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "Not punched in"}
+                      </p>
+                    </div>
+                    {canRegulariseAdmin && (
+                      <button onClick={() => setRegEditRecord(r)} data-testid={`roster-edit-${r.employee_id}`}
+                        title="Regularise" className="p-1 rounded hover:bg-slate-100 text-slate-300 hover:text-[#E85B1E]">
+                        <Edit3 size={12} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>
