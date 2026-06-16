@@ -20,8 +20,7 @@ export default function Attendance() {
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
   const today_iso = toLocalDateStr();
-  const thirty_days_ago = toLocalDateStr(new Date(Date.now() - 30 * 86400000));
-  const [dateFrom, setDateFrom] = useState(thirty_days_ago);
+  const [dateFrom, setDateFrom] = useState(today_iso);
   const [dateTo, setDateTo] = useState(today_iso);
   const [loading, setLoading] = useState(true);
   const [showCamera, setShowCamera] = useState(false);
