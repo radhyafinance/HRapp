@@ -214,9 +214,9 @@ export default function CICData() {
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5">
           <h2 className="text-sm font-bold text-slate-700 mb-1 flex items-center gap-2">
             <span className="w-5 h-5 rounded-full bg-[#1E2A47] text-white text-[10px] font-bold flex items-center justify-center flex-shrink-0">3</span>
-            Exclude by UID <span className="font-normal text-slate-400 ml-1">(optional)</span>
+            Exclude by Account Number <span className="font-normal text-slate-400 ml-1">(optional)</span>
           </h2>
-          <p className="text-xs text-slate-400 mb-3 ml-7">Enter 12-digit Aadhaar UIDs to remove from the CDF output</p>
+          <p className="text-xs text-slate-400 mb-3 ml-7">Enter Account Numbers to remove those records from the CDF output</p>
           {uidTags.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-3">
               {uidTags.map(uid => (
@@ -232,13 +232,13 @@ export default function CICData() {
             onChange={e => setUidInput(e.target.value)}
             onKeyDown={handleUidKeyDown}
             onBlur={() => uidInput.trim() && addUidTag(uidInput)}
-            placeholder="Type UID and press Enter or comma to add..."
+            placeholder="Type Account Number and press Enter or comma to add..."
             data-testid="cic-uid-input"
             className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[#1E2A47]"
           />
           <p className="text-xs text-slate-400 mt-1.5">
-            Press Enter, comma, or Space after each UID.{" "}
-            {uidTags.length > 0 && <span className="text-red-600 font-medium">{uidTags.length} UID{uidTags.length > 1 ? "s" : ""} will be excluded.</span>}
+            Press Enter, comma, or Space after each Account Number.{" "}
+            {uidTags.length > 0 && <span className="text-red-600 font-medium">{uidTags.length} account{uidTags.length > 1 ? "s" : ""} will be excluded.</span>}
           </p>
         </div>
 

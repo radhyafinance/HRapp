@@ -55,8 +55,8 @@ CIC_CONFIGS = {
 }
 
 # Column indices (0-based) in the Excel sheet
-UID_COL_INDEX = 28        # "UID" column (Aadhaar 12-digit)
-DATE_ACC_INFO_INDEX = 69  # "Date of Account Information" — overwritten with from_date
+ACCOUNT_NUM_COL_INDEX = 65    # Column BN — "Account Number"
+DATE_ACC_INFO_INDEX = 69      # "Date of Account Information" — overwritten with from_date
 
 # In-memory download cache: {token: {zip, cibil, crif, equifax, experian, expires_at, ...}}
 DOWNLOAD_CACHE: dict = {}
@@ -121,7 +121,7 @@ async def generate_cdf(
         cells = list(row)
         if not any(cells):
             continue
-        uid = _cell_to_str(cells[UID_COL_INDEX]) if len(cells) > UID_COL_INDEX else ""
+        uid = _cell_to_str(cells[ACCOUNT_NUM_COL_INDEX]) if len(cells) > ACCOUNT_NUM_COL_INDEX else ""
         if uid and uid in excluded:
             skipped += 1
             continue
