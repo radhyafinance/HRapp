@@ -108,15 +108,32 @@ export default function CICData() {
     }
   };
 
-  // Step 2: download via a real GET URL — browser handles it natively, no blob tricks
+  // Step 2: download via anchor click (direct user gesture, same-origin → guaranteed download)
+  const triggerUrl = (url, filename) => {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;   // forces save-dialog on same-origin URLs
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
   const downloadZip = () => {
     if (!result?.token) return;
-    window.open(`${BACKEND_URL}/api/cic/download/${result.token}`, "_blank");
+    const filename = `CIC_CDF_${inputToDDMMYYYY(dataDate)}_${inputToDDMMYYYY(uploadDate)}.zip`;
+    triggerUrl(`${BACKEND_URL}/api/cic/download/${result.token}`, filename);
   };
 
   const downloadCic = (cicKey) => {
     if (!result?.token) return;
-    window.open(`${BACKEND_URL}/api/cic/download/${result.token}?cic=${cicKey}`, "_blank");
+    const filenameMap = {
+      cibil:    `MF8361_MFI_${inputToDDMMYYYY(dataDate)}_${inputToDDMMYYYY(uploadDate)}_DailyData.CDF`,
+      crif:     `NBF0005342_MFI_DailyData_${inputToDDMMYYYY(dataDate)}_${inputToDDMMYYYY(uploadDate)}.CDF`,
+      equifax:  `009FZ04381_MFI_DailyData_${inputToDDMMYYYY(dataDate)}_${inputToDDMMYYYY(uploadDate)}.CDF`,
+      experian: `259263_${inputToDDMMYYYY(dataDate)}_${inputToDDMMYYYY(uploadDate)}_MFI_DAILY.CDF`,
+    };
+    triggerUrl(`${BACKEND_URL}/api/cic/download/${result.token}?cic=${cicKey}`, filenameMap[cicKey]);
   };
 
   const canGenerate = !!file && !!dataDate && !!uploadDate;
