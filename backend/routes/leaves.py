@@ -95,10 +95,24 @@ def leave_to_dict(l):
     return l
 
 
-def calc_days(start_str: str, end_str: str) -> int:
+def calc_days(
+    start_str: str,
+    end_str: str,
+    day_type: str = "full_day",
+    start_half: bool = False,
+    end_half: bool = False,
+) -> float:
     start = date.fromisoformat(start_str)
     end = date.fromisoformat(end_str)
-    return max(1, (end - start).days + 1)
+    if start == end:
+        # Single day: half-day types count as 0.5
+        return 0.5 if day_type in ("first_half", "second_half") else 1.0
+    total = float((end - start).days + 1)
+    if start_half:
+        total -= 0.5
+    if end_half:
+        total -= 0.5
+    return max(0.5, total)
 
 
 def get_financial_year(dt: datetime = None) -> int:
@@ -111,7 +125,7 @@ def get_financial_year(dt: datetime = None) -> int:
 
 async def validate_leave_application(data, employee: dict):
     """Enforce all 10 company leave policy rules."""
-    days = calc_days(data.start_date, data.end_date)
+    days = calc_days(data.start_date, data.end_date, getattr(data, "day_type", "full_day"), getattr(data, "start_half", False), getattr(data, "end_half", False))
     today = date.today()
     start = date.fromisoformat(data.start_date)
     end = date.fromisoformat(data.end_date)
@@ -236,6 +250,9 @@ class LeaveApplyRequest(BaseModel):
     start_date: str
     end_date: str
     reason: str
+    day_type: str = "full_day"   # "full_day" | "first_half" | "second_half" (single-day)
+    start_half: bool = False      # multi-day: first day is 2nd half only → −0.5
+    end_half: bool = False        # multi-day: last day is 1st half only → −0.5
 
 
 class CertificateUploadRequest(BaseModel):
@@ -268,7 +285,7 @@ async def apply_leave(data: LeaveApplyRequest, current_user: dict = Depends(get_
     # Run all policy validations
     await validate_leave_application(data, employee)
 
-    days = calc_days(data.start_date, data.end_date)
+    days = calc_days(data.start_date, data.end_date, data.day_type, data.start_half, data.end_half)
 
     # Balance check for quota-tracked types
     if data.leave_type not in ["Maternity", "Paternity", "LWP", "Comp-Off"]:
@@ -289,15 +306,18 @@ async def apply_leave(data: LeaveApplyRequest, current_user: dict = Depends(get_
         "start_date": data.start_date,
         "end_date": data.end_date,
         "days": days,
+        "day_type": data.day_type,
+        "start_half": data.start_half,
+        "end_half": data.end_half,
         "reason": data.reason,
-        "medical_certificate": None,       # uploaded separately via /certificate endpoint
+        "medical_certificate": None,
         "certificate_uploaded_at": None,
         "status": "pending",
         "applied_at": datetime.now(timezone.utc).isoformat(),
         "approved_by": None,
         "approval_date": None,
         "remarks": None,
-        "approval_type": None,             # sl | el | salary_deduction (set on approval)
+        "approval_type": None,
     }
     result = await db.leave_applications.insert_one(doc)
     doc["id"] = str(result.inserted_id)
@@ -735,6 +755,32 @@ async def approve_leave(leave_id: str, data: LeaveApproveRequest, current_user: 
                 f"{deduct_type}.remaining": -leave["days"],
             }},
         )
+
+    # Sync attendance for half-day leaves
+    if new_status == "approved":
+        emp_id_leave = leave["employee_id"]
+        day_type = leave.get("day_type", "full_day")
+        start_half = leave.get("start_half", False)
+        end_half = leave.get("end_half", False)
+        half_day_note = "Half day leave (approved)"
+
+        async def _mark_half_day(att_date: str):
+            await db.attendance_records.update_one(
+                {"employee_id": emp_id_leave, "date": att_date},
+                {"$set": {"status": "half_day", "leave_half_day": True, "regularised": True, "regularised_note": half_day_note}},
+                upsert=True,
+            )
+
+        # Single-day half-leave
+        if leave["start_date"] == leave["end_date"] and day_type in ("first_half", "second_half"):
+            await _mark_half_day(leave["start_date"])
+        else:
+            # Multi-day: first day starts from 2nd half
+            if start_half:
+                await _mark_half_day(leave["start_date"])
+            # Multi-day: last day ends at 1st half
+            if end_half:
+                await _mark_half_day(leave["end_date"])
 
     msg_map = {
         "sl": "Approved as Sick Leave.",

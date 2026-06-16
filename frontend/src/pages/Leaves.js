@@ -85,7 +85,7 @@ export default function Leaves() {
 
   // Apply modal
   const [showApply, setShowApply] = useState(false);
-  const [form, setForm] = useState({ leave_type: "CL", start_date: "", end_date: "", reason: "", employee_id: "" });
+  const [form, setForm] = useState({ leave_type: "CL", start_date: "", end_date: "", reason: "", employee_id: "", day_type: "full_day", start_half: false, end_half: false });
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState("");
 
@@ -174,7 +174,7 @@ export default function Leaves() {
     try {
       await API.post("/leaves", { ...form, employee_id: form.employee_id || user.employee_id });
       setShowApply(false);
-      setForm({ leave_type: "CL", start_date: "", end_date: "", reason: "", employee_id: "" });
+      setForm({ leave_type: "CL", start_date: "", end_date: "", reason: "", employee_id: "", day_type: "full_day", start_half: false, end_half: false });
       fetchData();
     } catch (e) {
       setFormError(e.response?.data?.detail || "Failed to apply leave");
@@ -362,8 +362,16 @@ export default function Leaves() {
     }
   };
 
+  const isSingleDay = form.start_date && form.end_date && form.start_date === form.end_date;
+  const isMultiDay = form.start_date && form.end_date && form.start_date !== form.end_date;
   const days = form.start_date && form.end_date
-    ? Math.max(1, Math.round((new Date(form.end_date) - new Date(form.start_date)) / 86400000) + 1)
+    ? (() => {
+        if (isSingleDay) return form.day_type !== "full_day" ? 0.5 : 1;
+        let d = Math.max(1, Math.round((new Date(form.end_date) - new Date(form.start_date)) / 86400000) + 1);
+        if (form.start_half) d -= 0.5;
+        if (form.end_half) d -= 0.5;
+        return Math.max(0.5, d);
+      })()
     : 0;
   const hint = POLICY_HINTS[form.leave_type];
 
@@ -592,7 +600,7 @@ export default function Leaves() {
                           <td className="px-4 py-3"><span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">{l.leave_type}</span></td>
                           <td className="px-4 py-3 text-sm text-slate-600">{l.start_date}</td>
                           <td className="px-4 py-3 text-sm text-slate-600">{l.end_date}</td>
-                          <td className="px-4 py-3 text-sm font-medium">{l.days}d</td>
+                          <td className="px-4 py-3 text-sm font-medium">{l.days}d{l.day_type && l.day_type !== "full_day" && <span className="ml-1 text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full">{l.day_type === "first_half" ? "AM" : "PM"}</span>}</td>
                           <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[l.status]}`}>{l.status}</span></td>
                           <td className="px-4 py-3">{l.medical_certificate ? <span className="px-2 py-1 bg-green-100 text-green-700 rounded-full text-xs">Uploaded</span> : <span className="text-xs text-slate-400">—</span>}</td>
                           <td className="px-4 py-3 text-xs text-slate-400">{l.applied_at ? new Date(l.applied_at).toLocaleDateString("en-IN") : "—"}</td>
@@ -634,7 +642,7 @@ export default function Leaves() {
                         <td className="px-4 py-3"><span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">{l.leave_type}</span></td>
                         <td className="px-4 py-3 text-sm text-slate-600">{l.start_date || l.from_date}</td>
                         <td className="px-4 py-3 text-sm text-slate-600">{l.end_date || l.to_date}</td>
-                        <td className="px-4 py-3 text-sm font-medium">{l.days}d</td>
+                        <td className="px-4 py-3 text-sm font-medium">{l.days}d{l.day_type && l.day_type !== "full_day" && <span className="ml-1 text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full">{l.day_type === "first_half" ? "AM" : "PM"}</span>}</td>
                         <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[l.status]}`}>{l.status}</span></td>
                         <td className="px-4 py-3 text-xs text-slate-400">{l.applied_at ? new Date(l.applied_at).toLocaleDateString("en-IN") : "—"}</td>
                       </tr>
@@ -691,7 +699,7 @@ export default function Leaves() {
                           )}
                         </td>
                         <td className="px-4 py-3 text-sm text-slate-600">{l.start_date} → {l.end_date}</td>
-                        <td className="px-4 py-3 text-sm font-medium text-slate-700">{l.days}d</td>
+                        <td className="px-4 py-3 text-sm font-medium text-slate-700">{l.days}d{l.day_type && l.day_type !== "full_day" && <span className="ml-1 text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full">{l.day_type === "first_half" ? "AM" : "PM"}</span>}</td>
                         <td className="px-4 py-3">
                           {needsCert ? (
                             hasCert ? (
@@ -765,7 +773,7 @@ export default function Leaves() {
                         </td>
                         <td className="px-4 py-3 text-sm text-slate-600">{l.start_date}</td>
                         <td className="px-4 py-3 text-sm text-slate-600">{l.end_date}</td>
-                        <td className="px-4 py-3 text-sm font-medium">{l.days}d</td>
+                        <td className="px-4 py-3 text-sm font-medium">{l.days}d{l.day_type && l.day_type !== "full_day" && <span className="ml-1 text-[10px] bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full">{l.day_type === "first_half" ? "AM" : "PM"}</span>}</td>
                         <td className="px-4 py-3">
                           <span className={`px-2 py-1 rounded-full text-xs font-medium capitalize ${STATUS_COLORS[l.status]}`}>{l.status}</span>
                         </td>
@@ -828,19 +836,64 @@ export default function Leaves() {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">From Date*</label>
-                <input type="date" value={form.start_date} onChange={e => setForm({ ...form, start_date: e.target.value })}
+                <input type="date" value={form.start_date}
+                  onChange={e => setForm({ ...form, start_date: e.target.value, end_date: e.target.value, day_type: "full_day", start_half: false, end_half: false })}
                   required data-testid="leave-start-date"
                   className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
               </div>
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">To Date*</label>
-                <input type="date" value={form.end_date} onChange={e => setForm({ ...form, end_date: e.target.value })}
+                <input type="date" value={form.end_date}
+                  onChange={e => setForm({ ...form, end_date: e.target.value, day_type: "full_day", start_half: false, end_half: false })}
                   required min={form.start_date} data-testid="leave-end-date"
                   className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
               </div>
             </div>
+
+            {/* Half-day selector */}
+            {isSingleDay && (
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-2">Day Type</label>
+                <div className="grid grid-cols-3 gap-2" data-testid="day-type-selector">
+                  {[
+                    { value: "full_day",    label: "Full Day" },
+                    { value: "first_half",  label: "1st Half" },
+                    { value: "second_half", label: "2nd Half" },
+                  ].map(opt => (
+                    <button key={opt.value} type="button"
+                      onClick={() => setForm(f => ({ ...f, day_type: opt.value }))}
+                      data-testid={`day-type-${opt.value}`}
+                      className={`py-2 px-3 rounded-lg border text-sm font-medium transition-colors ${form.day_type === opt.value ? "bg-[#E85B1E] text-white border-[#E85B1E]" : "bg-white text-slate-600 border-slate-300 hover:border-[#E85B1E]"}`}>
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {isMultiDay && (
+              <div className="space-y-2">
+                <label className="block text-xs font-semibold text-slate-700">Half-Day Options</label>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input type="checkbox" checked={form.start_half}
+                    onChange={e => setForm(f => ({ ...f, start_half: e.target.checked }))}
+                    data-testid="start-half-checkbox"
+                    className="w-4 h-4 accent-[#E85B1E]" />
+                  <span className="text-sm text-slate-600">First day: <strong>2nd half only</strong> <span className="text-xs text-slate-400">(−0.5 day)</span></span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input type="checkbox" checked={form.end_half}
+                    onChange={e => setForm(f => ({ ...f, end_half: e.target.checked }))}
+                    data-testid="end-half-checkbox"
+                    className="w-4 h-4 accent-[#E85B1E]" />
+                  <span className="text-sm text-slate-600">Last day: <strong>1st half only</strong> <span className="text-xs text-slate-400">(−0.5 day)</span></span>
+                </label>
+              </div>
+            )}
             {days > 0 && (
-              <p className="text-sm text-[#E85B1E] font-medium">{days} day{days > 1 ? "s" : ""}</p>
+              <p className="text-sm text-[#E85B1E] font-medium">
+                {days} day{days !== 1 ? "s" : ""}
+                {(form.day_type !== "full_day" && isSingleDay) && <span className="ml-2 text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full">{form.day_type === "first_half" ? "Morning" : "Afternoon"}</span>}
+              </p>
             )}
             {form.leave_type === "SL" && days > 3 && (
               <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-xs text-red-700">
