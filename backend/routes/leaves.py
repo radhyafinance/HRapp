@@ -473,13 +473,28 @@ async def pending_leaves(current_user: dict = Depends(get_current_user)):
         {"employee_id": {"$in": emp_ids}, "year": fy}
     ).to_list(500)
     bal_map = {b["employee_id"]: b for b in balances}
+
+    # Comp-Off balances live in a separate collection — batch-fetch for any Comp-Off leaves
+    co_emp_ids = [l["employee_id"] for l in enriched if l.get("leave_type") == "Comp-Off"]
+    co_remaining_map = {}
+    if co_emp_ids:
+        co_pipeline = [
+            {"$match": {"employee_id": {"$in": co_emp_ids}, "status": "approved"}},
+            {"$group": {"_id": "$employee_id", "count": {"$sum": 1}}},
+        ]
+        co_rows = await db.comp_off_grants.aggregate(co_pipeline).to_list(1000)
+        co_remaining_map = {r["_id"]: r["count"] for r in co_rows}
+
     for l in enriched:
-        bal = bal_map.get(l["employee_id"], {})
         lt = l.get("leave_type", "")
-        if lt in bal and isinstance(bal[lt], dict):
-            l["remaining_balance"] = bal[lt].get("remaining")
+        if lt == "Comp-Off":
+            l["remaining_balance"] = co_remaining_map.get(l["employee_id"], 0)
         else:
-            l["remaining_balance"] = None
+            bal = bal_map.get(l["employee_id"], {})
+            if lt in bal and isinstance(bal[lt], dict):
+                l["remaining_balance"] = bal[lt].get("remaining")
+            else:
+                l["remaining_balance"] = None
     return enriched
 
 
