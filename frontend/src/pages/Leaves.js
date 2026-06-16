@@ -461,21 +461,46 @@ export default function Leaves() {
             )}
             <span className="text-xs text-slate-400 ml-auto">{allBalances.length} employees</span>
           </div>
-          {bulkResult && (
-            <div className={`px-4 py-3 text-sm border-b ${bulkResult.success ? "bg-green-50 border-green-200 text-green-700" : "bg-red-50 border-red-200 text-red-700"}`} data-testid="bulk-result">
-              {bulkResult.success ? (
-                <>
-                  <strong>Done!</strong> {bulkResult.message}
-                  {bulkResult.errors?.length > 0 && (
-                    <ul className="mt-1 list-disc pl-5 text-xs">
-                      {bulkResult.errors.slice(0, 10).map((err, i) => <li key={i}>{err}</li>)}
-                    </ul>
-                  )}
-                </>
-              ) : bulkResult.message}
-              <button onClick={() => setBulkResult(null)} className="ml-2 text-xs underline">Dismiss</button>
-            </div>
-          )}
+          {bulkResult && (() => {
+            const hasErrors = bulkResult.errors?.length > 0;
+            const allFailed = bulkResult.updated === 0 && hasErrors;
+            const partial = bulkResult.updated > 0 && hasErrors;
+            const bannerClass = allFailed
+              ? "bg-red-50 border-red-200 text-red-700"
+              : partial
+              ? "bg-amber-50 border-amber-200 text-amber-800"
+              : bulkResult.success
+              ? "bg-green-50 border-green-200 text-green-700"
+              : "bg-red-50 border-red-200 text-red-700";
+            return (
+              <div className={`px-4 py-3 text-sm border-b ${bannerClass}`} data-testid="bulk-result">
+                {bulkResult.success ? (
+                  <>
+                    <div className="flex items-start justify-between gap-2">
+                      <span>
+                        <strong>{allFailed ? "Upload Failed" : partial ? "Partial Update" : "Done!"}</strong>{" "}
+                        {bulkResult.updated} updated
+                        {bulkResult.skipped_no_reason > 0 && `, ${bulkResult.skipped_no_reason} skipped (no reason)`}
+                        {bulkResult.skipped_unknown > 0 && `, ${bulkResult.skipped_unknown} skipped (unknown ID)`}
+                        .
+                      </span>
+                      <button onClick={() => setBulkResult(null)} className="text-xs underline shrink-0">Dismiss</button>
+                    </div>
+                    {hasErrors && (
+                      <ul className="mt-2 list-disc pl-5 text-xs space-y-0.5">
+                        {bulkResult.errors.map((err, i) => <li key={i}>{err}</li>)}
+                      </ul>
+                    )}
+                  </>
+                ) : (
+                  <div className="flex items-center justify-between">
+                    {bulkResult.message}
+                    <button onClick={() => setBulkResult(null)} className="ml-2 text-xs underline">Dismiss</button>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
           <div className="overflow-x-auto">
             <table className="w-full" data-testid="all-balances-table">
               <thead><tr className="bg-slate-50 border-b">

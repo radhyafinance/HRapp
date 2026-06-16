@@ -1208,6 +1208,7 @@ async def upload_balances_template(
                 continue
             reason = str(row[11] or "").strip() if len(row) > 11 else ""
             if not reason:
+                errors.append(f"Row {row_idx} ({emp_id}): Reason column is blank — row skipped.")
                 skipped_no_reason += 1
                 continue
 
