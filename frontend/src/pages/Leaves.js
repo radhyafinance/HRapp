@@ -967,7 +967,7 @@ export default function Leaves() {
                 <label className="text-xs font-semibold text-slate-700">{label}</label>
                 <div className="flex items-center gap-1.5">
                   <span className="text-[10px] uppercase tracking-wider text-slate-400">Total</span>
-                  <input type="number" min="0"
+                  <input type="number" min="0" step="0.5"
                     value={balForm[`${k}_total`]}
                     onChange={e => setBalForm(f => ({ ...f, [`${k}_total`]: e.target.value }))}
                     data-testid={`bal-${k}-total`}
@@ -975,7 +975,7 @@ export default function Leaves() {
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-[10px] uppercase tracking-wider text-slate-400">Used</span>
-                  <input type="number" min="0"
+                  <input type="number" min="0" step="0.5"
                     value={balForm[`${k}_used`]}
                     onChange={e => setBalForm(f => ({ ...f, [`${k}_used`]: e.target.value }))}
                     data-testid={`bal-${k}-used`}

@@ -921,14 +921,14 @@ BALANCE_KEYS = ["CL", "SL", "EL", "Marriage"]
 
 
 class BalanceUpdateRequest(BaseModel):
-    CL_total: int
-    CL_used: int
-    SL_total: int
-    SL_used: int
-    EL_total: int
-    EL_used: int
-    Marriage_total: int
-    Marriage_used: int
+    CL_total: float
+    CL_used: float
+    SL_total: float
+    SL_used: float
+    EL_total: float
+    EL_used: float
+    Marriage_total: float
+    Marriage_used: float
     reason: str
 
 
@@ -938,9 +938,9 @@ def _build_balance_snapshot(balance: dict) -> dict:
     for k in BALANCE_KEYS:
         b = (balance or {}).get(k, {})
         snap[k] = {
-            "total": int(b.get("total", 0)),
-            "used": int(b.get("used", 0)),
-            "remaining": int(b.get("remaining", 0)),
+            "total": round(float(b.get("total", 0)), 2),
+            "used": round(float(b.get("used", 0)), 2),
+            "remaining": round(float(b.get("remaining", 0)), 2),
         }
     return snap
 
@@ -1118,10 +1118,10 @@ async def download_balances_template(current_user: dict = Depends(get_current_us
         bal = bal_map.get(emp_id, LEAVE_BALANCE_TEMPLATE)
         row = [
             emp_id, name, emp.get("department", ""),
-            int(bal.get("CL", {}).get("total", 7)), int(bal.get("CL", {}).get("used", 0)),
-            int(bal.get("SL", {}).get("total", 15)), int(bal.get("SL", {}).get("used", 0)),
-            int(bal.get("EL", {}).get("total", 0)), int(bal.get("EL", {}).get("used", 0)),
-            int(bal.get("Marriage", {}).get("total", 5)), int(bal.get("Marriage", {}).get("used", 0)),
+            round(float(bal.get("CL", {}).get("total", 7)), 2), round(float(bal.get("CL", {}).get("used", 0)), 2),
+            round(float(bal.get("SL", {}).get("total", 15)), 2), round(float(bal.get("SL", {}).get("used", 0)), 2),
+            round(float(bal.get("EL", {}).get("total", 0)), 2), round(float(bal.get("EL", {}).get("used", 0)), 2),
+            round(float(bal.get("Marriage", {}).get("total", 5)), 2), round(float(bal.get("Marriage", {}).get("used", 0)), 2),
             "",
         ]
         for col_idx, val in enumerate(row, 1):
@@ -1221,8 +1221,8 @@ async def upload_balances_template(
             for k, col_t, col_u in [
                 ("CL", 3, 4), ("SL", 5, 6), ("EL", 7, 8), ("Marriage", 9, 10),
             ]:
-                total = int(row[col_t] or 0)
-                used = int(row[col_u] or 0)
+                total = round(float(row[col_t] or 0), 2)
+                used = round(float(row[col_u] or 0), 2)
                 if total < 0 or used < 0 or used > total:
                     raise ValueError(f"{k}: invalid total/used ({total}/{used})")
                 values[k] = {"total": total, "used": used, "remaining": total - used}
