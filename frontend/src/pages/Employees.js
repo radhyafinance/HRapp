@@ -102,7 +102,7 @@ export default function Employees() {
     const formData = new FormData();
     formData.append("file", file);
     try {
-      const res = await API.post("/employees/bulk-upload", formData, { headers: { "Content-Type": "multipart/form-data" } });
+      const res = await API.post("/employees/bulk-upload", formData);
       alert(`Uploaded: ${res.data.created} created, ${res.data.skipped} skipped`);
       fetchEmployees();
     } catch (e) {
@@ -145,7 +145,7 @@ export default function Employees() {
     const formData = new FormData();
     formData.append("file", file);
     try {
-      const res = await API.post("/employees/bulk-salary/upload", formData, { headers: { "Content-Type": "multipart/form-data" } });
+      const res = await API.post("/employees/bulk-salary/upload", formData);
       setSalaryResult(res.data);
       fetchEmployees();
     } catch (e) {

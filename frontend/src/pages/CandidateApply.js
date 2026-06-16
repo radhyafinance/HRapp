@@ -162,7 +162,6 @@ export default function CandidateApply() {
       fd.append("pan_card", panCard);
       fd.append("cv", cv);
       const res = await axios.post(`${API}/public/candidate-invite/${token}/submit`, fd, {
-        headers: { "Content-Type": "multipart/form-data" },
         timeout: 120000,
       });
       setSuccess(res.data);

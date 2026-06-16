@@ -92,7 +92,7 @@ function ResignationModal({ onClose, onSubmit, currentUser }) {
       fd.append("resignation_date", form.resignation_date);
       if (isAdmin && form.employee_id_override) fd.append("employee_id_override", form.employee_id_override);
       if (file) fd.append("file", file);
-      await API.post("/exit", fd, { headers: { "Content-Type": "multipart/form-data" } });
+      await API.post("/exit", fd);
       onSubmit();
       onClose();
     } catch (e) { setError(e.response?.data?.detail || "Failed to submit"); }
@@ -313,7 +313,7 @@ function FinalDocsModal({ exit, onClose, onDone }) {
       const fd = new FormData();
       if (fnfFile) fd.append("fnf_sheet", fnfFile);
       if (rlFile) fd.append("relieving_letter", rlFile);
-      await API.post(`/exit/${exit.id}/final-docs`, fd, { headers: { "Content-Type": "multipart/form-data" } });
+      await API.post(`/exit/${exit.id}/final-docs`, fd);
       onDone();
       onClose();
     } catch (e) { setError(e.response?.data?.detail || "Upload failed"); }

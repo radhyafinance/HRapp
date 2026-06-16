@@ -342,9 +342,7 @@ export default function Leaves() {
     try {
       const fd = new FormData();
       fd.append("file", f);
-      const res = await API.post("/leaves/admin/balances-upload", fd, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
+      const res = await API.post("/leaves/admin/balances-upload", fd);
       setBulkResult({ success: true, ...res.data });
       fetchData();
     } catch (err) {

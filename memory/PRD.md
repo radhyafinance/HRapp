@@ -16,7 +16,7 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 - `employee`: HO staff - Self-service
 - `field_agent`: FO/Field - Mobile attendance
 
-## What's Implemented (Feb 2026)
+## What's Implemented (Updated Jun 2026)
 ### ✅ Phase 1 Complete
 1. **Authentication** - JWT login, role-based access, user management
 2. **Employee Management** - CRUD, bulk CSV upload, salary components
@@ -437,3 +437,9 @@ Followed-up the WO bug fix by sweeping all remaining `new Date().toISOString().s
 - `/app/frontend/src/components/attendance/Regularisation.js` (Admin Add Record default date, Employee Request Regularisation date + max constraint)
 
 Full-ISO timestamps (`queued_at`, `verified_at`, audit `created_at`) intentionally kept as `toISOString()` — those need UTC instants. `HolidayCalendar.js` already had its own `toLocalISO(y,m,d)` helper and is unaffected.
+
+
+## Bug Fix: Bulk File Upload (Jun 2026)
+- **Root Cause**: All file upload calls (Leaves, Employees, ExitManagement, CandidateApply) were manually setting `Content-Type: multipart/form-data` without the required `boundary` parameter. Production proxies (nginx) are stricter and reject boundary-less multipart requests.
+- **Fix**: Added FormData detection in axios interceptor (`/app/frontend/src/utils/api.js`). When request body is FormData, Content-Type is deleted so the browser sets it automatically with the correct boundary. Removed all manual `Content-Type: multipart/form-data` overrides from: `Leaves.js`, `Employees.js` (×2), `ExitManagement.js` (×2), `CandidateApply.js`.
+- **Files**: `/app/frontend/src/utils/api.js`
