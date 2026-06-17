@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from "react";
 import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
-import { Plus, Check, X, UserCheck, Info, AlertTriangle, Upload, FileText, Eye, Edit2, Download, Sparkles, History } from "lucide-react";
+import { Plus, Check, X, UserCheck, Info, AlertTriangle, Upload, FileText, Eye, Edit2, Download, History } from "lucide-react";
 
 const LEAVE_TYPES = ["CL", "SL", "EL", "Maternity", "Paternity", "Marriage", "Comp-Off", "LWP"];
 const LEAVE_LABELS = {
@@ -120,7 +120,6 @@ export default function Leaves() {
   const [balForm, setBalForm] = useState({ CL_total: 0, CL_used: 0, SL_total: 0, SL_used: 0, EL_total: 0, EL_used: 0, Marriage_total: 0, Marriage_used: 0, reason: "" });
   const [balSaving, setBalSaving] = useState(false);
   const [balError, setBalError] = useState("");
-  const [initBusy, setInitBusy] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkResult, setBulkResult] = useState(null);
   const [auditLog, setAuditLog] = useState(null); // null = closed, [] = open
@@ -323,19 +322,6 @@ export default function Leaves() {
     }
   };
 
-  const initializeBalances = async () => {
-    if (!window.confirm("Initialize leave balances for all active employees who don't yet have one for the current FY?")) return;
-    setInitBusy(true);
-    try {
-      const res = await API.post("/leaves/admin/initialize-balances");
-      alert(`${res.data.message}\nInitialized: ${res.data.initialized}\nSkipped (already had balance): ${res.data.skipped_existing}`);
-      fetchData();
-    } catch (e) {
-      alert(e.response?.data?.detail || "Initialization failed");
-    } finally {
-      setInitBusy(false);
-    }
-  };
 
   const downloadTemplate = async () => {
     try {
@@ -463,11 +449,6 @@ export default function Leaves() {
             />
             {(user?.role === "hr_admin" || user?.role === "management") && (
               <>
-                <button onClick={initializeBalances} disabled={initBusy}
-                  data-testid="init-balances-btn"
-                  className="flex items-center gap-1.5 px-3 py-2 bg-[#1E2A47] text-white rounded-lg text-xs font-semibold hover:bg-[#2a3a5c] disabled:opacity-60">
-                  <Sparkles size={13} /> {initBusy ? "Initializing..." : "Initialize Missing"}
-                </button>
                 <button onClick={downloadTemplate}
                   data-testid="download-template-btn"
                   className="flex items-center gap-1.5 px-3 py-2 border-2 border-[#1E2A47] text-[#1E2A47] rounded-lg text-xs font-semibold hover:bg-slate-50">
