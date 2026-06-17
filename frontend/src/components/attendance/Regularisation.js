@@ -41,6 +41,17 @@ function BaseModal({ title, onClose, children }) {
 }
 
 // ---------- ADMIN: Edit / Create attendance ----------
+const LEAVE_TYPE_OPTIONS = [
+  { value: "CL", label: "Casual Leave (CL)" },
+  { value: "SL", label: "Sick Leave (SL)" },
+  { value: "EL", label: "Earned Leave (EL)" },
+  { value: "Marriage", label: "Marriage Leave" },
+  { value: "Comp-Off", label: "Comp-Off" },
+  { value: "Maternity", label: "Maternity Leave" },
+  { value: "Paternity", label: "Paternity Leave" },
+  { value: "LWP", label: "Leave Without Pay (LWP)" },
+];
+
 export function AdminRegulariseModal({ mode, record, employees, onClose, onSaved }) {
   // mode: "edit" (has record) | "create" (has employees list)
   const [empId, setEmpId] = useState(record?.employee_id || "");
@@ -48,6 +59,7 @@ export function AdminRegulariseModal({ mode, record, employees, onClose, onSaved
   const [punchIn, setPunchIn] = useState(isoToTime(record?.punch_in_time));
   const [punchOut, setPunchOut] = useState(isoToTime(record?.punch_out_time));
   const [status, setStatus] = useState(record?.status || "present");
+  const [leaveType, setLeaveType] = useState(record?.leave_type || "");
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
@@ -61,23 +73,24 @@ export function AdminRegulariseModal({ mode, record, employees, onClose, onSaved
       if (!punchIn) return setErr("Punch-In time is required for Present / Half Day status.");
       if (!punchOut) return setErr("Punch-Out time is required for Present / Half Day status.");
     }
+    // Require leave type when marking as leave
+    if (status === "leave" && !leaveType) return setErr("Please select the leave type to deduct balance.");
     setSaving(true);
     try {
+      const payload = {
+        punch_in_time: punchIn || null,
+        punch_out_time: punchOut || null,
+        status,
+        reason,
+        ...(status === "leave" && leaveType ? { leave_type: leaveType } : {}),
+      };
       if (mode === "edit") {
-        await API.patch(`/attendance/records/${record.id}`, {
-          punch_in_time: punchIn || null,
-          punch_out_time: punchOut || null,
-          status,
-          reason,
-        });
+        await API.patch(`/attendance/records/${record.id}`, payload);
       } else {
         await API.post("/attendance/records", {
           employee_id: empId,
           date,
-          punch_in_time: punchIn || null,
-          punch_out_time: punchOut || null,
-          status,
-          reason,
+          ...payload,
         });
       }
       onSaved?.();
@@ -134,11 +147,24 @@ export function AdminRegulariseModal({ mode, record, employees, onClose, onSaved
         </div>
         <div>
           <label className="block text-xs font-semibold text-slate-600 mb-1">Status</label>
-          <select value={status} onChange={(e) => setStatus(e.target.value)} data-testid="reg-status"
+          <select value={status} onChange={(e) => { setStatus(e.target.value); if (e.target.value !== "leave") setLeaveType(""); }} data-testid="reg-status"
             className="w-full border border-slate-300 rounded-lg px-3 py-2">
             {STATUS_OPTIONS.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
           </select>
         </div>
+        {status === "leave" && (
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">
+              Leave Type <span className="text-red-500">*</span>
+              <span className="text-[10px] font-normal text-slate-400 ml-1">(1 day will be deducted from balance)</span>
+            </label>
+            <select value={leaveType} onChange={(e) => setLeaveType(e.target.value)} data-testid="reg-leave-type"
+              className="w-full border border-slate-300 rounded-lg px-3 py-2">
+              <option value="">Select leave type…</option>
+              {LEAVE_TYPE_OPTIONS.map(lt => <option key={lt.value} value={lt.value}>{lt.label}</option>)}
+            </select>
+          </div>
+        )}
         <div>
           <label className="block text-xs font-semibold text-slate-600 mb-1">Reason <span className="text-red-500">*</span></label>
           <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={3} data-testid="reg-reason"

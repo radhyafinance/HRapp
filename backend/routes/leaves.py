@@ -560,7 +560,17 @@ async def all_leave_balances(current_user: dict = Depends(get_current_user)):
     for emp_id in emp_ids:
         emp = emp_map[emp_id]
         bal = bal_map.get(emp_id, LEAVE_BALANCE_TEMPLATE)
-        co_remaining = co_map.get(emp_id, 0)
+        # Prefer manually stored Comp-Off balance; fall back to counting live grants
+        stored_co = bal.get("Comp-Off")
+        if stored_co and isinstance(stored_co, dict):
+            comp_off_bal = {
+                "total": stored_co.get("total", 0),
+                "used": stored_co.get("used", 0),
+                "remaining": stored_co.get("remaining", 0),
+            }
+        else:
+            co_remaining = co_map.get(emp_id, 0)
+            comp_off_bal = {"total": co_remaining, "used": 0, "remaining": co_remaining}
         result.append({
             "employee_id": emp_id,
             "name": f"{emp.get('first_name','')} {emp.get('last_name','')}".strip(),
@@ -570,7 +580,7 @@ async def all_leave_balances(current_user: dict = Depends(get_current_user)):
             "SL": bal.get("SL", {"total": 15, "used": 0, "remaining": 15}),
             "EL": bal.get("EL", {"total": 0, "used": 0, "remaining": 0}),
             "Marriage": bal.get("Marriage", {"total": 5, "used": 0, "remaining": 5}),
-            "Comp-Off": {"total": co_remaining, "used": 0, "remaining": co_remaining},
+            "Comp-Off": comp_off_bal,
         })
     return result
 
@@ -589,11 +599,16 @@ async def my_leave_balance(current_user: dict = Depends(get_current_user)):
     else:
         balance.pop("_id", None)
         bal = balance
-    # Include live Comp-Off count (approved, not used, not expired)
-    comp_off_remaining = await db.comp_off_grants.count_documents(
-        {"employee_id": emp_id, "status": "approved"}
-    )
-    bal["Comp-Off"] = {"total": comp_off_remaining, "used": 0, "remaining": comp_off_remaining}
+    # Prefer manually stored Comp-Off balance; fall back to counting live grants
+    stored_co = bal.get("Comp-Off")
+    if stored_co and isinstance(stored_co, dict):
+        # Manual override already set in leave_balances
+        pass
+    else:
+        comp_off_remaining = await db.comp_off_grants.count_documents(
+            {"employee_id": emp_id, "status": "approved"}
+        )
+        bal["Comp-Off"] = {"total": comp_off_remaining, "used": 0, "remaining": comp_off_remaining}
     return bal
 
 
@@ -687,7 +702,8 @@ async def approve_leave(leave_id: str, data: LeaveApproveRequest, current_user: 
 
     # Determine which balance to deduct (default to leave type)
     deduct_type = leave["leave_type"]
-    approval_type = data.approval_type or "sl"
+    # Default approval_type to the actual leave type (lowercased) so messages are correct
+    approval_type = data.approval_type or leave["leave_type"].lower().replace("-", "_").replace(" ", "_")
 
     # SL > 2 days — special handling based on certificate presence
     if new_status == "approved" and leave["leave_type"] == "SL" and leave.get("days", 1) > 2:
@@ -786,6 +802,13 @@ async def approve_leave(leave_id: str, data: LeaveApproveRequest, current_user: 
         "sl": "Approved as Sick Leave.",
         "el": "Approved — deducted from Earned Leave balance.",
         "salary_deduction": "Approved — salary deduction noted for payroll.",
+        "cl": "Approved as Casual Leave.",
+        "el": "Approved as Earned Leave.",
+        "marriage": "Approved as Marriage Leave.",
+        "maternity": "Approved as Maternity Leave.",
+        "paternity": "Approved as Paternity Leave.",
+        "comp_off": "Approved as Comp-Off.",
+        "lwp": "Approved as Leave Without Pay.",
     }
     await _notify_leave_decision(leave, new_status, data.remarks, approval_type if new_status == "approved" else None)
     return {
@@ -990,6 +1013,8 @@ class BalanceUpdateRequest(BaseModel):
     EL_used: float
     Marriage_total: float
     Marriage_used: float
+    CompOff_total: Optional[float] = None   # None = do not touch; 0+ = manual override
+    CompOff_used: Optional[float] = None
     reason: str
 
 
@@ -1097,6 +1122,15 @@ async def update_employee_balance(
         if used > total:
             raise HTTPException(status_code=400, detail=f"{k}: used ({used}) cannot exceed total ({total}).")
 
+    # Validate optional Comp-Off fields
+    if data.CompOff_total is not None or data.CompOff_used is not None:
+        co_total = data.CompOff_total if data.CompOff_total is not None else 0.0
+        co_used = data.CompOff_used if data.CompOff_used is not None else 0.0
+        if co_total < 0 or co_used < 0:
+            raise HTTPException(status_code=400, detail="Comp-Off: total/used cannot be negative.")
+        if co_used > co_total:
+            raise HTTPException(status_code=400, detail=f"Comp-Off: used ({co_used}) cannot exceed total ({co_total}).")
+
     employee = await db.employees.find_one({"employee_id": employee_id}, {"_id": 0, "employee_id": 1})
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found.")
@@ -1111,16 +1145,29 @@ async def update_employee_balance(
         used = getattr(data, f"{k}_used")
         new_payload[k] = {"total": total, "used": used, "remaining": total - used}
 
+    # Optionally store manual Comp-Off balance override in leave_balances
+    if data.CompOff_total is not None and data.CompOff_used is not None:
+        co_total = data.CompOff_total
+        co_used = data.CompOff_used
+        new_payload["Comp-Off"] = {"total": co_total, "used": co_used, "remaining": co_total - co_used}
+
     await db.leave_balances.update_one(
         {"employee_id": employee_id, "year": fy},
         {"$set": new_payload, "$setOnInsert": {"employee_id": employee_id, "year": fy}},
         upsert=True,
     )
 
+    after_snap = _build_balance_snapshot(new_payload)
+    if data.CompOff_total is not None and data.CompOff_used is not None:
+        after_snap["Comp-Off"] = new_payload["Comp-Off"]
+    before_co = (existing or {}).get("Comp-Off")
+    if before_co:
+        before_snap["Comp-Off"] = before_co
+
     await _write_audit(
         employee_id=employee_id,
         before=before_snap,
-        after=_build_balance_snapshot(new_payload),
+        after=after_snap,
         reason=data.reason.strip(),
         changed_by=current_user.get("employee_id") or current_user.get("username"),
         source="manual",

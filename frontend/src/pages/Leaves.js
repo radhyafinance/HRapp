@@ -272,6 +272,7 @@ export default function Leaves() {
       SL_total: emp.SL?.total ?? 15,  SL_used: emp.SL?.used ?? 0,
       EL_total: emp.EL?.total ?? 0,   EL_used: emp.EL?.used ?? 0,
       Marriage_total: emp.Marriage?.total ?? 5, Marriage_used: emp.Marriage?.used ?? 0,
+      CompOff_total: emp["Comp-Off"]?.total ?? 0, CompOff_used: emp["Comp-Off"]?.used ?? 0,
       reason: "",
     });
     setBalError("");
@@ -285,6 +286,10 @@ export default function Leaves() {
       if (total < 0 || used < 0) { setBalError(`${k}: values cannot be negative.`); return; }
       if (used > total) { setBalError(`${k}: used (${used}) cannot exceed total (${total}).`); return; }
     }
+    const coTotal = Number(balForm.CompOff_total);
+    const coUsed = Number(balForm.CompOff_used);
+    if (coTotal < 0 || coUsed < 0) { setBalError("Comp-Off: values cannot be negative."); return; }
+    if (coUsed > coTotal) { setBalError(`Comp-Off: used (${coUsed}) cannot exceed total (${coTotal}).`); return; }
     setBalSaving(true);
     setBalError("");
     try {
@@ -293,6 +298,8 @@ export default function Leaves() {
         payload[`${k}_total`] = Number(balForm[`${k}_total`]);
         payload[`${k}_used`] = Number(balForm[`${k}_used`]);
       }
+      payload.CompOff_total = coTotal;
+      payload.CompOff_used = coUsed;
       payload.reason = balForm.reason.trim();
       await API.put(`/leaves/admin/balance/${editBalance.employee_id}`, payload);
       setEditBalance(null);
@@ -1067,6 +1074,37 @@ export default function Leaves() {
                 </div>
               </div>
             ))}
+            {/* Comp-Off row */}
+            <div className="border-t border-slate-100 pt-3">
+              <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-2">
+                <label className="text-xs font-semibold text-slate-700">
+                  Comp-Off
+                  <span className="block text-[10px] font-normal text-slate-400">Manual override</span>
+                </label>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400">Total</span>
+                  <input type="number" min="0" step="1"
+                    value={balForm.CompOff_total}
+                    onChange={e => setBalForm(f => ({ ...f, CompOff_total: e.target.value }))}
+                    data-testid="bal-CompOff-total"
+                    className="w-20 border border-slate-300 rounded-md px-2 py-1.5 text-sm text-center focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400">Used</span>
+                  <input type="number" min="0" step="1"
+                    value={balForm.CompOff_used}
+                    onChange={e => setBalForm(f => ({ ...f, CompOff_used: e.target.value }))}
+                    data-testid="bal-CompOff-used"
+                    className="w-20 border border-slate-300 rounded-md px-2 py-1.5 text-sm text-center focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                </div>
+                <div className="w-16 text-right">
+                  <span className="text-[10px] uppercase tracking-wider text-slate-400 block">Remain</span>
+                  <span className="text-sm font-bold text-[#E85B1E]">
+                    {Math.max(0, (Number(balForm.CompOff_total) || 0) - (Number(balForm.CompOff_used) || 0))}
+                  </span>
+                </div>
+              </div>
+            </div>
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">Reason*</label>
               <textarea value={balForm.reason}

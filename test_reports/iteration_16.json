@@ -1,0 +1,113 @@
+{
+  "summary": "Iteration 16 — Backend-only testing of 3 new features: (1) Regularisation+Leave Integration, (2) Comp-Off balance manual override, (3) approval_type bug fix. All 16 tests PASSED (100%).",
+
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+
+  "feature_test_results": {
+    "regularise_create_leave_cl_record_stored": {
+      "status": "PASS",
+      "details": "POST /api/attendance/records {employee_id:RMF0002, date:2026-09-15, status:leave, leave_type:CL} → 200, record.leave_type='CL', record.status='leave', record.regularised=True"
+    },
+    "regularise_create_cl_balance_decremented": {
+      "status": "PASS",
+      "details": "After POST with leave/CL: GET /api/leaves/balance/RMF0002 shows CL.used went from 0→1.0, CL.remaining from 3.5→2.5 (decremented by 1.0)"
+    },
+    "regularise_patch_to_leave_sl_stores_leave_type": {
+      "status": "PASS",
+      "details": "Pre-condition 'absent' record created for RMF0004. PATCH /api/attendance/records/{id} {status:leave, leave_type:SL} → 200, record.leave_type='SL'"
+    },
+    "regularise_patch_sl_balance_decremented": {
+      "status": "PASS",
+      "details": "After PATCH to leave/SL: SL.used went from 0→1.0, SL.remaining from 7.5→6.5 for RMF0004"
+    },
+    "compoff_manual_balance_setup": {
+      "status": "PASS",
+      "details": "PUT /api/leaves/admin/balance/RMF0004 {CompOff_total:3, CompOff_used:0} → response.balance.Comp-Off={total:3, used:0, remaining:3}"
+    },
+    "compoff_manual_balance_decremented_on_regularisation": {
+      "status": "PASS",
+      "details": "POST regularisation with leave_type=Comp-Off for RMF0004 → Comp-Off.remaining decremented from 3→2 (manual balance path)"
+    },
+    "compoff_grant_marked_used_on_regularisation": {
+      "status": "PASS",
+      "details": "RMF0009 had 1 approved grant (id:69fc6cf27746668d4e9276f9). POST regularisation with leave_type=Comp-Off → grant status changed from 'approved' to 'used' (grant-based path)"
+    },
+    "put_balance_compoff_total_used_returns_correct_values": {
+      "status": "PASS",
+      "details": "PUT /api/leaves/admin/balance/RMF0003 {CompOff_total:5, CompOff_used:2} → 200, balance.Comp-Off={total:5.0, used:2.0, remaining:3.0}"
+    },
+    "get_balances_all_shows_manual_compoff_override": {
+      "status": "PASS",
+      "details": "GET /api/leaves/balances/all → RMF0003.Comp-Off={total:5, used:2, remaining:3} (manual override shown, not grant-count)"
+    },
+    "get_balance_employee_shows_stored_compoff_values": {
+      "status": "PASS",
+      "details": "GET /api/leaves/balance/RMF0003 → response.Comp-Off={total:5.0, used:2.0, remaining:3.0} (stored values returned)"
+    },
+    "put_without_compoff_no_side_effects": {
+      "status": "PASS",
+      "details": "PUT /api/leaves/admin/balance/RMF0002 without CompOff fields → response.balance has no Comp-Off key (no manual override created)"
+    },
+    "balances_all_uses_grant_count_for_no_override_employee": {
+      "status": "PASS",
+      "details": "GET /api/leaves/balances/all → RMF0002.Comp-Off uses grant-count (total=0, remaining=0) because no manual override set"
+    },
+    "cl_leave_application_created": {
+      "status": "PASS",
+      "details": "POST /api/leaves {employee_id:RMF0002, leave_type:CL} → 200, status=pending"
+    },
+    "cl_leave_approval_correct_approval_type": {
+      "status": "PASS",
+      "details": "PUT /api/leaves/{id}/approve {action:approve} (no approval_type) → approval_type='cl' (BUG FIX VERIFIED: was hardcoded 'sl', now defaults to leave_type.lower())"
+    },
+    "get_approved_cl_leave_has_correct_approval_type_in_db": {
+      "status": "PASS",
+      "details": "GET /api/leaves/{id} → DB record has approval_type='cl'. Message: 'Approved as Casual Leave.' (not 'Approved as Sick Leave.')"
+    }
+  },
+
+  "test_report_links": [
+    "/app/backend/tests/test_regularisation_leave_compoff.py",
+    "/app/test_reports/pytest/pytest_iter16_regularisation.xml"
+  ],
+
+  "action_items": [],
+
+  "critical_code_review_comments": [
+    "GET /api/leaves/balance/{employee_id} does NOT apply the manual-Comp-Off-vs-grant-count fallback logic. It returns the raw DB document. This is inconsistent with /balances/all and /balance/my which both have the fallback logic. For employees WITHOUT a manual Comp-Off override, the balance/{employee_id} endpoint will simply omit the Comp-Off key entirely. Only /balances/all and /balance/my show the grant-count-based fallback. This inconsistency could confuse clients who use balance/{employee_id} and find no Comp-Off field when no manual override was set.",
+    "_deduct_leave_balance_for_regularisation uses _get_fy() which always returns CURRENT FY, regardless of the date of the attendance record. So regularising attendance for a past FY date will still deduct from the current FY balance. This is likely intentional design but worth noting."
+  ],
+
+  "updated_files": [
+    "/app/backend/tests/test_regularisation_leave_compoff.py"
+  ],
+
+  "success_rate": {
+    "backend": "100% (16/16 passed)",
+    "frontend": "N/A (backend-only testing requested)"
+  },
+
+  "test_credentials": {
+    "admin": "admin / Admin@12345",
+    "employees_used": ["RMF0002", "RMF0003", "RMF0004", "RMF0009"]
+  },
+
+  "seed_data_creation": "All test data was created and fully cleaned up: (1) 4 attendance records deleted (2026-09-15 through 2026-09-18), (2) CL/SL balance reverted for RMF0002/RMF0004, (3) Comp-Off manual override removed from RMF0003 and RMF0004, (4) RMF0009 comp_off grant reverted from 'used' to 'approved', (5) test leave application deleted. Post-test verification confirmed all cleanup.",
+
+  "retest_needed": false,
+
+  "main_agent_can_self_test": true,
+
+  "context_for_next_testing_agent": "All 3 new features fully tested and passing. Key verified facts: (1) POST /api/attendance/records with status=leave and leave_type=CL/SL/Comp-Off correctly stores leave_type field AND auto-deducts the corresponding leave balance via _deduct_leave_balance_for_regularisation. (2) PATCH /api/attendance/records/{id} also triggers balance deduction when changing to leave status. (3) Comp-Off deduction works both via manual balance path (leave_balances.Comp-Off) and grant-based path (marks oldest approved comp_off_grants doc as 'used'). (4) PUT /api/leaves/admin/balance/{id} with CompOff_total/CompOff_used stores the manual override in leave_balances and is reflected in balances/all and balance/{employee_id}. (5) approval_type bug fix confirmed: CL leaves now get approval_type='cl' not 'sl'. Current FY is 2026 (April 2026 - March 2027), server date is June 2026. Active employees RMF0002/RMF0003/RMF0004 have FY2026 leave_balances docs. RMF0009 has 1 approved comp-off grant (earn_date: 2026-05-02, expiry: 2026-07-31).",
+
+  "rca_of_issues": {}
+}

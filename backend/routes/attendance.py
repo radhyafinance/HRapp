@@ -856,6 +856,48 @@ VALID_STATUSES = {"present", "absent", "half_day", "leave", "weekly_off", "holid
 STATUSES_REQUIRING_PUNCH = {"present", "half_day"}
 
 
+def _get_fy() -> int:
+    """Return the starting year of the current financial year (April–March)."""
+    d = datetime.now(timezone.utc)
+    return d.year if d.month >= 4 else d.year - 1
+
+
+async def _deduct_leave_balance_for_regularisation(employee_id: str, leave_type: str) -> None:
+    """Deduct 1 day from the employee's leave balance when regularisation marks attendance as 'leave'.
+    Non-blocking — logs warning on error, never raises to the caller."""
+    try:
+        fy = _get_fy()
+        BALANCE_TRACKED = ["CL", "SL", "EL", "Marriage"]
+        if leave_type in BALANCE_TRACKED:
+            await db.leave_balances.update_one(
+                {"employee_id": employee_id, "year": fy},
+                {"$inc": {f"{leave_type}.used": 1.0, f"{leave_type}.remaining": -1.0}},
+            )
+        elif leave_type == "Comp-Off":
+            # Try manual balance first, else mark the oldest approved grant as used
+            bal = await db.leave_balances.find_one(
+                {"employee_id": employee_id, "year": fy}, {"_id": 0, "Comp-Off": 1}
+            ) or {}
+            stored_co = bal.get("Comp-Off")
+            if stored_co and isinstance(stored_co, dict) and stored_co.get("remaining", 0) > 0:
+                await db.leave_balances.update_one(
+                    {"employee_id": employee_id, "year": fy},
+                    {"$inc": {"Comp-Off.used": 1.0, "Comp-Off.remaining": -1.0}},
+                )
+            else:
+                grant = await db.comp_off_grants.find_one(
+                    {"employee_id": employee_id, "status": "approved"},
+                    sort=[("earn_date", 1)],
+                )
+                if grant:
+                    await db.comp_off_grants.update_one(
+                        {"_id": grant["_id"]},
+                        {"$set": {"status": "used", "used_at": datetime.now(timezone.utc).isoformat()}},
+                    )
+    except Exception as exc:
+        logger.warning(f"_deduct_leave_balance_for_regularisation failed for {employee_id}/{leave_type}: {exc}")
+
+
 def _enforce_punch_required(status: Optional[str], punch_in: Optional[str], punch_out: Optional[str]) -> None:
     """For positive attendance statuses, both punch_in and punch_out are mandatory."""
     if status in STATUSES_REQUIRING_PUNCH:
@@ -877,6 +919,7 @@ class RegulariseEditBody(BaseModel):
     punch_out_time: Optional[str] = None
     status: Optional[str] = None
     hours_worked: Optional[float] = None
+    leave_type: Optional[str] = None          # e.g. "CL","SL","EL","Marriage","Comp-Off" — auto-deducts balance when status="leave"
     reason: str                                # required — why this change
 
 
@@ -886,6 +929,7 @@ class RegulariseCreateBody(BaseModel):
     punch_in_time: Optional[str] = None
     punch_out_time: Optional[str] = None
     status: str = "present"
+    leave_type: Optional[str] = None          # e.g. "CL","SL","EL","Marriage","Comp-Off" — auto-deducts balance when status="leave"
     reason: str
 
 
@@ -992,6 +1036,7 @@ async def _apply_regularisation(
     changes: dict,
     reason: str,
     acted_by: dict,
+    leave_type: Optional[str] = None,
 ) -> dict:
     """Apply an edit/create to attendance_records and write an audit entry. Returns the new/updated record."""
     if changes.get("status") and changes["status"] not in VALID_STATUSES:
@@ -1024,6 +1069,10 @@ async def _apply_regularisation(
 
     before = {k: (existing or {}).get(k) for k in ["punch_in_time", "punch_out_time", "status", "hours_worked"]}
 
+    # Store leave_type on the attendance record when marking as leave
+    if changes.get("status") == "leave" and leave_type:
+        changes["leave_type"] = leave_type
+
     # Mark as HR-locked so subsequent auto-rules (punch-out, etc.) won't override.
     changes["regularised"] = True
 
@@ -1040,12 +1089,14 @@ async def _apply_regularisation(
             "hours_worked": changes.get("hours_worked"),
             "regularised": True,
         }
+        if changes.get("status") == "leave" and leave_type:
+            doc["leave_type"] = leave_type
         inserted = await db.attendance_records.insert_one(doc)
         result = await db.attendance_records.find_one({"_id": inserted.inserted_id})
 
     # Audit log
     after = {k: result.get(k) for k in ["punch_in_time", "punch_out_time", "status", "hours_worked"]}
-    await db.attendance_regularisations.insert_one({
+    audit_entry = {
         "employee_id": employee_id,
         "date": date_str,
         "before": before,
@@ -1055,7 +1106,14 @@ async def _apply_regularisation(
         "acted_by_name": acted_by.get("name"),
         "acted_at": datetime.now(timezone.utc).isoformat(),
         "type": "direct_edit",
-    })
+    }
+    if leave_type:
+        audit_entry["leave_type"] = leave_type
+    await db.attendance_regularisations.insert_one(audit_entry)
+
+    # Auto-deduct leave balance when status is "leave" and leave_type is set
+    if result.get("status") == "leave" and leave_type:
+        await _deduct_leave_balance_for_regularisation(employee_id, leave_type)
 
     # Auto-create comp-off if this date is a non-working day and employee worked
     await _auto_create_compoff_if_holiday(employee_id, date_str, result.get("status", ""))
@@ -1076,12 +1134,13 @@ async def regularise_edit(record_id: str, body: RegulariseEditBody, current_user
     effective_in = body.punch_in_time or rec.get("punch_in_time")
     effective_out = body.punch_out_time or rec.get("punch_out_time")
     _enforce_punch_required(effective_status, effective_in, effective_out)
-    changes = {k: v for k, v in body.model_dump().items() if v is not None and k != "reason"}
+    changes = {k: v for k, v in body.model_dump().items() if v is not None and k not in ("reason", "leave_type")}
     if not changes:
         raise HTTPException(status_code=400, detail="No changes provided")
     return await _apply_regularisation(
         record_id=record_id, employee_id=rec["employee_id"], date_str=rec["date"],
         changes=changes, reason=body.reason, acted_by=current_user,
+        leave_type=body.leave_type,
     )
 
 
@@ -1103,6 +1162,7 @@ async def regularise_create(body: RegulariseCreateBody, current_user: dict = Dep
     return await _apply_regularisation(
         record_id=None, employee_id=body.employee_id, date_str=body.date,
         changes=changes, reason=body.reason, acted_by=current_user,
+        leave_type=body.leave_type,
     )
 
 
