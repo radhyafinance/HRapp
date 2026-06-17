@@ -1,15 +1,15 @@
-<analysis>**original_problem_statement**: Create a comprehensive HR system for an NBFC-MFI named Radhya Micro Finance (40+ employees). PRODUCT REQUIREMENTS: Full-stack web application (FastAPI backend + React frontend). Role-based access control. Geofenced attendance. Joining Kit PDF/Word generation. Detailed payslip generation. PWA features for field tracking. Hierarchical reporting visibility. Strict Data Privacy/ACLs for salary. EPF UAN Validation using the Perfios API. 
-Latest additions: A complete Employee Exit Management workflow including multi-level approvals, NOC clearance matrix, F&F document uploads, auto-disabling logins on Last Working Day (LWD), and a Dashboard Action Badge for pending exits.
+<analysis>**original_problem_statement**: Create a comprehensive HR system for an NBFC-MFI named Radhya Micro Finance (40+ employees). PRODUCT REQUIREMENTS: Full-stack web application (FastAPI backend + React frontend). Role-based access control. Geofenced attendance. Joining Kit PDF/Word generation. Detailed payslip generation. PWA features for field tracking. Hierarchical reporting visibility. Strict Data Privacy/ACLs for salary. EPF UAN Validation using the Perfios API. Employee Exit Management workflow.
+Latest additions: UI components for Half-Day (0.5) leave support for both single-day and multi-day leaves with automatic attendance sync, fixes to multi-part FormData file uploads, and Attendance 'Today' tab visual rosters with lazy-loaded passport avatars.
 
 **User's preferred language**: English (INSTRUCT NEXT AGENT: You MUST respond in English only)
 
-**what currently exists?**: A robust PWA HR application with role-based access control. Features include geofenced/selfie attendance, leave management, complex payroll logic, transitive manager hierarchy visibility, DigiLocker document verification, Passkey biometric login, EPF UAN Validation, fully revamped password authentication, and a newly implemented end-to-end Employee Exit Management system (resignation to full NOC clearance). The admin password reset bug on deployment environments is also resolved.
+**what currently exists?**: A robust PWA HR application with role-based access control. Features include geofenced/selfie attendance, leave management (including bulk excel upload and half-day support), complex payroll logic, transitive manager hierarchy visibility, Passkey biometric login, EPF UAN Validation, Employee Exit Management, and a CIC Data Converter standalone tool.
 
 **Last working item**:
-    - Last item agent was working: Fixing an issue where the  password reset via the Forgot Password flow would be silently erased back to the  default on every server restart. The agent identified the bug in 's startup seeding logic and removed the auto-revert block. 
-    - Status: USER VERIFICATION PENDING (Awaiting user to redeploy the app from their platform dashboard to push the fix to production).
+    - Last item agent was working: Building the Half-Day Leave feature allowing users to apply for 1st/2nd half leaves (single and multi-day), deducting 0.5 from balance, and auto-syncing approved half-days as  status in the attendance records.
+    - Status: USER VERIFICATION PENDING
     - Agent Testing Done: Y
-    - Which testing method agent to use?: NA
+    - Which testing method agent to use?: manual testing by python -c / bash scripts
     - User Testing Done: N
 
 **All Pending/In progress Issue list**:
@@ -17,7 +17,7 @@ Latest additions: A complete Employee Exit Management workflow including multi-l
      - Attempted fixes: None yet.
      - Next debug checklist: Update  to filter out passkeys that do not match the current request's / and add a banner to the UI for production users.
      - Why fix this issue and what will be achieved with the fix?: Prevents user confusion when they see biometric is registered from the preview domain, but the login button fails on the production domain.
-     - Status: BLOCKED (Awaiting user approval from previous fork)
+     - Status: BLOCKED (Awaiting user approval from previous forks)
      - Is recurring issue?: N
      - Should Test frontend/backend/both after fix?: Both
 
@@ -81,11 +81,12 @@ Latest additions: A complete Employee Exit Management workflow including multi-l
     - Task 7: Document Completeness Scope Refinement (P3) - Scope  to manager's sub-tree instead of whole company.
 
 **Completed work in this session**
-- Employee Exit Management system (Resignation workflow, Reporting Manager -> Admin approvals, LWD setting) (DONE)
-- NOC Clearance matrix integration matching uploaded PDF (Branch Manager, IT, Audit, Accounts, Admin) (DONE)
-- Auto-logout and account disable upon reaching Last Working Day (LWD) in auth logic (DONE)
-- Dashboard Badge & Sidebar Counter for managers/admin to see pending exit requests/actions (DONE)
-- Fixed critical deployment bug where admin password reset was overwritten by  defaults on server restart (DONE)
+- Fixed multi-part FormData file upload logic across the entire app by stripping manually forced  overrides in Axios so browsers can append boundaries correctly. (DONE)
+- Leave Balances Bulk Upload: Upgraded logic to support  half-day floats instead of integers. Added robust UI error reporting to show missed reasons and row-specific validation errors. (DONE)
+- Optimized 'Attendance History' tab by making the default DateRange limited to Today to vastly improve frontend loading speeds. (DONE)
+- Enriched 'Attendance Today' tab with an Employee Roster, dynamically pulling Names and lazy-loading Passport Avatar Images (). (DONE)
+- Fixed Comp-Off balance visibility in Leave Approvals screen by querying the  collection instead of . (DONE)
+- Built complete Half-Day Apply Leave capabilities for all leave types, properly supporting 0.5-day calculations, multi-day start/end half exclusions, and triggering attendance record modifications () natively upon leave approval. (DONE)
 
 **Earlier issues found/mentioned but not fixed**
 None
@@ -99,59 +100,56 @@ None
 
 
 **Key Technical Concepts**
-Frontend: React, Tailwind, PWA Service Workers.
-Backend: FastAPI, MongoDB, Pydantic, WebAuthn.
-Integration: Resend API (Emails), Perfios (KYC/Auth).
+Frontend: React, Tailwind, Axios.
+Backend: FastAPI, MongoDB, Pydantic.
 
 **key DB schema**
-  - : Stores state machine for exits (, , , , ).
-  - : Core employee data.
-  - : Authentication records, including fixes for persistent password hashing.
+  - : Standard leave tracking (CL, SL, EL, Marriage).
+  - : Specialized collection for tracking compensable days.
+  - : Keeps track of daily punch cards; updated retroactively by leave logic.
+  - : Stores binaries for things like passport_photos.
 
 **changes in tech stack**
   - None
 
 **All files of reference**
-  -  (New file for comprehensive exit CRUD & workflow endpoints)
-  -  (New mobile-friendly UI for exits)
-  -  (Modified to intercept logins if user is past their LWD)
-  -  (Modified to display a red badge for pending exits in sidebar & mobile)
-  -  (Modified to add a pending exits alert card for managers/HR)
-  -  (Fixed to ensure admin password retains DB hash and isn't auto-reverted on restarts)
+  -  (Removed manual headers logic to fix file uploads globally)
+  -  (Massive updates for Float-based half-day tracking, error reporting during bulk upload, and handling  aggregation for approvals)
+  -  (Apply Leave UX additions, Half-Day multi-day exclusions, bulk-upload error banners)
+  -  (History tab optimization, Today Roster,  component)
+  -  (Added image streaming endpoint  and name enrichment for )
 
 **Areas that need refactoring**: 
-- None identified currently.
+- None specific.
 
 **key api endpoints**
-  - 
-  - 
-  - 
-  - 
-  - 
+  -  (Updated to ingest , , )
+  -  (Streams passport photo binaries)
+  -  (Updated validation and return response for bulk excel errors)
 
 **Critical Info for New Agent**
-  - **Admin Password Reset Bug**: The agent fixed a severe bug in  where the container restart cycle caused the admin's database password hash to be forcibly rewritten to match  in . The user was instructed to push this fix by redeploying to production.
-  - **Environment Context**: If the user reports issues, explicitly clarify if it's on PREVIEW or PRODUCTION. Code fixes apply to the preview container directly, but production requires a manual deploy step from the user.
-  - **LWD Auth Hook**: Users who hit their Last Working Day (LWD) are automatically prevented from logging in via a check in .
+  - **Two Environments Config**: The user has deployed this app to production. There are now TWO environments: PREVIEW (dev) and PRODUCTION (deployed). If a user reports an issue, clarify which environment they are referring to. Code fixes only directly affect PREVIEW; the user must redeploy to see changes on PRODUCTION. Do not proactively state this to the user unless diagnosing a bug.
+  - **Axios & FormData**: Never manually set  when using  across the application. Let Axios/the browser assign it automatically so that the required multipart boundary is included.
 
 **documents and test reports created in this job**
   -  (Updated)
-  -  (Updated)
-  - 
 
 **Last 10 User Messages and any pending HUMAN messages** 
- 1. *User*: Uploaded NOC Clearance PDF and requested a comprehensive Exit flow for employees.
- 2. *Agent*: Analyzed the PDF and asked clarifying questions regarding manager roles and formats.
- 3. *User*: Answered clarification regarding Audit/Accounts manager and preferred PDF/Excel formats.
- 4. *Agent*: Built full backend & frontend exit tracking modules, tested UI via screenshots, executed testing subagent.
- 5. *Agent*: Fixed issues surfaced by the testing agent, completed the task, and proposed a dashboard alert badge for pending exits.
- 6. *User*: Agreed to add a dashboard badge for pending exit approvals.
- 7. *Agent*: Built the dashboard/sidebar badges, verified with screenshots, and finished the task.
- 8. *User*: Reported a deployment bug: Admin unable to login after changing the password. It keeps saying incorrect password.
- 9. *Agent*: Asked for clarification: is this happening in Preview or Production, and which flow changed the password?
- 10. *User*: Confirmed it is happening in Production via the Forgot Password flow.
- 11. *Agent*: Diagnosed the issue ( reverting the password on restart), patched the startup script, explained the fix, and told the user to redeploy.
- *(No pending questions. User must redeploy to fix the production issue).*
+ 1. *User*: Leaves Bulk upload feature not working properly on deployment.
+ 2. *Agent*: Debugged and removed hardcoded 'Content-Type' overrides from Axios calls in frontend.
+ 3. *User*: Also accept half days (0.5) when doing bulk upload or editing leaves.
+ 4. *Agent*: Updated Pydantic and db models to use floats instead of ints. Updated frontend step values.
+ 5. *User*: Leaves Bulk upload, give error if reason is not filled or if an employee's leaves are not updated.
+ 6. *Agent*: Improved backend exception aggregation and added red/amber UI error banners.
+ 7. *User*: Attendance Page> History Tab: The data takes very long to load. So by default only show same day's data.
+ 8. *Agent*: Fixed  and  default initial state to today.
+ 9. *User*: Attendance Page> Today Tab: Display name, employee ID, and a passport photo avatar. Add to the bottom half.
+ 10. *Agent*: Added backend  stream route, built  frontend component, and added a visual roster to the Today tab.
+ 11. *User*: Leave approval: Not showing balance for comp off leaves.
+ 12. *Agent*: Updated  to join data from  rather than looking solely in .
+ 13. *User*: Apply leave: Option to apply for full day leave, half day leave - 1st Half or 2nd half. Ask questions if you have any.
+ 14. *Agent*: Sent  to confirm multi-day behavior, UI flows, and attendance sync preferences. User confirmed syncing to attendance and allowing 0.5 per day rules. Implemented end-to-end capability and tested manually. 
+ *(No pending human messages).*
 
 **Project Health Check:**
 Healthy. No Mocked endpoints.
@@ -164,14 +162,14 @@ Healthy. No Mocked endpoints.
 	 •	WebAuthn (Device Biometrics) — Direct API logic.
 
 **Testing status**
-  - Testing agent used after significant changes: YES
+  - Testing agent used after significant changes: NO (Tested using manual python bash scripts and screenshot tool).
   - Troubleshoot agent used after agent stuck in loop: NO
-  - Test files created: 
+  - Test files created: None
   - Known regressions: None
 
 **Credentials to test flow:**
   - HR Admin:  /  
-  - Test Employee: , 
+  - Test Employees: , ,  (Company Secretary)
 
 **What agent forgot to execute**
-- The agent was completely occupied implementing the large Exit Management feature set and fixing the subsequent production server restart bug. The WebAuthn domain mismatch (P2), 15-Minute Ping System (P2), and JWT Timeout Adjustment (P2) issues from prior forks were pushed aside again and still remain in the Pending Issues list. The next agent should plan to handle these if the user does not supply immediate high-priority requests.</analysis>
+- The agent built out several robust features (Leave Bulk errors, Attendance UI enhancements, Half-Day capabilities) spanning dozens of files but failed to utilize the  as required for major features. The next agent should strongly prioritize invoking the testing agent if larger changes are grouped.</analysis>
