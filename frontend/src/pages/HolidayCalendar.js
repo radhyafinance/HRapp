@@ -45,6 +45,23 @@ export default function HolidayCalendar() {
   const [myAttendance, setMyAttendance] = useState([]);
   const [myJoiningDate, setMyJoiningDate] = useState(null);
   const [hoveredCell, setHoveredCell] = useState(null);
+  const calendarRef = React.useRef(null);
+
+  // Close popover when clicking outside the calendar grid
+  React.useEffect(() => {
+    if (!hoveredCell) return;
+    const handler = (e) => {
+      if (calendarRef.current && !calendarRef.current.contains(e.target)) {
+        setHoveredCell(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    document.addEventListener("touchstart", handler, { passive: true });
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("touchstart", handler);
+    };
+  }, [hoveredCell]);
 
   // Today as local ISO (YYYY-MM-DD) for implied-absent boundary
   const todayISO = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
@@ -245,7 +262,7 @@ export default function HolidayCalendar() {
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
         {/* Calendar grid */}
-        <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+        <div ref={calendarRef} className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-visible relative">
           <div className="px-2 sm:px-4 py-2 sm:py-3 border-b border-slate-100 grid grid-cols-7 gap-1 sm:gap-1.5">
             {DAY_LABELS.map(d => (
               <div key={d} className="text-center text-[10px] sm:text-[11px] font-bold uppercase tracking-wider text-slate-500">{d}</div>
@@ -316,7 +333,7 @@ export default function HolidayCalendar() {
                     onClick={() => (teamOnLeave.length || myLeave || isMyAbsent || isMyHalfDay || isMyPresent || isImpliedAbsent) && setHoveredCell(c => c === cell.iso ? null : cell.iso)}
                     title={cell.info ? `${cell.info.label}` : ""}
                     data-testid={`cal-cell-${cell.iso}`}
-                    className={`aspect-square p-1 sm:p-2 rounded-md sm:rounded-lg border text-xs sm:text-sm relative overflow-hidden
+                    className={`aspect-square p-1 sm:p-2 rounded-md sm:rounded-lg border text-xs sm:text-sm relative
                       ${cellBg}
                       ${isToday ? "ring-2 ring-[#E85B1E]" : ""}
                       flex flex-col justify-between transition-all hover:shadow-md sm:hover:scale-[1.02]`}>
@@ -406,11 +423,17 @@ export default function HolidayCalendar() {
 
                     {/* Hover/click popover with details */}
                     {hoveredCell === cell.iso && (teamOnLeave.length > 0 || myLeave) && (
-                      <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-30 pointer-events-none max-w-[90vw]">
+                      <div className="absolute left-1/2 -translate-x-1/2 bottom-full mb-2 z-[100] max-w-[90vw]">
                         <div className="bg-white border border-slate-200 shadow-xl rounded-lg p-2.5 min-w-[180px] sm:min-w-[200px] text-left">
-                          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
-                            {cell.iso}
-                          </p>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{cell.iso}</p>
+                            <button
+                              onMouseDown={e => { e.stopPropagation(); setHoveredCell(null); }}
+                              onTouchStart={e => { e.stopPropagation(); setHoveredCell(null); }}
+                              className="text-slate-300 hover:text-slate-500 text-xs leading-none ml-2 p-0.5"
+                              aria-label="Close"
+                            >✕</button>
+                          </div>
                           {myLeave && (
                             <div className="text-[11px] leading-tight mb-1.5 pb-1.5 border-b border-slate-100">
                               <p className="font-semibold text-slate-800">You · {myLeaveIsHalf ? "Half-day leave" : "On leave"}</p>

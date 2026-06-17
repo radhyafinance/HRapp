@@ -83,6 +83,17 @@ export default function Leaves() {
   const [activeTab, setActiveTab] = useState(isAdminOrMgmt ? "pending" : "my");
   const [approvedLeaves, setApprovedLeaves] = useState([]);
 
+  // Approved Leaves filter
+  const [approvedSearch, setApprovedSearch] = useState("");
+  const [approvedDateFrom, setApprovedDateFrom] = useState("");
+  const [approvedDateTo, setApprovedDateTo] = useState("");
+  const filteredApproved = approvedLeaves.filter(l => {
+    const matchName = !approvedSearch || (l.employee_name || "").toLowerCase().includes(approvedSearch.toLowerCase()) || (l.employee_id || "").toLowerCase().includes(approvedSearch.toLowerCase());
+    const matchFrom = !approvedDateFrom || l.end_date >= approvedDateFrom;
+    const matchTo = !approvedDateTo || l.start_date <= approvedDateTo;
+    return matchName && matchFrom && matchTo;
+  });
+
   // Apply modal
   const [showApply, setShowApply] = useState(false);
   const [form, setForm] = useState({ leave_type: "CL", start_date: "", end_date: "", reason: "", employee_id: "", day_type: "full_day", start_half: false, end_half: false });
@@ -106,8 +117,6 @@ export default function Leaves() {
   const [approvalSaving, setApprovalSaving] = useState(false);
   const [approvalError, setApprovalError] = useState("");
 
-  // Balance management
-  const [editBalance, setEditBalance] = useState(null); // employee row being edited
   const [balForm, setBalForm] = useState({ CL_total: 0, CL_used: 0, SL_total: 0, SL_used: 0, EL_total: 0, EL_used: 0, Marriage_total: 0, Marriage_used: 0, reason: "" });
   const [balSaving, setBalSaving] = useState(false);
   const [balError, setBalError] = useState("");
@@ -182,6 +191,9 @@ export default function Leaves() {
       setSaving(false);
     }
   };
+
+  // Balance management
+  const [editBalance, setEditBalance] = useState(null); // employee row being edited
 
   // Upload certificate
   const handleCertUpload = async () => {
@@ -664,6 +676,49 @@ export default function Leaves() {
       {/* Leaves Table (My + Pending + Approved tabs) */}
       {activeTab !== "all" && activeTab !== "team" && (
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+        {/* Approved Leaves filter bar */}
+        {activeTab === "approved" && (
+          <div className="px-4 py-3 border-b border-slate-100 flex flex-wrap gap-2 items-center">
+            <input
+              type="text"
+              placeholder="Search by name or ID…"
+              value={approvedSearch}
+              onChange={e => setApprovedSearch(e.target.value)}
+              data-testid="approved-search"
+              className="border border-slate-300 rounded-lg px-3 py-1.5 text-sm w-48 focus:ring-2 focus:ring-[#E85B1E] outline-none"
+            />
+            <div className="flex items-center gap-1.5">
+              <label className="text-xs text-slate-500 font-medium">From</label>
+              <input
+                type="date"
+                value={approvedDateFrom}
+                onChange={e => setApprovedDateFrom(e.target.value)}
+                data-testid="approved-date-from"
+                className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
+              />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <label className="text-xs text-slate-500 font-medium">To</label>
+              <input
+                type="date"
+                value={approvedDateTo}
+                onChange={e => setApprovedDateTo(e.target.value)}
+                data-testid="approved-date-to"
+                className="border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
+              />
+            </div>
+            {(approvedSearch || approvedDateFrom || approvedDateTo) && (
+              <button
+                onClick={() => { setApprovedSearch(""); setApprovedDateFrom(""); setApprovedDateTo(""); }}
+                data-testid="approved-clear-filter"
+                className="text-xs text-slate-400 hover:text-red-500 underline"
+              >
+                Clear filters
+              </button>
+            )}
+            <span className="ml-auto text-xs text-slate-400">{filteredApproved.length} of {approvedLeaves.length}</span>
+          </div>
+        )}
         <div className="overflow-x-auto">
           <table className="w-full" data-testid="leaves-table">
             <thead><tr className="bg-slate-50 border-b">
@@ -741,9 +796,9 @@ export default function Leaves() {
                     );
                   })
                 : activeTab === "approved"
-                  ? approvedLeaves.length === 0
-                    ? <tr><td colSpan={8} className="px-4 py-12 text-center text-slate-400">No approved leaves yet.</td></tr>
-                    : approvedLeaves.map(l => (
+                  ? filteredApproved.length === 0
+                    ? <tr><td colSpan={8} className="px-4 py-12 text-center text-slate-400">No approved leaves found.</td></tr>
+                    : filteredApproved.map(l => (
                     <tr key={l.id} className="border-b border-slate-100 hover:bg-slate-50">
                       <td className="px-4 py-3">
                         <p className="text-sm font-semibold text-[#0F172A]">{l.employee_name || l.employee_id}</p>
