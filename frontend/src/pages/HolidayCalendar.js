@@ -123,17 +123,26 @@ export default function HolidayCalendar() {
     return cells;
   }, [year, month, dayMap]);
 
-  // Map of YYYY-MM-DD → array of leaves on that day
+  // Map of YYYY-MM-DD → array of leaves on that day, with a per-date half-day flag
   const leavesByDay = useMemo(() => {
     const m = {};
     for (const l of leaves) {
-      const start = new Date(l.from_date + "T00:00:00");
-      const end = new Date(l.to_date + "T00:00:00");
+      const startIso = l.start_date || l.from_date;
+      const endIso   = l.to_date   || l.end_date;
+      const start = new Date(startIso + "T00:00:00");
+      const end   = new Date(endIso   + "T00:00:00");
       const cur = new Date(start);
       while (cur <= end) {
         const iso = toLocalISO(cur.getFullYear(), cur.getMonth(), cur.getDate());
         if (!m[iso]) m[iso] = [];
-        m[iso].push(l);
+        const isStart = iso === startIso;
+        const isEnd   = iso === endIso;
+        // Mark as half-day for this specific date when the half flags apply
+        const isHalfDayForDate =
+          (isStart && isEnd && l.day_type !== "full_day" && !!l.day_type) || // single-day AM/PM
+          (isStart && !isEnd && l.start_half) ||  // first day: only 2nd half
+          (!isStart && isEnd && l.end_half);       // last day: only 1st half
+        m[iso].push({ ...l, isHalfDayForDate: !!isHalfDayForDate });
         cur.setDate(cur.getDate() + 1);
       }
     }
@@ -255,6 +264,7 @@ export default function HolidayCalendar() {
 
                 // Self markers take precedence on the cell tint
                 const myLeave = myLeaveByDay[cell.iso];
+                const myLeaveIsHalf = !!myLeave?.isHalfDayForDate;
                 const myAtt = myAttendanceByDay[cell.iso];
                 const isMyAbsent = myAtt?.status === "absent";
                 const isMyHalfDay = myAtt?.status === "half_day";
@@ -268,9 +278,15 @@ export default function HolidayCalendar() {
                 let cellBg = "bg-white border-slate-100";
                 let cellLabel = "text-slate-700";
                 if (myLeave) {
-                  const t = LEAVE_THEMES[myLeave.leave_type] || DEFAULT_LEAVE_THEME;
-                  cellBg = `${t.bg} ${t.border}`;
-                  cellLabel = t.label;
+                  if (myLeaveIsHalf) {
+                    // Half-day leave — use softer half-day tint instead of full leave tint
+                    cellBg = `${HALF_DAY_THEME.bg} ${HALF_DAY_THEME.border}`;
+                    cellLabel = HALF_DAY_THEME.label;
+                  } else {
+                    const t = LEAVE_THEMES[myLeave.leave_type] || DEFAULT_LEAVE_THEME;
+                    cellBg = `${t.bg} ${t.border}`;
+                    cellLabel = t.label;
+                  }
                 } else if (isMyAbsent) {
                   cellBg = `${ABSENT_THEME.bg} ${ABSENT_THEME.border}`;
                   cellLabel = ABSENT_THEME.label;
@@ -310,9 +326,9 @@ export default function HolidayCalendar() {
                       {myLeave ? (
                         <span
                           data-testid={`my-leave-${cell.iso}`}
-                          className={`text-[7px] sm:text-[8px] font-bold px-1 sm:px-1.5 py-0.5 rounded-full leading-none flex-shrink-0 ${(LEAVE_THEMES[myLeave.leave_type] || DEFAULT_LEAVE_THEME).pill}`}
+                          className={`text-[7px] sm:text-[8px] font-bold px-1 sm:px-1.5 py-0.5 rounded-full leading-none flex-shrink-0 ${myLeaveIsHalf ? HALF_DAY_THEME.pill : (LEAVE_THEMES[myLeave.leave_type] || DEFAULT_LEAVE_THEME).pill}`}
                         >
-                          {myLeave.leave_type || "LV"}
+                          {myLeaveIsHalf ? "½D" : (myLeave.leave_type || "LV")}
                         </span>
                       ) : isMyAbsent ? (
                         <span
@@ -357,14 +373,14 @@ export default function HolidayCalendar() {
                         {/* Mobile: show only 1; Desktop: show 3 */}
                         {teamOnLeave.slice(0, 1).map((lv, idx) => (
                           <span key={`${lv.id}-${idx}-m`}
-                            title={`${lv.employee_name} • ${lv.leave_type} (${lv.from_date} → ${lv.to_date})`}
+                            title={`${lv.employee_name} • ${lv.leave_type}${lv.isHalfDayForDate ? " (½ day)" : ""} (${lv.from_date} → ${lv.to_date})`}
                             className={`sm:hidden inline-flex items-center justify-center text-[7px] font-bold rounded-full w-3.5 h-3.5 flex-shrink-0 ${
                               lv.leave_type === "SL" ? "bg-rose-200 text-rose-800" :
                               lv.leave_type === "CL" ? "bg-amber-200 text-amber-800" :
                               lv.leave_type === "EL" ? "bg-violet-200 text-violet-800" :
                               "bg-slate-200 text-slate-700"
                             }`}>
-                            {lv.initials}
+                            {lv.isHalfDayForDate ? "½" : lv.initials}
                           </span>
                         ))}
                         {teamOnLeave.length > 1 && (
@@ -372,14 +388,14 @@ export default function HolidayCalendar() {
                         )}
                         {teamOnLeave.slice(0, 3).map((lv, idx) => (
                           <span key={`${lv.id}-${idx}-d`}
-                            title={`${lv.employee_name} • ${lv.leave_type} (${lv.from_date} → ${lv.to_date})`}
+                            title={`${lv.employee_name} • ${lv.leave_type}${lv.isHalfDayForDate ? " (½ day)" : ""} (${lv.from_date} → ${lv.to_date})`}
                             className={`hidden sm:inline-flex items-center justify-center text-[8px] font-bold rounded-full w-4 h-4 flex-shrink-0 ${
                               lv.leave_type === "SL" ? "bg-rose-200 text-rose-800" :
                               lv.leave_type === "CL" ? "bg-amber-200 text-amber-800" :
                               lv.leave_type === "EL" ? "bg-violet-200 text-violet-800" :
                               "bg-slate-200 text-slate-700"
                             }`}>
-                            {lv.initials}
+                            {lv.isHalfDayForDate ? "½" : lv.initials}
                           </span>
                         ))}
                         {teamOnLeave.length > 3 && (
@@ -397,9 +413,10 @@ export default function HolidayCalendar() {
                           </p>
                           {myLeave && (
                             <div className="text-[11px] leading-tight mb-1.5 pb-1.5 border-b border-slate-100">
-                              <p className="font-semibold text-slate-800">You · On leave</p>
+                              <p className="font-semibold text-slate-800">You · {myLeaveIsHalf ? "Half-day leave" : "On leave"}</p>
                               <p className="text-slate-500">
                                 <span className="font-semibold">{(LEAVE_THEMES[myLeave.leave_type] || DEFAULT_LEAVE_THEME).name}</span>
+                                {myLeaveIsHalf && <span className="ml-1 text-orange-600 font-semibold">· ½ day</span>}
                                 <span className="text-slate-400"> · {myLeave.from_date.slice(5)} → {myLeave.to_date.slice(5)}</span>
                               </p>
                             </div>
@@ -409,6 +426,7 @@ export default function HolidayCalendar() {
                               <p className="font-semibold text-slate-700 truncate">{lv.employee_name}</p>
                               <p className="text-slate-500">
                                 <span className="font-mono text-[#E85B1E]">{lv.employee_id}</span> · {lv.leave_type}
+                                {lv.isHalfDayForDate && <span className="ml-1 text-orange-600 font-semibold">· ½ day</span>}
                                 <span className="text-slate-400"> · {lv.from_date.slice(5)} → {lv.to_date.slice(5)}</span>
                               </p>
                             </div>

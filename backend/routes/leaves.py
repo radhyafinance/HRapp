@@ -398,6 +398,9 @@ async def calendar_overlay(
             "end_date": l.get("end_date") or l.get("to_date"),
             "days": l.get("days"),
             "reason": l.get("reason"),
+            "day_type": l.get("day_type", "full_day"),
+            "start_half": l.get("start_half", False),
+            "end_half": l.get("end_half", False),
         })
     return out
 
