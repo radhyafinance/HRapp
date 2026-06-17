@@ -624,9 +624,18 @@ async def get_leave_balance(employee_id: str, current_user: dict = Depends(get_c
         {"employee_id": employee_id, "year": get_financial_year()}
     )
     if not balance:
-        return {"employee_id": employee_id, **LEAVE_BALANCE_TEMPLATE}
-    balance.pop("_id", None)
-    return balance
+        bal = {"employee_id": employee_id, **LEAVE_BALANCE_TEMPLATE}
+    else:
+        balance.pop("_id", None)
+        bal = balance
+    # Prefer manually stored Comp-Off balance; fall back to counting live grants
+    stored_co = bal.get("Comp-Off")
+    if not (stored_co and isinstance(stored_co, dict)):
+        comp_off_remaining = await db.comp_off_grants.count_documents(
+            {"employee_id": employee_id, "status": "approved"}
+        )
+        bal["Comp-Off"] = {"total": comp_off_remaining, "used": 0, "remaining": comp_off_remaining}
+    return bal
 
 
 @router.post("/{leave_id}/certificate")

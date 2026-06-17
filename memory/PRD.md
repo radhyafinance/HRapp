@@ -28,6 +28,12 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 8. **Exit Management** — Full workflow: Resignation submission (text+file upload), sequential approval chain (Manager→Senior Manager→Admin), NOC clearances with 5 sections (Branch Manager/Accounts/IT/Audit/HR), auto-assigned NOC owners by designation, F&F settlement upload, auto-disable login after LWD, full timeline
 9. **Letter Generation** - Appointment, Offer, Promotion, Warning, Experience, Relieving, Increment
 
+### ✅ Phase 5 (Jun 2026) — Regularisation + Comp-Off Improvements
+- **Regularisation + Leave Integration**: When HR marks attendance as `leave` during regularisation (Add Record / Edit Record), a "Leave Type" dropdown appears (CL/SL/EL/Marriage/Comp-Off/etc.) and 1 day is **automatically deducted** from the selected leave balance. Works for both PATCH and POST regularisation endpoints. Stores `leave_type` on the attendance record. For Comp-Off, deducts from manual balance first, then oldest approved grant.
+- **Comp-Off Editing in Leave Balance Modal**: `Leaves > All Employees > Edit` now includes a Comp-Off row (Total / Used / Remaining). HR can manually override the Comp-Off balance — stored as `Comp-Off` key in `leave_balances`. Displayed consistently across all 3 balance endpoints (`/balances/all`, `/balance/my`, `/balance/{employee_id}`).
+- **Approval Type Bug Fix**: `PUT /api/leaves/{id}/approve` no longer defaults `approval_type` to hardcoded `"sl"` — now defaults to the leave's actual type (e.g. CL→`"cl"`, EL→`"el"`).
+- **Files**: `/app/backend/routes/attendance.py` (_deduct_leave_balance_for_regularisation, _apply_regularisation, models), `/app/backend/routes/leaves.py` (BalanceUpdateRequest, update_employee_balance, all_leave_balances, my_leave_balance, get_leave_balance), `/app/frontend/src/components/attendance/Regularisation.js`, `/app/frontend/src/pages/Leaves.js`
+
 
 ### ✅ Phase 4 (Jun 2026) — Full Exit Management Overhaul
 - **Resignation with optional letter upload** (PDF/image/Excel)
