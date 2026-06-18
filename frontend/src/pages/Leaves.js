@@ -827,7 +827,7 @@ export default function Leaves() {
                       <td className="px-4 py-3 min-w-[130px]">
                         <div className="flex flex-col gap-1">
                           <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium w-fit">{l.leave_type}</span>
-                          {l.approval_type && l.approval_type !== "sl" && (
+                          {(l.approval_type === "el" || l.approval_type === "salary_deduction") && (
                             <span className={`px-1.5 py-0.5 rounded text-xs w-fit ${l.approval_type === "el" ? "bg-yellow-100 text-yellow-700" : "bg-red-100 text-red-700"}`}>
                               {APPROVAL_TYPE_LABELS[l.approval_type]}
                             </span>
@@ -856,12 +856,14 @@ export default function Leaves() {
                     return (
                       <tr key={l.id} className="border-b border-slate-100 hover:bg-slate-50">
                         <td className="px-4 py-3">
-                          <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">{l.leave_type}</span>
-                          {l.approval_type && l.approval_type !== "sl" && (
-                            <span className={`ml-1 px-1.5 py-0.5 rounded text-xs ${l.approval_type === "el" ? "bg-yellow-100 text-yellow-700" : "bg-red-100 text-red-700"}`}>
-                              {APPROVAL_TYPE_LABELS[l.approval_type]}
-                            </span>
-                          )}
+                          <div className="flex flex-col gap-0.5">
+                            <span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium w-fit">{l.leave_type}</span>
+                            {(l.approval_type === "el" || l.approval_type === "salary_deduction") && (
+                              <span className={`px-1.5 py-0.5 rounded text-xs w-fit ${l.approval_type === "el" ? "bg-yellow-100 text-yellow-700" : "bg-red-100 text-red-700"}`}>
+                                {APPROVAL_TYPE_LABELS[l.approval_type]}
+                              </span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-4 py-3 text-sm text-slate-600">{l.start_date}</td>
                         <td className="px-4 py-3 text-sm text-slate-600">{l.end_date}</td>
