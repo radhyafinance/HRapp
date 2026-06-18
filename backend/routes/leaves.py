@@ -267,6 +267,13 @@ class LeaveApproveRequest(BaseModel):
     approval_type: Optional[str] = None  # sl | el | salary_deduction (for SL > 2 days without cert)
 
 
+class LeaveAdminEditRequest(BaseModel):
+    leave_type: Optional[str] = None
+    reason: Optional[str] = None
+    remarks: Optional[str] = None
+    approval_type: Optional[str] = None  # sl | el | salary_deduction
+
+
 class EncashmentRequest(BaseModel):
     employee_id: str
     days_to_encash: int
@@ -828,6 +835,83 @@ async def approve_leave(leave_id: str, data: LeaveApproveRequest, current_user: 
         "status": new_status,
         "approval_type": approval_type,
     }
+
+
+@router.put("/{leave_id}/admin-edit")
+async def admin_edit_approved_leave(
+    leave_id: str,
+    data: LeaveAdminEditRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """hr_admin / management can edit an already-approved leave record.
+    Automatically adjusts leave balances when leave_type or approval_type changes."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    leave = await db.leave_applications.find_one({"_id": ObjectId(leave_id)})
+    if not leave:
+        raise HTTPException(status_code=404, detail="Leave application not found")
+    if leave["status"] != "approved":
+        raise HTTPException(status_code=400, detail="Only approved leaves can be edited this way")
+
+    BALANCE_TRACKED = ["CL", "SL", "EL", "Marriage"]
+    fy = get_financial_year()
+    days = leave.get("days", 1)
+
+    old_type = leave["leave_type"]
+    old_approval_type = leave.get("approval_type", old_type.lower().replace("-", "_").replace(" ", "_"))
+    new_type = data.leave_type if data.leave_type else old_type
+    new_approval_type = data.approval_type if data.approval_type else old_approval_type
+
+    def _deduct_type(ltype, atype):
+        if atype == "el":
+            return "EL"
+        if atype == "salary_deduction":
+            return None  # no balance was deducted
+        if ltype in BALANCE_TRACKED:
+            return ltype
+        return None
+
+    old_deduct = _deduct_type(old_type, old_approval_type)
+    new_deduct = _deduct_type(new_type, new_approval_type)
+
+    # Adjust balances only when deduction target changed
+    if old_deduct != new_deduct:
+        if old_deduct in BALANCE_TRACKED:
+            await db.leave_balances.update_one(
+                {"employee_id": leave["employee_id"], "year": fy},
+                {"$inc": {
+                    f"{old_deduct}.used": -days,
+                    f"{old_deduct}.remaining": days,
+                }},
+            )
+        if new_deduct in BALANCE_TRACKED:
+            await db.leave_balances.update_one(
+                {"employee_id": leave["employee_id"], "year": fy},
+                {"$inc": {
+                    f"{new_deduct}.used": days,
+                    f"{new_deduct}.remaining": -days,
+                }},
+            )
+
+    update_payload = {
+        "edited_by": current_user.get("employee_id") or current_user.get("username"),
+        "edited_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if data.leave_type:
+        update_payload["leave_type"] = data.leave_type
+    if data.reason is not None:
+        update_payload["reason"] = data.reason
+    if data.remarks is not None:
+        update_payload["remarks"] = data.remarks
+    if data.approval_type:
+        update_payload["approval_type"] = data.approval_type
+
+    await db.leave_applications.update_one(
+        {"_id": ObjectId(leave_id)},
+        {"$set": update_payload},
+    )
+    return {"message": "Leave updated successfully."}
 
 
 @router.post("/admin/credit-halfyear")
