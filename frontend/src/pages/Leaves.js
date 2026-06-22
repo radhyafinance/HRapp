@@ -12,7 +12,8 @@ const LEAVE_LABELS = {
 const STATUS_COLORS = {
   pending: "bg-amber-100 text-amber-700",
   approved: "bg-green-100 text-green-700",
-  rejected: "bg-red-100 text-red-700"
+  rejected: "bg-red-100 text-red-700",
+  cancelled: "bg-slate-100 text-slate-500"
 };
 const POLICY_HINTS = {
   CL: "Max 2 days at a time. SL and CL cannot be clubbed together.",
@@ -104,6 +105,12 @@ export default function Leaves() {
   const [editLeaveForm, setEditLeaveForm] = useState({ leave_type: "", reason: "", remarks: "", approval_type: "" });
   const [editLeaveSaving, setEditLeaveSaving] = useState(false);
   const [editLeaveError, setEditLeaveError] = useState("");
+
+  // Cancel approved leave modal
+  const [cancelLeave, setCancelLeave] = useState(null);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelSaving, setCancelSaving] = useState(false);
+  const [cancelError, setCancelError] = useState("");
   const [formError, setFormError] = useState("");
 
   // Certificate upload modal
@@ -278,6 +285,21 @@ export default function Leaves() {
       setEditLeaveError(e.response?.data?.detail || "Failed to update leave");
     } finally {
       setEditLeaveSaving(false);
+    }
+  };
+
+  const submitCancelLeave = async () => {
+    setCancelSaving(true);
+    setCancelError("");
+    try {
+      await API.put(`/leaves/${cancelLeave.id}/admin-cancel`, { reason: cancelReason });
+      setCancelLeave(null);
+      setCancelReason("");
+      fetchData();
+    } catch (e) {
+      setCancelError(e.response?.data?.detail || "Failed to cancel leave");
+    } finally {
+      setCancelSaving(false);
     }
   };
 
@@ -839,14 +861,24 @@ export default function Leaves() {
                       <td className="px-4 py-3 text-xs font-mono text-slate-500">{l.approved_by || <span className="text-slate-300">—</span>}</td>
                       <td className="px-4 py-3 text-xs text-slate-500 max-w-xs truncate" title={l.reason}>{l.reason || <span className="text-slate-300">—</span>}</td>
                       <td className="px-4 py-3">
-                        <button
-                          onClick={() => openEditLeave(l)}
-                          data-testid={`edit-approved-leave-${l.id}`}
-                          className="flex items-center gap-1 px-2.5 py-1.5 bg-[#E85B1E]/10 text-[#E85B1E] rounded-lg text-xs font-semibold hover:bg-[#E85B1E]/20 transition-colors"
-                          title="Edit Leave"
-                        >
-                          <Edit2 size={12} /> Edit
-                        </button>
+                        <div className="flex gap-1.5">
+                          <button
+                            onClick={() => openEditLeave(l)}
+                            data-testid={`edit-approved-leave-${l.id}`}
+                            className="flex items-center gap-1 px-2.5 py-1.5 bg-[#E85B1E]/10 text-[#E85B1E] rounded-lg text-xs font-semibold hover:bg-[#E85B1E]/20 transition-colors"
+                            title="Edit Leave"
+                          >
+                            <Edit2 size={12} /> Edit
+                          </button>
+                          <button
+                            onClick={() => { setCancelLeave(l); setCancelReason(""); setCancelError(""); }}
+                            data-testid={`cancel-approved-leave-${l.id}`}
+                            className="flex items-center gap-1 px-2.5 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs font-semibold hover:bg-red-100 transition-colors"
+                            title="Cancel Leave"
+                          >
+                            <X size={12} /> Cancel
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))
@@ -1311,8 +1343,46 @@ export default function Leaves() {
         </Modal>
       )}
 
-      {/* Edit Approved Leave Modal (Admin/Management only) */}
-      {editLeave && (
+      {/* Cancel Approved Leave Modal */}
+      {cancelLeave && (
+        <Modal title="Cancel Approved Leave" onClose={() => setCancelLeave(null)}>
+          <div className="space-y-4">
+            <div className="bg-red-50 border border-red-200 rounded-lg px-3 py-3 text-sm text-red-700">
+              <AlertTriangle size={14} className="inline mr-1.5 mb-0.5" />
+              You are about to cancel <strong>{cancelLeave.employee_name || cancelLeave.employee_id}</strong>'s{" "}
+              <strong>{cancelLeave.leave_type}</strong> leave ({cancelLeave.start_date} → {cancelLeave.end_date},{" "}
+              {cancelLeave.days}d). The leave balance will be automatically restored.
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 mb-1">Reason for Cancellation <span className="text-slate-400 font-normal">(optional)</span></label>
+              <textarea
+                value={cancelReason}
+                onChange={e => setCancelReason(e.target.value)}
+                rows={2}
+                placeholder="e.g. Employee requested cancellation, duplicate entry..."
+                data-testid="cancel-leave-reason"
+                className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-red-400 outline-none resize-none"
+              />
+            </div>
+            {cancelError && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-sm p-3 rounded-lg">{cancelError}</div>
+            )}
+            <div className="flex gap-3">
+              <button onClick={() => setCancelLeave(null)}
+                className="flex-1 px-4 py-2.5 border-2 border-slate-300 text-slate-600 rounded-lg text-sm font-medium hover:bg-slate-50">
+                Keep Leave
+              </button>
+              <button onClick={submitCancelLeave} disabled={cancelSaving}
+                data-testid="confirm-cancel-leave-btn"
+                className="flex-1 px-4 py-2.5 bg-red-600 text-white rounded-lg text-sm font-semibold disabled:opacity-60 transition-colors hover:bg-red-700">
+                {cancelSaving ? "Cancelling..." : "Yes, Cancel Leave"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Edit Approved Leave Modal (Admin/Management only) */}      {editLeave && (
         <Modal title={`Edit Leave — ${editLeave.employee_name || editLeave.employee_id}`} onClose={() => setEditLeave(null)}>
           <div className="space-y-4">
             <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-600">

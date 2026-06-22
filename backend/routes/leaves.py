@@ -274,6 +274,10 @@ class LeaveAdminEditRequest(BaseModel):
     approval_type: Optional[str] = None  # sl | el | salary_deduction
 
 
+class LeaveAdminCancelRequest(BaseModel):
+    reason: Optional[str] = None
+
+
 class EncashmentRequest(BaseModel):
     employee_id: str
     days_to_encash: int
@@ -912,6 +916,62 @@ async def admin_edit_approved_leave(
         {"$set": update_payload},
     )
     return {"message": "Leave updated successfully."}
+
+
+@router.put("/{leave_id}/admin-cancel")
+async def admin_cancel_approved_leave(
+    leave_id: str,
+    data: LeaveAdminCancelRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """hr_admin / management can cancel an already-approved leave.
+    Reverses the leave balance deduction automatically."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    leave = await db.leave_applications.find_one({"_id": ObjectId(leave_id)})
+    if not leave:
+        raise HTTPException(status_code=404, detail="Leave application not found")
+    if leave["status"] != "approved":
+        raise HTTPException(status_code=400, detail="Only approved leaves can be cancelled")
+
+    BALANCE_TRACKED = ["CL", "SL", "EL", "Marriage"]
+    fy = get_financial_year()
+    days = leave.get("days", 1)
+
+    leave_type = leave["leave_type"]
+    approval_type = leave.get("approval_type", leave_type.lower().replace("-", "_").replace(" ", "_"))
+
+    # Determine which balance was originally deducted
+    if approval_type == "el":
+        deduct_type = "EL"
+    elif approval_type == "salary_deduction":
+        deduct_type = None  # nothing was deducted from balance
+    elif leave_type in BALANCE_TRACKED:
+        deduct_type = leave_type
+    else:
+        deduct_type = None
+
+    # Reverse the balance deduction
+    if deduct_type in BALANCE_TRACKED:
+        await db.leave_balances.update_one(
+            {"employee_id": leave["employee_id"], "year": fy},
+            {"$inc": {
+                f"{deduct_type}.used": -days,
+                f"{deduct_type}.remaining": days,
+            }},
+        )
+
+    await db.leave_applications.update_one(
+        {"_id": ObjectId(leave_id)},
+        {"$set": {
+            "status": "cancelled",
+            "cancelled_by": current_user.get("employee_id") or current_user.get("username"),
+            "cancelled_at": datetime.now(timezone.utc).isoformat(),
+            "cancellation_reason": data.reason or "",
+        }},
+    )
+    return {"message": "Leave cancelled and balance restored."}
 
 
 @router.post("/admin/credit-halfyear")
