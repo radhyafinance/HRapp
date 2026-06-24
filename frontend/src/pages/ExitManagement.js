@@ -157,6 +157,9 @@ function ApprovalModal({ exit, onClose, onDone, currentUser }) {
   // Is this the final admin approval?
   const pendingItem = exit?.approval_chain?.find(a => a.status === "pending");
   const isAdminLevel = pendingItem?.approver_id === "admin";
+  const isHrOrMgmt = currentUser?.role === "hr_admin" || currentUser?.role === "management";
+  // Show LWD picker when approving the final level (admin/override) and action=approve
+  const showLwdPicker = action === "approve" && (isAdminLevel || (isHrOrMgmt && pendingItem));
 
   const handleSubmit = async () => {
     if (action === "approve" && isAdminLevel && !lwd) {
@@ -192,7 +195,7 @@ function ApprovalModal({ exit, onClose, onDone, currentUser }) {
             ))}
           </div>
         </div>
-        {action === "approve" && isAdminLevel && (
+        {showLwdPicker && (
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1">Last Working Day*</label>
             <input type="date" value={lwd} onChange={e => setLwd(e.target.value)} required
@@ -421,8 +424,9 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
   // Can I approve?
   const pendingApproval = exit?.approval_chain?.find(a => a.status === "pending");
   const canApprove = exit?.status === "submitted" && pendingApproval && (
-    (pendingApproval.approver_id === "admin" && isAdmin) ||
-    (pendingApproval.approver_id === myEmpId)
+    isAdmin ||              // HR Admin can approve/override any level
+    isManagement ||         // Management can approve/override any level
+    (pendingApproval.approver_id === myEmpId)  // Direct approver
   );
 
   useEffect(() => {

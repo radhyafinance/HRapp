@@ -427,10 +427,11 @@ async def approve_exit(exit_id: str, data: ApproveExitRequest, current_user: dic
 
     # Check authorisation
     is_admin_level = pending_item["approver_id"] == "admin"
-    if is_admin_level:
-        if role != "hr_admin":
-            raise HTTPException(status_code=403, detail="Only HR Admin can give final approval")
-    else:
+    is_hr_or_mgmt = role in ("hr_admin", "management")
+
+    if is_admin_level and not is_hr_or_mgmt:
+        raise HTTPException(status_code=403, detail="Only HR Admin or Management can give final approval")
+    elif not is_admin_level and not is_hr_or_mgmt:
         if emp_id != pending_item["approver_id"]:
             raise HTTPException(status_code=403, detail="You are not the current approver for this request")
 
