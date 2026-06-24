@@ -14,8 +14,8 @@ export function CameraCapture({ onCapture, onClose }) {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: "user",
-            width: { ideal: 1280 },
-            height: { ideal: 960 },
+            width: { ideal: 640 },
+            height: { ideal: 480 },
           },
           audio: false,
         });
@@ -36,12 +36,12 @@ export function CameraCapture({ onCapture, onClose }) {
     if (!videoRef.current || !canvasRef.current) return;
     const canvas = canvasRef.current;
     const v = videoRef.current;
-    const w = Math.min(v.videoWidth || 640, 1280);
-    const h = Math.min(v.videoHeight || 480, 960);
+    const w = Math.min(v.videoWidth || 640, 640);
+    const h = Math.min(v.videoHeight || 480, 480);
     canvas.width = w;
     canvas.height = h;
     canvas.getContext("2d").drawImage(v, 0, 0, w, h);
-    const base64 = canvas.toDataURL("image/jpeg", 0.85).split(",")[1];
+    const base64 = canvas.toDataURL("image/jpeg", 0.75).split(",")[1];
     if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
     onCapture(base64);
   };

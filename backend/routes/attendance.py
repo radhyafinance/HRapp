@@ -10,12 +10,18 @@ from services.shift_rules import (
     resolve_shift_for,
 )
 from datetime import datetime, timezone, date, timedelta
+import asyncio
 import math
 import os
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Thread pool for CPU-bound face matching so the async event loop is never blocked.
+# dlib releases the GIL during HOG face detection, so multiple threads run in parallel.
+_FACE_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="face_match")
 
 OFFICE_LOCATIONS_CACHE = []
 
@@ -102,6 +108,10 @@ async def purge_old_face_mismatch_photos() -> dict:
 async def _verify_face(employee_id: str, selfie_b64: Optional[str]) -> dict:
     """Compare selfie against the employee's passport_photo.
 
+    Runs the CPU-intensive dlib face matching in a thread-pool executor so the
+    async event loop is never blocked.  Times out after 25 s to prevent a single
+    slow comparison from holding up the whole server.
+
     Returns a dict: {
         ok: bool,             # True if the request can proceed
         matched: bool|None,   # True / False / None (no reference)
@@ -134,7 +144,36 @@ async def _verify_face(employee_id: str, selfie_b64: Optional[str]) -> dict:
             "strict": strict,
         }
 
-    matched, distance, reason = compare_face_with_reference(selfie_b64, reference, tolerance=DEFAULT_TOLERANCE)
+    # Run blocking dlib call in thread pool — keeps event loop free for other requests
+    try:
+        loop = asyncio.get_running_loop()
+        matched, distance, reason = await asyncio.wait_for(
+            loop.run_in_executor(
+                _FACE_EXECUTOR,
+                compare_face_with_reference,
+                selfie_b64,
+                reference,
+                DEFAULT_TOLERANCE,
+            ),
+            timeout=25.0,
+        )
+    except asyncio.TimeoutError:
+        logger.error("[face_match] timeout for employee %s", employee_id)
+        # In non-strict mode allow the punch through with a flag so attendance
+        # is not lost; in strict mode block to prevent impersonation.
+        if strict:
+            return {"ok": False, "matched": None, "distance": None,
+                    "reason": "Face verification timed out. Please retry or contact HR.", "strict": strict}
+        return {"ok": True, "matched": None, "distance": None,
+                "reason": "Face verification timed out; punch allowed with flag.", "strict": strict}
+    except Exception as exc:
+        logger.error("[face_match] unexpected error for %s: %s", employee_id, exc)
+        if strict:
+            return {"ok": False, "matched": None, "distance": None,
+                    "reason": "Face verification failed. Please retry or contact HR.", "strict": strict}
+        return {"ok": True, "matched": None, "distance": None,
+                "reason": "Face verification error; punch allowed with warning.", "strict": strict}
+
     if reason and not matched:
         # Couldn't run match (no face detected, decode error, etc.)
         if strict:
