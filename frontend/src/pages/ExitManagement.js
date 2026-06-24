@@ -464,7 +464,7 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
   ];
 
   return (
-    <div className="fixed inset-0 z-[60] flex flex-col bg-white">
+    <div className="fixed inset-0 z-[65] flex flex-col bg-white">
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-4 border-b bg-[#1E2A47]">
         <button onClick={onClose} className="p-2 rounded-lg hover:bg-white/10 text-white"><X size={20} /></button>
@@ -485,7 +485,7 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
         ))}
       </div>
 
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto p-4 pb-24 space-y-4">
         {/* ── Overview Tab ── */}
         {activeTab === "overview" && (
           <>
