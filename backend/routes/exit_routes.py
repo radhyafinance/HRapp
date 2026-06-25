@@ -651,6 +651,49 @@ async def download_document(exit_id: str, doc_type: str, current_user: dict = De
     )
 
 
+async def auto_exit_employees_past_lwd() -> dict:
+    """Mark employees as exited when their Last Working Day has passed.
+    Safe to call repeatedly — idempotent."""
+    from datetime import date as _date
+    today = _date.today()
+    employees_in_notice = await db.employees.find(
+        {"status": "notice_period", "last_working_day": {"$exists": True, "$ne": None}},
+        {"employee_id": 1, "last_working_day": 1, "_id": 0}
+    ).to_list(1000)
+
+    exited = []
+    for emp in employees_in_notice:
+        try:
+            lwd_raw = emp.get("last_working_day", "")
+            lwd_str = lwd_raw.split("T")[0].split(" ")[0]
+            lwd_date = _date.fromisoformat(lwd_str)
+            if lwd_date < today:
+                await db.employees.update_one(
+                    {"employee_id": emp["employee_id"]},
+                    {"$set": {"status": "exited"}}
+                )
+                await db.users.update_one(
+                    {"employee_id": emp["employee_id"]},
+                    {"$set": {"is_active": False}}
+                )
+                exited.append(emp["employee_id"])
+        except Exception:
+            pass
+    return {"exited_count": len(exited), "exited_employees": exited}
+
+
+@router.post("/admin/run-auto-exit")
+async def run_auto_exit(current_user: dict = Depends(get_current_user)):
+    """Manually trigger auto-exit for all employees whose LWD has passed. HR Admin only."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    result = await auto_exit_employees_past_lwd()
+    return {
+        "message": f"Auto-exit complete. {result['exited_count']} employee(s) marked as exited.",
+        **result
+    }
+
+
 @router.get("/{exit_id}/ffs")
 async def full_final_settlement(exit_id: str, current_user: dict = Depends(get_current_user)):
     exit_req = await db.exit_requests.find_one({"_id": ObjectId(exit_id)})

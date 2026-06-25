@@ -1,0 +1,131 @@
+{
+  "summary": "Iteration 17 — Full stack testing of 2 new features: (1) Admin Apply Leave for Employee, (2) Auto-exit after LWD. Backend: 14/14 PASS. Frontend: 8/9 tests pass. One frontend bug found: client-side policy validation blocks admin from applying CL > 2 days or SL > 3 days via UI.",
+
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "Leaves.js — handleApply function",
+        "issue": "Client-side policy validation blocks admin from applying CL > 2 days or SL > 3 days via the frontend UI. The `handleApply` function checks `if (form.leave_type === 'CL' && days > 2)` and `if (form.leave_type === 'SL' && days > 3)` without checking `!isAdminOrMgmt`. The backend correctly bypasses policy validation for admin, but the frontend prevents the request from even reaching the backend.",
+        "selector": "handleApply (Leaves.js ~line 222-231)",
+        "priority": "HIGH",
+        "fix": "Wrap client-side policy checks in `if (!isAdminOrMgmt) { ... }` so admin is not blocked. Backend already handles this correctly."
+      }
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Apply Leave Modal (admin view)",
+        "issues": [
+          "Policy hint ('Max 2 days at a time. SL and CL cannot be clubbed together.') still shows for admin on CL type. While cosmetically harmless on its own, it creates confusion since admin is supposed to bypass policy. Consider hiding policy hints for admin in the modal."
+        ]
+      }
+    ]
+  },
+
+  "feature_test_results": {
+    "admin_apply_leave_returns_200": {
+      "status": "PASS",
+      "details": "POST /api/leaves {employee_id: RMF0002, leave_type: CL} as admin → 200, doc.status='approved', doc.applied_by_admin=True, doc.approved_by='admin'"
+    },
+    "admin_applied_leave_auto_approved": {
+      "status": "PASS",
+      "details": "GET /api/leaves/{id} confirms status='approved' immediately after admin apply"
+    },
+    "admin_applied_leave_balance_deducted": {
+      "status": "PASS",
+      "details": "CL balance for RMF0003 decreased by 1.0 immediately after admin applied 1-day CL"
+    },
+    "admin_policy_bypass_3day_cl": {
+      "status": "PASS (backend)",
+      "details": "POST with 3-day CL returns 200 and days=3.0, no policy error. Backend correctly skips validate_leave_application for admin. However, frontend UI blocks this (see bug below)."
+    },
+    "regular_employee_leave_pending": {
+      "status": "PASS",
+      "details": "Employee RMF0005 applying own CL → status='pending', applied_by_admin=None"
+    },
+    "auto_exit_endpoint_200": {
+      "status": "PASS",
+      "details": "POST /api/exit/admin/run-auto-exit returns 200, response has exited_count (int), exited_employees (list), message"
+    },
+    "auto_exit_403_for_employee": {
+      "status": "PASS",
+      "details": "Non-admin RMF0005 calling run-auto-exit returns 403 Access denied"
+    },
+    "admin_leave_in_approved_list": {
+      "status": "PASS",
+      "details": "POST admin apply → leave_id found in GET /api/leaves/approved list"
+    },
+    "frontend_apply_for_employee_button_visible": {
+      "status": "PASS",
+      "details": "Button text 'Apply for Employee' visible on /leaves page for admin user"
+    },
+    "frontend_employee_search_dropdown": {
+      "status": "PASS",
+      "details": "Typing 'RMF' in emp-search-input shows 8 dropdown items with employee names, IDs, designations"
+    },
+    "frontend_balance_preview_on_selection": {
+      "status": "PASS",
+      "details": "After selecting employee, current balance (CL/SL/EL/Marriage) shows in modal"
+    },
+    "frontend_auto_approved_in_tab": {
+      "status": "PASS",
+      "details": "Admin-applied leave appeared at top of 'All Approved Leaves' tab immediately after submission (count increased from 19 to 20)"
+    },
+    "frontend_policy_bypass_for_admin_via_ui": {
+      "status": "FAIL",
+      "details": "Admin trying to submit 3-day CL from frontend UI blocked by client-side error: 'Casual Leave (CL) cannot exceed 2 consecutive days.' handleApply() checks policy for ALL users including admin. Fix: wrap in `if (!isAdminOrMgmt)` at Leaves.js ~line 222."
+    }
+  },
+
+  "test_report_links": [
+    "/app/backend/tests/test_admin_leave_autoexit.py",
+    "/app/test_reports/pytest/pytest_iter17_admin_leave.xml"
+  ],
+
+  "action_items": [
+    "FIX (HIGH): In Leaves.js handleApply(), wrap client-side CL/SL policy validation in `if (!isAdminOrMgmt) { ... }` so admin is not blocked from applying CL > 2 days or SL > 3 days via UI. Lines ~222-231. Backend is already correct.",
+    "MINOR: Consider hiding policy hint text for CL/SL in the apply modal when isAdminOrMgmt is true, to avoid confusion."
+  ],
+
+  "critical_code_review_comments": [
+    "BUG in Leaves.js handleApply (line ~222-231): client-side policy validation for CL (>2 days) and SL (>3 days) applies to ALL users including admin. The backend correctly bypasses `validate_leave_application` for admin (is_admin_for_other check), but the frontend blocks the request before it ever reaches the backend. Admin cannot apply 3-day CL from the UI. Fix: `if (!isAdminOrMgmt) { if (form.leave_type === 'CL' && days > 2) { ... } if (form.leave_type === 'SL' && days > 3) { ... } }`",
+    "exit_routes.py is 739 lines — near the 700-line limit. Consider splitting auto_exit_employees_past_lwd into a service module if further expansion is needed.",
+    "server.py shutdown handler (line 297) iterates over hardcoded task names — if new scheduled tasks are added in future, this needs updating. Consider storing tasks in a dict for easier iteration."
+  ],
+
+  "updated_files": [
+    "/app/backend/tests/test_admin_leave_autoexit.py"
+  ],
+
+  "success_rate": {
+    "backend": "100% (14/14 passed)",
+    "frontend": "89% (8/9 — 1 bug: client-side policy blocks admin for CL>2, SL>3)"
+  },
+
+  "test_credentials": {
+    "admin": "admin / Admin@12345",
+    "employees_used": ["RMF0003", "RMF0004", "RMF0005", "RMF0010", "RMF0030"]
+  },
+
+  "seed_data_creation": "Test leaves created for RMF0002 (1d CL), RMF0003 (1d CL + 3d CL policy bypass), RMF0004 (1d SL), RMF0010 (1d CL frontend test), RMF0005 (1d CL pending). All auto-cancelled via admin-cancel in test teardown. Some cleanup may remain in DB.",
+
+  "retest_needed": true,
+
+  "main_agent_can_self_test": true,
+
+  "context_for_next_testing_agent": "All backend features working 100%: admin apply leave auto-approves, deducts balance, bypasses policy, appears in /approved endpoint. Auto-exit manual trigger endpoint working. Frontend: apply-for-employee modal working with employee search dropdown, balance preview, Apply & Approve button — all good. ONE frontend bug: client-side policy validation in handleApply() blocks admin from applying CL>2 days or SL>3 days from UI. Fix is simple: wrap lines ~222-231 in `if (!isAdminOrMgmt) { ... }`. Backend auth token key is 'access_token' (not 'token'). Working employee credentials: RMF0003, RMF0004, RMF0005, RMF0006 with Radhya@123. RMF0001 is inactive, RMF0002 has no login (no user account or wrong password).",
+
+  "rca_of_issue": {
+    "bug": "Frontend client-side policy bypass missing for admin",
+    "file": "/app/frontend/src/pages/Leaves.js",
+    "lines": "222-231",
+    "root_cause": "handleApply() function has policy checks for CL>2 and SL>3 that are applied to ALL users. The backend correctly checks `is_admin_for_other` and skips policy validation, but the frontend validation fires before the API call is made.",
+    "reproduction": "Login as admin → /leaves → Apply for Employee → Select any employee → CL → 3-day date range → Enter reason → Click Apply & Approve → Error shown: 'Casual Leave (CL) cannot exceed 2 consecutive days.'",
+    "fix": "In handleApply, wrap the CL/SL checks: `if (!isAdminOrMgmt) { if (form.leave_type === 'SL' && days > 3) {...} if (form.leave_type === 'CL' && days > 2) {...} }`"
+  }
+}

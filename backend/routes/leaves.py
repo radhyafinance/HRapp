@@ -293,13 +293,21 @@ async def apply_leave(data: LeaveApplyRequest, current_user: dict = Depends(get_
     emp_id = data.employee_id or current_user.get("employee_id")
     employee = await db.employees.find_one({"employee_id": emp_id}) or {}
 
-    # Run all policy validations
-    await validate_leave_application(data, employee)
+    # Detect admin applying on behalf of another employee
+    is_admin_for_other = (
+        current_user.get("role") in ["hr_admin", "management"]
+        and bool(data.employee_id)
+        and data.employee_id != (current_user.get("employee_id") or "")
+    )
+
+    # Skip policy validation when admin applies on behalf of an employee (admin override)
+    if not is_admin_for_other:
+        await validate_leave_application(data, employee)
 
     days = calc_days(data.start_date, data.end_date, data.day_type, data.start_half, data.end_half)
 
-    # Balance check for quota-tracked types
-    if data.leave_type not in ["Maternity", "Paternity", "LWP", "Comp-Off"]:
+    # Balance check for quota-tracked types (skip for admin applying on behalf — they know best)
+    if not is_admin_for_other and data.leave_type not in ["Maternity", "Paternity", "LWP", "Comp-Off"]:
         balance = await db.leave_balances.find_one(
             {"employee_id": emp_id, "year": get_financial_year()}
         )
@@ -310,6 +318,10 @@ async def apply_leave(data: LeaveApplyRequest, current_user: dict = Depends(get_
                     status_code=400,
                     detail=f"Insufficient {data.leave_type} balance. Remaining: {remaining} day(s)."
                 )
+
+    now_str = datetime.now(timezone.utc).isoformat()
+    approval_type = data.leave_type.lower().replace("-", "_").replace(" ", "_")
+    approver_id = current_user.get("employee_id") or current_user.get("username")
 
     doc = {
         "employee_id": emp_id,
@@ -323,17 +335,42 @@ async def apply_leave(data: LeaveApplyRequest, current_user: dict = Depends(get_
         "reason": data.reason,
         "medical_certificate": None,
         "certificate_uploaded_at": None,
-        "status": "pending",
-        "applied_at": datetime.now(timezone.utc).isoformat(),
-        "approved_by": None,
-        "approval_date": None,
-        "remarks": None,
-        "approval_type": None,
+        # Admin applying on behalf → auto-approved immediately
+        "status": "approved" if is_admin_for_other else "pending",
+        "applied_at": now_str,
+        "applied_by_admin": is_admin_for_other,
+        "approved_by": approver_id if is_admin_for_other else None,
+        "approval_date": now_str if is_admin_for_other else None,
+        "remarks": f"Applied by {approver_id} (HR Admin)" if is_admin_for_other else None,
+        "approval_type": approval_type if is_admin_for_other else None,
     }
     result = await db.leave_applications.insert_one(doc)
     doc["id"] = str(result.inserted_id)
     doc.pop("_id", None)
-    await _notify_leave_applied({**doc, "_id": result.inserted_id}, employee)
+
+    # Auto-approve: deduct balance immediately
+    if is_admin_for_other:
+        BALANCE_TRACKED = ["CL", "SL", "EL", "Marriage"]
+        if data.leave_type in BALANCE_TRACKED:
+            fy = get_financial_year()
+            bal_exists = await db.leave_balances.find_one(
+                {"employee_id": emp_id, "year": fy}, {"_id": 1}
+            )
+            if not bal_exists:
+                await db.leave_balances.insert_one({
+                    "employee_id": emp_id,
+                    "year": fy,
+                    **{k: dict(v) for k, v in LEAVE_BALANCE_TEMPLATE.items()},
+                })
+            await db.leave_balances.update_one(
+                {"employee_id": emp_id, "year": fy},
+                {"$inc": {
+                    f"{data.leave_type}.used": days,
+                    f"{data.leave_type}.remaining": -days,
+                }},
+            )
+    else:
+        await _notify_leave_applied({**doc, "_id": result.inserted_id}, employee)
     return doc
 
 

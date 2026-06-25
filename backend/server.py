@@ -129,6 +129,25 @@ async def _daily_face_photo_purge_loop():
             await asyncio.sleep(24 * 3600)
 
 
+async def _daily_auto_exit_loop():
+    """Mark employees as exited once their LWD passes. Runs daily at 00:05 IST."""
+    from routes.exit_routes import auto_exit_employees_past_lwd
+    while True:
+        try:
+            wait = _seconds_until_next_ist(0, 5)
+            logger.info(f"Auto-exit scheduler: next run in {wait/3600:.1f}h (00:05 IST)")
+            await asyncio.sleep(wait)
+            result = await auto_exit_employees_past_lwd()
+            if result["exited_count"]:
+                logger.info(f"Auto-exit: {result['exited_count']} employee(s) marked exited: {result['exited_employees']}")
+        except asyncio.CancelledError:
+            logger.info("Auto-exit scheduler stopped")
+            raise
+        except Exception as e:
+            logger.error(f"Auto-exit scheduler failed: {e} — retrying tomorrow")
+            await asyncio.sleep(24 * 3600)
+
+
 @app.on_event("startup")
 async def startup():
     db = db_instance
@@ -192,6 +211,18 @@ async def startup():
 
     # Start the daily 02:00 IST scheduler for ongoing photo cleanup
     app.state.face_photo_purge_task = asyncio.create_task(_daily_face_photo_purge_loop())
+
+    # Auto-exit: mark employees whose LWD has already passed on startup
+    try:
+        from routes.exit_routes import auto_exit_employees_past_lwd
+        exit_result = await auto_exit_employees_past_lwd()
+        if exit_result["exited_count"]:
+            logger.info(f"Startup auto-exit: {exit_result['exited_count']} employee(s) marked exited: {exit_result['exited_employees']}")
+    except Exception as e:
+        logger.warning(f"Startup auto-exit skipped: {e}")
+
+    # Start daily 00:05 IST scheduler for ongoing auto-exit checks
+    app.state.auto_exit_task = asyncio.create_task(_daily_auto_exit_loop())
 
     # Seed / migrate admin user — login by username "admin" (no longer email-based)
     admin_username = os.environ.get("ADMIN_USERNAME", "admin")
@@ -263,11 +294,12 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    task = getattr(app.state, "face_photo_purge_task", None)
-    if task and not task.done():
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
+    for task_name in ("face_photo_purge_task", "auto_exit_task"):
+        task = getattr(app.state, task_name, None)
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
     mongo_client.close()

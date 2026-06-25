@@ -100,6 +100,43 @@ export default function Leaves() {
   const [form, setForm] = useState({ leave_type: "CL", start_date: "", end_date: "", reason: "", employee_id: "", day_type: "full_day", start_half: false, end_half: false });
   const [saving, setSaving] = useState(false);
 
+  // Admin apply — employee search
+  const [empList, setEmpList] = useState([]);
+  const [empQuery, setEmpQuery] = useState("");
+  const [empModalBalance, setEmpModalBalance] = useState(null);
+  const [showEmpDropdown, setShowEmpDropdown] = useState(false);
+  const filteredEmpList = empQuery.length >= 1
+    ? empList.filter(e =>
+        e.employee_id.toLowerCase().includes(empQuery.toLowerCase()) ||
+        `${e.first_name} ${e.last_name}`.toLowerCase().includes(empQuery.toLowerCase())
+      ).slice(0, 8)
+    : empList.slice(0, 8);
+
+  const openApplyModal = async () => {
+    setShowApply(true);
+    setFormError("");
+    setEmpQuery("");
+    setEmpModalBalance(null);
+    if (isAdminOrMgmt && empList.length === 0) {
+      try {
+        const res = await API.get("/employees?status=all");
+        const active = (res.data || []).filter(e => ["active", "probation", "notice_period"].includes(e.status));
+        setEmpList(active.map(e => ({ employee_id: e.employee_id, first_name: e.first_name || "", last_name: e.last_name || "", designation: e.designation || "" })));
+      } catch { /* ignore */ }
+    }
+  };
+
+  const handleEmpSelect = async (emp) => {
+    setForm(f => ({ ...f, employee_id: emp.employee_id }));
+    setEmpQuery(`${emp.first_name} ${emp.last_name} (${emp.employee_id})`);
+    setShowEmpDropdown(false);
+    setEmpModalBalance(null);
+    try {
+      const res = await API.get(`/leaves/balance/${emp.employee_id}`);
+      setEmpModalBalance(res.data);
+    } catch { /* ignore */ }
+  };
+
   // Edit approved leave modal (admin/management only)
   const [editLeave, setEditLeave] = useState(null);
   const [editLeaveForm, setEditLeaveForm] = useState({ leave_type: "", reason: "", remarks: "", approval_type: "" });
@@ -196,6 +233,8 @@ export default function Leaves() {
       await API.post("/leaves", { ...form, employee_id: form.employee_id || user.employee_id });
       setShowApply(false);
       setForm({ leave_type: "CL", start_date: "", end_date: "", reason: "", employee_id: "", day_type: "full_day", start_half: false, end_half: false });
+      setEmpQuery("");
+      setEmpModalBalance(null);
       fetchData();
     } catch (e) {
       setFormError(e.response?.data?.detail || "Failed to apply leave");
@@ -453,12 +492,10 @@ export default function Leaves() {
           <h1 className="text-2xl font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Leave Management</h1>
           <p className="text-slate-500 text-sm">{isAdminOrMgmt ? "Approve, track, and audit company-wide leaves" : "Apply and track your leaves"}</p>
         </div>
-        {!isAdminOrMgmt && (
-          <button onClick={() => setShowApply(true)} data-testid="apply-leave-btn"
-            className="flex items-center gap-2 px-4 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] transition-colors">
-            <Plus size={16} /> Apply Leave
-          </button>
-        )}
+        <button onClick={openApplyModal} data-testid="apply-leave-btn"
+          className="flex items-center gap-2 px-4 py-2 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] transition-colors">
+          <Plus size={16} /> {isAdminOrMgmt ? "Apply for Employee" : "Apply Leave"}
+        </button>
       </div>
 
       {/* Leave Balance — hide for admin/management since they don't apply leaves */}
@@ -935,9 +972,62 @@ export default function Leaves() {
 
       {/* Apply Leave Modal */}
       {showApply && (
-        <Modal title="Apply for Leave" onClose={() => { setShowApply(false); setFormError(""); }}>
+        <Modal title={isAdminOrMgmt ? "Apply Leave for Employee" : "Apply for Leave"} onClose={() => { setShowApply(false); setFormError(""); setEmpQuery(""); setEmpModalBalance(null); }}>
           <form onSubmit={handleApply} className="space-y-4">
-            {isManager && (
+            {isAdminOrMgmt && (
+              <div className="relative">
+                <label className="block text-xs font-semibold text-slate-700 mb-1">Select Employee*</label>
+                <input
+                  value={empQuery}
+                  onChange={e => { setEmpQuery(e.target.value); setForm(f => ({ ...f, employee_id: "" })); setShowEmpDropdown(true); setEmpModalBalance(null); }}
+                  onFocus={() => setShowEmpDropdown(true)}
+                  placeholder="Search by name or ID (e.g. RMF0001)"
+                  required={!form.employee_id}
+                  autoComplete="off"
+                  data-testid="emp-search-input"
+                  className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
+                />
+                {showEmpDropdown && filteredEmpList.length > 0 && (
+                  <div className="absolute z-10 w-full bg-white border border-slate-200 rounded-lg shadow-lg mt-1 max-h-48 overflow-y-auto">
+                    {filteredEmpList.map(emp => (
+                      <button key={emp.employee_id} type="button"
+                        onMouseDown={() => handleEmpSelect(emp)}
+                        className="w-full text-left px-3 py-2 hover:bg-orange-50 text-sm border-b border-slate-100 last:border-0">
+                        <span className="font-medium text-slate-800">{emp.first_name} {emp.last_name}</span>
+                        <span className="ml-2 text-xs text-slate-500">{emp.employee_id}</span>
+                        {emp.designation && <span className="ml-1 text-xs text-slate-400">· {emp.designation}</span>}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {!form.employee_id && empQuery && (
+                  <p className="text-xs text-amber-600 mt-1">Select an employee from the list above</p>
+                )}
+                {form.employee_id && (
+                  <p className="text-xs text-green-600 mt-1">Selected: {form.employee_id}</p>
+                )}
+              </div>
+            )}
+            {isAdminOrMgmt && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg px-3 py-2.5 text-xs text-blue-700 flex items-start gap-2">
+                <Info size={12} className="mt-0.5 flex-shrink-0" />
+                <span>Leave will be <strong>auto-approved</strong> and the employee's balance will be deducted immediately. Policy validations are bypassed.</span>
+              </div>
+            )}
+            {/* Show selected employee's current balance */}
+            {isAdminOrMgmt && empModalBalance && (
+              <div className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 text-xs text-slate-600">
+                <span className="font-semibold text-slate-700 block mb-1">Current Balance</span>
+                <div className="flex flex-wrap gap-3">
+                  {["CL", "SL", "EL", "Marriage"].map(k => (
+                    <span key={k} className="bg-white border border-slate-200 rounded px-2 py-1">
+                      <span className="font-bold text-[#1E2A47]">{k}</span>: {empModalBalance[k]?.remaining ?? 0} remaining
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {!isAdminOrMgmt && isManager && (
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">Employee ID*</label>
                 <input value={form.employee_id} onChange={e => setForm({ ...form, employee_id: e.target.value })}
@@ -1046,11 +1136,11 @@ export default function Leaves() {
               </div>
             )}
             <div className="flex gap-3">
-              <button type="button" onClick={() => { setShowApply(false); setFormError(""); }}
+              <button type="button" onClick={() => { setShowApply(false); setFormError(""); setEmpQuery(""); setEmpModalBalance(null); }}
                 className="flex-1 px-4 py-2.5 border-2 border-slate-300 text-slate-600 rounded-lg text-sm font-medium hover:bg-slate-50">Cancel</button>
-              <button type="submit" disabled={saving} data-testid="submit-leave-btn"
+              <button type="submit" disabled={saving || (isAdminOrMgmt && !form.employee_id)} data-testid="submit-leave-btn"
                 className="flex-1 px-4 py-2.5 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold disabled:opacity-60 transition-colors">
-                {saving ? "Applying..." : "Apply Leave"}
+                {saving ? "Applying..." : isAdminOrMgmt ? "Apply & Approve" : "Apply Leave"}
               </button>
             </div>
           </form>
