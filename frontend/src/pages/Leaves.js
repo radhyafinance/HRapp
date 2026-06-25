@@ -218,16 +218,18 @@ export default function Leaves() {
     e.preventDefault();
     setSaving(true);
     setFormError("");
-    // Client-side policy checks
-    if (form.leave_type === "SL" && days > 3) {
-      setFormError("Sick Leave (SL) cannot exceed 3 consecutive days. For longer illness, apply for EL or LWP.");
-      setSaving(false);
-      return;
-    }
-    if (form.leave_type === "CL" && days > 2) {
-      setFormError("Casual Leave (CL) cannot exceed 2 consecutive days.");
-      setSaving(false);
-      return;
+    // Client-side policy checks — skip for admin/management applying on behalf of an employee
+    if (!isAdminOrMgmt) {
+      if (form.leave_type === "SL" && days > 3) {
+        setFormError("Sick Leave (SL) cannot exceed 3 consecutive days. For longer illness, apply for EL or LWP.");
+        setSaving(false);
+        return;
+      }
+      if (form.leave_type === "CL" && days > 2) {
+        setFormError("Casual Leave (CL) cannot exceed 2 consecutive days.");
+        setSaving(false);
+        return;
+      }
     }
     try {
       await API.post("/leaves", { ...form, employee_id: form.employee_id || user.employee_id });
@@ -1042,7 +1044,7 @@ export default function Leaves() {
                 className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none bg-white">
                 {LEAVE_TYPES.map(t => <option key={t} value={t}>{LEAVE_LABELS[t] || t}</option>)}
               </select>
-              {hint && (
+              {hint && !isAdminOrMgmt && (
                 <div className="mt-1.5 flex items-start gap-1.5 text-xs text-slate-500 bg-slate-50 rounded-lg px-3 py-2">
                   <Info size={12} className="mt-0.5 flex-shrink-0 text-[#E85B1E]" />
                   <span>{hint}</span>
@@ -1111,13 +1113,13 @@ export default function Leaves() {
                 {(form.day_type !== "full_day" && isSingleDay) && <span className="ml-2 text-xs bg-orange-100 text-orange-700 px-2 py-0.5 rounded-full">{form.day_type === "first_half" ? "Morning" : "Afternoon"}</span>}
               </p>
             )}
-            {form.leave_type === "SL" && days > 3 && (
+            {!isAdminOrMgmt && form.leave_type === "SL" && days > 3 && (
               <div className="flex items-start gap-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2.5 text-xs text-red-700">
                 <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
                 <span><strong>Not allowed:</strong> SL cannot exceed 3 consecutive days. Apply for EL or LWP for longer illness.</span>
               </div>
             )}
-            {form.leave_type === "SL" && days > 2 && days <= 3 && (
+            {!isAdminOrMgmt && form.leave_type === "SL" && days > 2 && days <= 3 && (
               <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2.5 text-xs text-amber-700">
                 <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
                 <span><strong>Medical certificate required</strong> for SL exceeding 2 days. You can upload it after the leave from your Leave History.</span>
