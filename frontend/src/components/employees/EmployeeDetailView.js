@@ -59,6 +59,7 @@ export function EmployeeDetailView({ emp: initialEmp }) {
   const displayUanResult = uanResult || (storedUan?.verified != null ? storedUan : null);
 
   async function handleVerifyBank() {
+    setVerifying(true);
     setVerifyMsg(null);
     try {
       const res = await API.post(`/employees/${emp.employee_id}/verify-bank`);
