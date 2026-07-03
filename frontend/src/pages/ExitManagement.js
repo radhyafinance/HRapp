@@ -151,6 +151,7 @@ function ApprovalModal({ exit, onClose, onDone, currentUser }) {
   const [action, setAction] = useState("approve");
   const [remarks, setRemarks] = useState("");
   const [lwd, setLwd] = useState("");
+  const [finalExitType, setFinalExitType] = useState("exit");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -160,21 +161,37 @@ function ApprovalModal({ exit, onClose, onDone, currentUser }) {
   const isHrOrMgmt = currentUser?.role === "hr_admin" || currentUser?.role === "management";
   // Show LWD picker when approving the final level (admin/override) and action=approve
   const showLwdPicker = action === "approve" && (isAdminLevel || (isHrOrMgmt && pendingItem));
+  const showExitTypePicker = showLwdPicker; // same condition: final approval
 
   const handleSubmit = async () => {
     if (action === "approve" && isAdminLevel && !lwd) {
       setError("Please set the Last Working Day before giving final approval.");
       return;
     }
+    if (action === "approve" && showExitTypePicker && !finalExitType) {
+      setError("Please choose the exit type.");
+      return;
+    }
     setSaving(true);
     setError("");
     try {
-      await API.put(`/exit/${exit.id}/approve`, { action, remarks, last_working_day: lwd || undefined });
+      await API.put(`/exit/${exit.id}/approve`, {
+        action,
+        remarks,
+        last_working_day: lwd || undefined,
+        final_exit_type: showExitTypePicker ? finalExitType : undefined,
+      });
       onDone();
       onClose();
     } catch (e) { setError(e.response?.data?.detail || "Action failed"); }
     finally { setSaving(false); }
   };
+
+  const EXIT_TYPE_OPTIONS = [
+    { value: "exit", label: "Resignation / Exit" },
+    { value: "absconding", label: "Absconding" },
+    { value: "terminated", label: "Terminated" },
+  ];
 
   return (
     <Modal title="Approval Decision" onClose={onClose}>
@@ -203,6 +220,16 @@ function ApprovalModal({ exit, onClose, onDone, currentUser }) {
             <p className="text-xs text-slate-500 mt-1">This will initiate the NOC clearance process.</p>
           </div>
         )}
+        {showExitTypePicker && (
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">Exit Type*</label>
+            <select value={finalExitType} onChange={e => setFinalExitType(e.target.value)} data-testid="final-exit-type-select"
+              className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none bg-white">
+              {EXIT_TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            <p className="text-xs text-slate-500 mt-1">This updates the employee's formal exit classification.</p>
+          </div>
+        )}
         <div>
           <label className="block text-xs font-semibold text-slate-700 mb-1">Remarks (optional)</label>
           <textarea rows={3} value={remarks} onChange={e => setRemarks(e.target.value)} placeholder="Add any notes or conditions..."
@@ -214,6 +241,143 @@ function ApprovalModal({ exit, onClose, onDone, currentUser }) {
           <button onClick={handleSubmit} disabled={saving}
             className={`flex-1 py-2.5 rounded-lg text-sm font-semibold text-white disabled:opacity-60 transition-colors ${action === "approve" ? "bg-green-600 hover:bg-green-700" : "bg-red-600 hover:bg-red-700"}`}>
             {saving ? "Saving..." : `Confirm ${action === "approve" ? "Approval" : "Rejection"}`}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+
+// ── Change Exit Type Modal ────────────────────────────────────
+function ChangeExitTypeModal({ exit, onClose, onDone }) {
+  const [type, setType] = useState(exit?.final_exit_type || "exit");
+  const [comment, setComment] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const EXIT_TYPE_OPTIONS = [
+    { value: "exit", label: "Resignation / Exit" },
+    { value: "absconding", label: "Absconding" },
+    { value: "terminated", label: "Terminated" },
+  ];
+
+  const handleSave = async () => {
+    if (!comment.trim()) { setError("A comment is required when changing exit type."); return; }
+    setSaving(true);
+    try {
+      await API.put(`/exit/${exit.id}/change-exit-type`, { final_exit_type: type, comment });
+      onDone();
+      onClose();
+    } catch (e) { setError(e.response?.data?.detail || "Failed"); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Modal title="Change Exit Type" onClose={onClose}>
+      <div className="space-y-4">
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700">
+          Changing the exit type will update the employee's formal classification. A reason is mandatory.
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Exit Type*</label>
+          <select value={type} onChange={e => setType(e.target.value)}
+            className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none bg-white">
+            {EXIT_TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Reason / Comment*</label>
+          <textarea rows={3} value={comment} onChange={e => setComment(e.target.value)} placeholder="Explain the reason for this change..."
+            className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none resize-none" />
+        </div>
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        <div className="flex gap-3">
+          <button onClick={onClose} className="flex-1 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-600">Cancel</button>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-1 py-2.5 bg-amber-600 text-white rounded-lg text-sm font-semibold disabled:opacity-60 hover:bg-amber-700 transition-colors">
+            {saving ? "Saving..." : "Update Exit Type"}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+
+// ── Direct Exit Modal (Absconding / Terminated without resignation) ──
+function DirectExitModal({ onClose, onDone }) {
+  const [employeeId, setEmployeeId] = useState("");
+  const [exitType, setExitType] = useState("absconding");
+  const [reason, setReason] = useState("");
+  const [lwd, setLwd] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [employees, setEmployees] = useState([]);
+
+  useEffect(() => {
+    API.get("/employees?status=active").then(r => setEmployees(r.data)).catch(() => {});
+  }, []);
+
+  const handleSave = async () => {
+    if (!employeeId) { setError("Select an employee."); return; }
+    if (!reason.trim()) { setError("A reason is required."); return; }
+    setSaving(true);
+    try {
+      await API.post("/exit/direct-exit", {
+        employee_id: employeeId,
+        final_exit_type: exitType,
+        reason,
+        last_working_day: lwd || undefined
+      });
+      onDone();
+      onClose();
+    } catch (e) { setError(e.response?.data?.detail || "Failed"); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Modal title="Direct Exit (No Resignation)" onClose={onClose}>
+      <div className="space-y-4">
+        <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700">
+          Use this to mark an employee as Absconding or Terminated without a formal resignation process.
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Employee*</label>
+          <select value={employeeId} onChange={e => setEmployeeId(e.target.value)} data-testid="direct-exit-employee-select"
+            className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none bg-white">
+            <option value="">— Select Employee —</option>
+            {employees.map(e => (
+              <option key={e.employee_id} value={e.employee_id}>
+                {e.first_name} {e.last_name} ({e.employee_id})
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Exit Type*</label>
+          <select value={exitType} onChange={e => setExitType(e.target.value)}
+            className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none bg-white">
+            <option value="absconding">Absconding</option>
+            <option value="terminated">Terminated</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Last Working Day (optional)</label>
+          <input type="date" value={lwd} onChange={e => setLwd(e.target.value)}
+            className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Reason*</label>
+          <textarea rows={3} value={reason} onChange={e => setReason(e.target.value)} placeholder="State the reason..."
+            className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none resize-none" />
+        </div>
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        <div className="flex gap-3">
+          <button onClick={onClose} className="flex-1 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-600">Cancel</button>
+          <button onClick={handleSave} disabled={saving}
+            className="flex-1 py-2.5 bg-red-600 text-white rounded-lg text-sm font-semibold disabled:opacity-60 hover:bg-red-700 transition-colors">
+            {saving ? "Processing..." : "Mark as Direct Exit"}
           </button>
         </div>
       </div>
@@ -405,6 +569,7 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
   const [showApprove, setShowApprove] = useState(false);
   const [showDocs, setShowDocs] = useState(false);
   const [showEditLwd, setShowEditLwd] = useState(false);
+  const [showChangeExitType, setShowChangeExitType] = useState(false);
   const [nocSections, setNocSections] = useState({});
   const [ffsData, setFfsData] = useState(null);
   const [ffsLoading, setFfsLoading] = useState(false);
@@ -505,6 +670,24 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
                     <p className="font-semibold text-[#1E2A47] text-sm">{value || "—"}</p>
                   </div>
                 ))}
+                {exit?.final_exit_type && (
+                  <div className="col-span-2 flex items-center justify-between">
+                    <div>
+                      <p className="text-xs text-slate-500">Exit Classification</p>
+                      <p className={`font-semibold text-sm mt-0.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-xs
+                        ${exit.final_exit_type === "exit" ? "bg-green-50 border-green-200 text-green-700" :
+                          exit.final_exit_type === "absconding" ? "bg-red-50 border-red-200 text-red-700" :
+                          "bg-orange-50 border-orange-200 text-orange-700"}`}>
+                        {exit.final_exit_type === "exit" ? "Resignation / Exit" :
+                         exit.final_exit_type === "absconding" ? "Absconding" : "Terminated"}
+                      </p>
+                    </div>
+                    {isAdmin && (
+                      <button onClick={() => setShowChangeExitType(true)} data-testid="change-exit-type-btn"
+                        className="text-xs text-[#E85B1E] hover:underline flex-shrink-0">Change</button>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -737,6 +920,7 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
       )}
       {showDocs && <FinalDocsModal exit={exit} onClose={() => setShowDocs(false)} onDone={onRefresh} />}
       {showEditLwd && <EditLWDModal exit={exit} onClose={() => setShowEditLwd(false)} onDone={onRefresh} />}
+      {showChangeExitType && <ChangeExitTypeModal exit={exit} onClose={() => setShowChangeExitType(false)} onDone={onRefresh} />}
     </div>
   );
 }
@@ -822,6 +1006,7 @@ export default function ExitManagement() {
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
   const [showResign, setShowResign] = useState(false);
+  const [showDirectExit, setShowDirectExit] = useState(false);
   const [filterStatus, setFilterStatus] = useState("all");
   const [search, setSearch] = useState("");
 
@@ -877,10 +1062,18 @@ export default function ExitManagement() {
           <h1 className="text-2xl font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Exit Management</h1>
           <p className="text-slate-500 text-sm mt-0.5">Resignation & NOC clearance process</p>
         </div>
-        <button onClick={() => setShowResign(true)} data-testid="resign-btn"
-          className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2.5 bg-red-600 text-white rounded-xl text-sm font-semibold hover:bg-red-700 transition-colors shadow-sm">
-          <Plus size={15} /> {isAdmin ? "Submit on Behalf" : "Resign"}
-        </button>
+        <div className="flex gap-2">
+          {(isAdmin || isManagement) && (
+            <button onClick={() => setShowDirectExit(true)} data-testid="direct-exit-btn"
+              className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2.5 bg-amber-600 text-white rounded-xl text-sm font-semibold hover:bg-amber-700 transition-colors shadow-sm">
+              Direct Exit
+            </button>
+          )}
+          <button onClick={() => setShowResign(true)} data-testid="resign-btn"
+            className="flex-shrink-0 flex items-center gap-1.5 px-4 py-2.5 bg-red-600 text-white rounded-xl text-sm font-semibold hover:bg-red-700 transition-colors shadow-sm">
+            <Plus size={15} /> {isAdmin ? "Submit on Behalf" : "Resign"}
+          </button>
+        </div>
       </div>
 
       {/* Stats (admin/management) */}
@@ -961,6 +1154,13 @@ export default function ExitManagement() {
           currentUser={user}
           onClose={() => setShowResign(false)}
           onSubmit={fetchData}
+        />
+      )}
+      {/* Direct Exit Modal */}
+      {showDirectExit && (
+        <DirectExitModal
+          onClose={() => setShowDirectExit(false)}
+          onDone={fetchData}
         />
       )}
     </div>

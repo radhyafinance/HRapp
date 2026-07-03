@@ -2,8 +2,7 @@ import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../contexts/AuthContext";
 import API from "../utils/api";
-import { Eye, EyeOff, LogIn, KeyRound, Send, ArrowLeft, Fingerprint, ShieldAlert, CheckCircle } from "lucide-react";
-import { authenticateWithBiometric, isWebAuthnSupported } from "../utils/webauthn";
+import { Eye, EyeOff, LogIn, KeyRound, Send, ArrowLeft, ShieldAlert, CheckCircle } from "lucide-react";
 
 // Password strength: min 8 chars, 1 uppercase, 1 number
 const PWD_RE = /^(?=.*[A-Z])(?=.*\d).{8,}$/;
@@ -55,22 +54,6 @@ export default function Login() {
     } catch (err) {
       const d = err.response?.data?.detail;
       setError(typeof d === "string" ? d : "Invalid username or password");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  /* ── Biometric login ── */
-  const handleBiometricLogin = async () => {
-    reset();
-    if (!username.trim()) { setError("Please enter your Username / Employee ID first."); return; }
-    setLoading(true);
-    try {
-      const data = await authenticateWithBiometric(username.trim());
-      loginWithToken(data.access_token, data.user);
-      navigate("/dashboard");
-    } catch (err) {
-      setError(err.message || "Biometric login failed.");
     } finally {
       setLoading(false);
     }
@@ -228,21 +211,6 @@ export default function Login() {
                   className="w-full bg-[#E85B1E] hover:bg-[#D04A15] text-white font-semibold py-3 px-6 rounded-lg flex items-center justify-center gap-2 transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
                   {loading ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <><LogIn size={18} /> Sign In</>}
                 </button>
-
-                {isWebAuthnSupported() && (
-                  <>
-                    <div className="relative my-1">
-                      <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-slate-200" /></div>
-                      <div className="relative flex justify-center text-[11px]"><span className="bg-[#F8FAFC] px-2 text-slate-400 uppercase tracking-wider">or</span></div>
-                    </div>
-                    <button type="button" onClick={handleBiometricLogin} disabled={loading || !username.trim()}
-                      data-testid="biometric-login-btn"
-                      className="w-full border-2 border-violet-300 text-violet-700 hover:bg-violet-50 font-semibold py-3 px-6 rounded-lg flex items-center justify-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
-                      <Fingerprint size={18} /> Sign in with Biometric
-                    </button>
-                    <p className="text-[11px] text-slate-400 text-center -mt-3">Use the device you previously registered</p>
-                  </>
-                )}
               </form>
             </>
           )}

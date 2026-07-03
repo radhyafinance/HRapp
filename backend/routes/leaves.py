@@ -407,11 +407,9 @@ async def calendar_overlay(
     if role in ["hr_admin", "management"]:
         pass
     elif role == "managers":
-        from services.hierarchy import get_descendant_employee_ids
-        scope_ids = list(await get_descendant_employee_ids(me_id)) if me_id else []
-        if me_id:
-            scope_ids.append(me_id)
-        q["employee_id"] = {"$in": scope_ids} if scope_ids else "__none__"
+        from services.hierarchy import get_manager_scope_excluding_ho
+        scope_ids = await get_manager_scope_excluding_ho(me_id)
+        q["employee_id"] = {"$in": scope_ids}
     else:
         q["employee_id"] = me_id
 
@@ -469,20 +467,15 @@ async def list_leaves(
     elif role == "managers":
         if employee_id:
             # Viewing a specific employee — validate they are in the sub-tree
-            from services.hierarchy import get_descendant_employee_ids
-            allowed = await get_descendant_employee_ids(me_id) if me_id else set()
-            if me_id:
-                allowed.add(me_id)
+            from services.hierarchy import get_manager_scope_excluding_ho
+            allowed = set(await get_manager_scope_excluding_ho(me_id))
             if employee_id not in allowed:
                 raise HTTPException(status_code=403, detail="Access denied")
             query["employee_id"] = employee_id
         else:
-            # Default: scope to entire sub-tree + self
-            from services.hierarchy import get_descendant_employee_ids
-            scope_ids = list(await get_descendant_employee_ids(me_id)) if me_id else []
-            if me_id:
-                scope_ids.append(me_id)
-            query["employee_id"] = {"$in": scope_ids} if scope_ids else "__none__"
+            from services.hierarchy import get_manager_scope_excluding_ho
+            scope_ids = await get_manager_scope_excluding_ho(me_id)
+            query["employee_id"] = {"$in": scope_ids}
     elif employee_id:
         # hr_admin / management filtering by specific employee
         query["employee_id"] = employee_id
@@ -523,16 +516,14 @@ async def pending_leaves(current_user: dict = Depends(get_current_user)):
 
     query = {"status": "pending"}
     # Managers see leaves of every employee in their sub-tree (direct + indirect
-    # reports). HR/Management see everything.
+    # reports), excluding HO staff. HR/Management see everything.
     if current_user.get("role") == "managers":
-        from services.hierarchy import get_descendant_employee_ids
+        from services.hierarchy import get_manager_scope_excluding_ho
         me_id = current_user.get("employee_id")
         if not me_id:
             return []
-        scope = await get_descendant_employee_ids(me_id)
-        if not scope:
-            return []
-        query["employee_id"] = {"$in": list(scope)}
+        scope = await get_manager_scope_excluding_ho(me_id)
+        query["employee_id"] = {"$in": scope}
 
     leaves = await db.leave_applications.find(query).sort("applied_at", -1).to_list(500)
     enriched = await _enrich_leaves_with_employee(leaves)

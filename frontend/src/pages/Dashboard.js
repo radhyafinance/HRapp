@@ -2,10 +2,52 @@ import React, { useEffect, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
 import API from "../utils/api";
-import { Users, CalendarCheck, FileText, CreditCard, TrendingUp, UserPlus, Clock, Video, Mail, Phone, CalendarX, FileEdit, AlertCircle, DoorOpen, ChevronRight, Shield, Check } from "lucide-react";
+import { Users, CalendarCheck, FileText, CreditCard, TrendingUp, UserPlus, Clock, Video, Mail, Phone, CalendarX, FileEdit, AlertCircle, DoorOpen, ChevronRight, Shield, Check, X, Loader2 } from "lucide-react";
 import { QuickPunchCard } from "../components/dashboard/QuickPunchCard";
-import { WebAuthnSetupCard } from "../components/dashboard/WebAuthnSetupCard";
 import { toLocalDateStr } from "../utils/shiftRules";
+
+// Drilldown modal for present/absent/on-leave
+function DrilldownModal({ title, endpoint, onClose }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    API.get(endpoint).then(r => setRows(r.data)).catch(() => setRows([])).finally(() => setLoading(false));
+  }, [endpoint]);
+  const fmt = (t) => { if (!t) return "—"; const d = new Date(t); return isNaN(d) ? t : d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }); };
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[80vh] flex flex-col" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
+          <h3 className="font-bold text-[#1E2A47] text-base" style={{ fontFamily: "'Outfit', sans-serif" }}>{title}</h3>
+          <button onClick={onClose} className="p-1.5 hover:bg-slate-100 rounded-lg"><X size={16} /></button>
+        </div>
+        <div className="overflow-y-auto flex-1 divide-y divide-slate-100">
+          {loading ? (
+            <div className="flex items-center justify-center py-12"><Loader2 size={24} className="animate-spin text-slate-400" /></div>
+          ) : rows.length === 0 ? (
+            <p className="text-sm text-slate-500 text-center py-10">No records found</p>
+          ) : rows.map((r, i) => (
+            <div key={i} className="px-5 py-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-[#1E2A47]">{r.name || r.employee_id}</p>
+                <p className="text-xs text-slate-500">{r.designation || r.leave_type || ""}  {r.branch ? `· ${r.branch}` : ""}</p>
+              </div>
+              <div className="text-xs text-slate-400 text-right flex-shrink-0">
+                {r.punch_in_time ? <p>In: {fmt(r.punch_in_time)}</p> : null}
+                {r.punch_out_time ? <p>Out: {fmt(r.punch_out_time)}</p> : null}
+                {r.start_date && r.end_date ? <p>{r.start_date} → {r.end_date}</p> : null}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="px-5 py-3 border-t border-slate-100 bg-slate-50 rounded-b-xl">
+          <p className="text-xs text-slate-400">{rows.length} employee{rows.length !== 1 ? "s" : ""}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 const StatCard = ({ label, value, icon: Icon, color, sub, onClick }) => (
   <div onClick={onClick}
@@ -55,8 +97,6 @@ function PersonalDashboard({ user }) {
     <>
       <QuickPunchCard user={user} todayStatus={data?.today_status} onPunched={fetchData} />
 
-      <WebAuthnSetupCard />
-
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
         <StatCard label="Absent This Month" value={data?.absent_this_month ?? 0}
           icon={CalendarX} color="bg-red-500" sub={data?.month_label} />
@@ -103,6 +143,7 @@ function AdminDashboard({ user }) {
   const [myInterviews, setMyInterviews] = useState([]);
   const [loading, setLoading] = useState(true);
   const [exitPending, setExitPending] = useState(null);
+  const [drilldown, setDrilldown] = useState(null); // { title, endpoint }
   const canSeeInterviews = ["hr_admin", "management", "managers"].includes(user?.role);
   const canSeePayroll = ["hr_admin", "management"].includes(user?.role);
 
@@ -140,17 +181,33 @@ function AdminDashboard({ user }) {
   return (
     <>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard label="Total Employees" value={stats?.total_employees} icon={Users} color="bg-[#1E2A47]" />
-        <StatCard label="Present Today" value={stats?.present_today} icon={CalendarCheck} color="bg-green-500" />
-        <StatCard label="On Leave" value={stats?.on_leave_today} icon={Clock} color="bg-amber-500" />
-        <StatCard label="Absent" value={stats?.absent_today} icon={Users} color="bg-red-500" />
-        <StatCard label="Pending Leaves" value={stats?.pending_leaves} icon={FileText} color="bg-blue-500" sub="Awaiting approval" />
-        <StatCard label="Candidates" value={stats?.total_candidates} icon={UserPlus} color="bg-purple-500" sub={`${stats?.pending_candidates} pending`} />
-        <StatCard label="Exit Requests" value={stats?.exit_requests} icon={TrendingUp} color="bg-orange-500" />
+        <StatCard label="Total Employees" value={stats?.total_employees} icon={Users} color="bg-[#1E2A47]"
+          onClick={() => navigate("/employees")} />
+        <StatCard label="Present Today" value={stats?.present_today} icon={CalendarCheck} color="bg-green-500"
+          onClick={() => setDrilldown({ title: "Present Today", endpoint: "/dashboard/drilldown/present" })} />
+        <StatCard label="On Leave" value={stats?.on_leave_today} icon={Clock} color="bg-amber-500"
+          onClick={() => setDrilldown({ title: "On Leave Today", endpoint: "/dashboard/drilldown/on-leave" })} />
+        <StatCard label="Absent" value={stats?.absent_today} icon={Users} color="bg-red-500"
+          onClick={() => setDrilldown({ title: "Absent Today", endpoint: "/dashboard/drilldown/absent" })} />
+        <StatCard label="Pending Leaves" value={stats?.pending_leaves} icon={FileText} color="bg-blue-500" sub="Awaiting approval"
+          onClick={() => navigate("/leaves")} />
+        <StatCard label="Candidates" value={stats?.total_candidates} icon={UserPlus} color="bg-purple-500" sub={`${stats?.pending_candidates ?? 0} pending`}
+          onClick={() => navigate("/candidates")} />
+        <StatCard label="Exit Requests" value={stats?.exit_requests} icon={TrendingUp} color="bg-orange-500"
+          onClick={() => navigate("/exit")} />
         {canSeePayroll && (
-          <StatCard label="Payroll (Month)" value={stats?.payroll_processed_this_month} icon={CreditCard} color="bg-[#E85B1E]" sub="Records processed" />
+          <StatCard label="Payroll (Month)" value={stats?.payroll_processed_this_month} icon={CreditCard} color="bg-[#E85B1E]" sub="Records processed"
+            onClick={() => navigate("/payroll")} />
         )}
       </div>
+
+      {drilldown && (
+        <DrilldownModal
+          title={drilldown.title}
+          endpoint={drilldown.endpoint}
+          onClose={() => setDrilldown(null)}
+        />
+      )}
 
       {/* Exit Pending Actions Alert */}
       {exitPending?.total > 0 && (

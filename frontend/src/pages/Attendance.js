@@ -94,6 +94,9 @@ export default function Attendance() {
   const [employees, setEmployees] = useState([]);
   const [multiSessionEnabled, setMultiSessionEnabled] = useState(false);
   const [activeTab, setActiveTab] = useState("today"); // "today" | "history" | "monthly"
+  // Branch filter for team attendance
+  const [branches, setBranches] = useState([]);
+  const [selectedBranch, setSelectedBranch] = useState("all");
   // Selfie+geofence required for everyone except management role per company policy
   const skipSelfieAndGeofence = user?.role === "management";
 
@@ -133,6 +136,7 @@ export default function Attendance() {
       const params = { date_from: dateFrom, date_to: dateTo, limit: 500 };
       if (search.trim()) params.search = search.trim();
       if (filterStatus) params.status = filterStatus;
+      if (selectedBranch && selectedBranch !== "all") params.branch = selectedBranch;
       const res = await API.get("/attendance", { params });
       setTeamRecords(res.data || []);
     } catch (e) { console.error(e); }
@@ -143,7 +147,7 @@ export default function Attendance() {
     if (!isManager) return;
     const t = setTimeout(fetchTeamRecords, 250);  // debounce search/date changes
     return () => clearTimeout(t);
-  }, [isManager, search, filterStatus, dateFrom, dateTo, pendingReload]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isManager, search, filterStatus, dateFrom, dateTo, pendingReload, selectedBranch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load employee list once for admin's "Add attendance" modal dropdown
   useEffect(() => {
@@ -151,6 +155,13 @@ export default function Attendance() {
       API.get("/employees?status=all").then(r => setEmployees(r.data || [])).catch(() => {});
     }
   }, [canRegulariseAdmin]);
+
+  // Load branches for branch-wise tab filtering
+  useEffect(() => {
+    if (isManager) {
+      API.get("/attendance/branches").then(r => setBranches(r.data || [])).catch(() => {});
+    }
+  }, [isManager]);
 
   const getLocation = () => {
     setLocError("");
@@ -527,7 +538,10 @@ export default function Attendance() {
                       </span>
                       <FaceMismatchBadge record={r} onOpen={(side) => setFaceReview({ record: r, side })} />
                     </span>
-                    <span className="text-slate-500">{r.punch_in_time ? new Date(r.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</span>
+                    <span className="text-slate-500 text-right">
+                      <span className="block">{r.punch_in_time ? new Date(r.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</span>
+                      {r.punch_out_time && <span className="block text-slate-400">{new Date(r.punch_out_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span>}
+                    </span>
                     <AttendanceStatusBadge record={r} />
                     {canRegulariseAdmin && (
                       <button onClick={() => setRegEditRecord(r)} data-testid={`edit-attendance-${r.id}`}
@@ -581,8 +595,13 @@ export default function Attendance() {
                         <AttendanceStatusBadge record={r} />
                       </div>
                       <p className="text-[10px] text-slate-400 mt-0.5">
-                        {r.punch_in_time ? new Date(r.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "Not punched in"}
+                        {r.punch_in_time ? `In: ${new Date(r.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}` : "Not punched in"}
                       </p>
+                      {r.punch_out_time && (
+                        <p className="text-[10px] text-slate-400">
+                          Out: {new Date(r.punch_out_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                        </p>
+                      )}
                     </div>
                     {canRegulariseAdmin && (
                       <button onClick={() => setRegEditRecord(r)} data-testid={`roster-edit-${r.employee_id}`}
@@ -659,6 +678,22 @@ export default function Attendance() {
                 </button>
               </div>
 
+              {/* Branch Tabs */}
+              {branches.length > 0 && (
+                <div className="px-5 pt-3 pb-0 flex gap-2 overflow-x-auto" data-testid="branch-tabs">
+                  {[{ id: "all", name: "All Branches" }, ...branches.map(b => ({ id: b, name: b }))].map(branch => (
+                    <button key={branch.id} onClick={() => setSelectedBranch(branch.id)}
+                      className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border transition-colors ${
+                        selectedBranch === branch.id
+                          ? "bg-[#1E2A47] text-white border-[#1E2A47]"
+                          : "border-slate-300 text-slate-600 hover:bg-slate-50"
+                      }`}>
+                      {branch.name}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               {/* Filters */}
               <div className="px-5 py-3 border-b border-slate-100 grid grid-cols-1 md:grid-cols-[1fr_auto_auto_auto] gap-2">
                 <div className="relative">
@@ -687,7 +722,7 @@ export default function Attendance() {
               <div className="overflow-x-auto">
                 <table className="w-full" data-testid="team-attendance-table">
                   <thead><tr className="bg-slate-50 border-b">
-                    {["Employee", "Date", "Punch In", "Punch Out", "Hours", "Location", "Status", canRegulariseAdmin && ""].filter(Boolean).map(h => (
+                    {["Employee", "Date", "Punch In", "Punch Out", "Hours", "Branch", "Status", canRegulariseAdmin && ""].filter(Boolean).map(h => (
                       <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
                     ))}
                   </tr></thead>
@@ -710,7 +745,7 @@ export default function Attendance() {
                         <td className="px-4 py-3 text-sm text-slate-600">{r.punch_in_time ? new Date(r.punch_in_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</td>
                         <td className="px-4 py-3 text-sm text-slate-600">{r.punch_out_time ? new Date(r.punch_out_time).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }) : "-"}</td>
                         <td className="px-4 py-3 text-sm text-slate-600">{r.hours_worked ? `${r.hours_worked}h` : "-"}</td>
-                        <td className="px-4 py-3 text-xs text-slate-500">{r.location_name || "-"}</td>
+                        <td className="px-4 py-3 text-xs text-slate-500">{r.branch || "-"}</td>
                         <td className="px-4 py-3"><AttendanceStatusBadge record={r} /></td>
                         {canRegulariseAdmin && (
                           <td className="px-4 py-3 text-right">

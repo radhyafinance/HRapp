@@ -109,7 +109,7 @@ async def request_otp(data: OtpRequestPayload):
     # Block exited employees
     if user.get("employee_id"):
         emp = await db.employees.find_one({"employee_id": user["employee_id"]}, {"status": 1})
-        if emp and emp.get("status") == "exited":
+        if emp and emp.get("status") in ("exited", "absconding", "terminated"):
             raise HTTPException(status_code=403, detail="Account disabled — employee has exited the organization.")
     email = await _resolve_user_email(user)
     if not email:
@@ -171,7 +171,7 @@ async def verify_otp(data: OtpVerifyPayload):
         raise HTTPException(status_code=403, detail="Account is inactive. Contact HR.")
     if user.get("employee_id"):
         emp = await db.employees.find_one({"employee_id": user["employee_id"]}, {"status": 1})
-        if emp and emp.get("status") == "exited":
+        if emp and emp.get("status") in ("exited", "absconding", "terminated"):
             raise HTTPException(status_code=403, detail="Account disabled — employee has exited the organization.")
 
     record = await db.otp_codes.find_one({"username": user["username"]})
@@ -235,7 +235,7 @@ async def login(data: LoginRequest):
         from datetime import date as _date
         emp = await db.employees.find_one({"employee_id": user["employee_id"]}, {"status": 1, "last_working_day": 1})
         if emp:
-            if emp.get("status") == "exited":
+            if emp.get("status") in ("exited", "absconding", "terminated"):
                 raise HTTPException(status_code=403, detail="Account disabled — employee has exited the organization.")
             if emp.get("status") == "notice_period" and emp.get("last_working_day"):
                 try:
@@ -417,7 +417,7 @@ async def forgot_password_request(data: OtpRequestPayload):
         raise HTTPException(status_code=403, detail="Account is inactive. Contact HR.")
     if user.get("employee_id"):
         emp = await db.employees.find_one({"employee_id": user["employee_id"]}, {"status": 1})
-        if emp and emp.get("status") == "exited":
+        if emp and emp.get("status") in ("exited", "absconding", "terminated"):
             raise HTTPException(status_code=403, detail="Account disabled — employee has exited the organization.")
 
     email = await _resolve_user_email(user)

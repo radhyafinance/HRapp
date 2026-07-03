@@ -95,3 +95,33 @@ async def get_visible_employee_ids(role: str, employee_id: str) -> set | None:
     if role == "managers" and employee_id:
         return await get_descendant_employee_ids(employee_id)
     return set()
+
+
+# Role that identifies HO (Head Office) staff — hidden from BM/DM managers
+HO_STAFF_ROLE = "employee"
+
+
+async def exclude_ho_staff_from_ids(employee_ids: set) -> set:
+    """Remove HO staff (role='employee') from a set of employee IDs.
+    Used so BMs/DMs cannot see HO employees' attendance, leaves, etc.
+    """
+    if not employee_ids:
+        return set()
+    ids_list = list(employee_ids)
+    # Find employees in this set who are NOT HO staff
+    non_ho = await db.employees.find(
+        {"employee_id": {"$in": ids_list}, "role": {"$ne": HO_STAFF_ROLE}},
+        {"_id": 0, "employee_id": 1},
+    ).to_list(2000)
+    return {e["employee_id"] for e in non_ho}
+
+
+async def get_manager_scope_excluding_ho(me_id: str) -> list:
+    """Return a list of employee IDs a manager can see, excluding HO staff (role='employee').
+    Always includes the manager's own ID.
+    """
+    descendants = await get_descendant_employee_ids(me_id) if me_id else set()
+    filtered = await exclude_ho_staff_from_ids(descendants)
+    if me_id:
+        filtered.add(me_id)
+    return list(filtered) if filtered else ["__none__"]

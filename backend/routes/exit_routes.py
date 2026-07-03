@@ -197,6 +197,19 @@ class ApproveExitRequest(BaseModel):
     action: str  # "approve" | "reject"
     remarks: Optional[str] = None
     last_working_day: Optional[str] = None  # required when admin gives final approval
+    final_exit_type: Optional[str] = None  # "exit" | "absconding" | "terminated" — required on final approval
+
+
+class UpdateExitTypeRequest(BaseModel):
+    final_exit_type: str  # "exit" | "absconding" | "terminated"
+    comment: str
+
+
+class DirectExitRequest(BaseModel):
+    employee_id: str
+    final_exit_type: str  # "absconding" | "terminated"
+    reason: str
+    last_working_day: Optional[str] = None
 
 
 class NOCItemUpdate(BaseModel):
@@ -458,16 +471,26 @@ async def approve_exit(exit_id: str, data: ApproveExitRequest, current_user: dic
         if all_approved:
             if not data.last_working_day:
                 raise HTTPException(status_code=400, detail="Please set the Last Working Day when giving final approval")
+            if not data.final_exit_type or data.final_exit_type not in ("exit", "absconding", "terminated"):
+                raise HTTPException(status_code=400, detail="Please choose a final exit type: exit, absconding, or terminated")
             updates["status"] = "noc_in_progress"
             updates["last_working_day"] = data.last_working_day
-            # Update employee status
+            updates["final_exit_type"] = data.final_exit_type
+            updates["exit_type_log"] = [{
+                "final_exit_type": data.final_exit_type,
+                "comment": "Set during final approval",
+                "changed_by": current_user.get("name", emp_id or "Admin"),
+                "timestamp": now
+            }]
+            # Update employee status based on exit type
+            emp_status = "notice_period"  # starts in notice period; auto-exit handles actual exit
             await db.employees.update_one(
                 {"employee_id": exit_req["employee_id"]},
-                {"$set": {"status": "notice_period", "last_working_day": data.last_working_day}}
+                {"$set": {"status": emp_status, "last_working_day": data.last_working_day, "final_exit_type": data.final_exit_type}}
             )
             add_timeline_event(
                 timeline, "fully_approved", "System",
-                f"Resignation fully approved. Last working day set to {data.last_working_day}. NOC process initiated."
+                f"Resignation fully approved. Exit type: {data.final_exit_type.title()}. Last working day set to {data.last_working_day}. NOC process initiated."
             )
             updates["timeline"] = timeline
         # else: still "submitted", next approver becomes active
@@ -649,6 +672,114 @@ async def download_document(exit_id: str, doc_type: str, current_user: dict = De
         media_type=file_data.get("mime_type", "application/octet-stream"),
         headers={"Content-Disposition": f'attachment; filename="{file_data.get("file_name", doc_type)}"'}
     )
+
+
+@router.put("/{exit_id}/change-exit-type")
+async def change_exit_type(exit_id: str, data: UpdateExitTypeRequest, current_user: dict = Depends(get_current_user)):
+    """Change the final exit type (exit/absconding/terminated) with a mandatory comment. HR Admin only."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Only HR Admin or Management can change exit type")
+    if data.final_exit_type not in ("exit", "absconding", "terminated"):
+        raise HTTPException(status_code=422, detail="final_exit_type must be: exit, absconding, or terminated")
+    exit_req = await db.exit_requests.find_one({"_id": ObjectId(exit_id)})
+    if not exit_req:
+        raise HTTPException(status_code=404, detail="Exit request not found")
+    if exit_req.get("status") not in ("noc_in_progress", "noc_complete", "completed"):
+        raise HTTPException(status_code=400, detail="Exit type can only be changed after final approval")
+
+    now = datetime.now(timezone.utc).isoformat()
+    log_entry = {
+        "final_exit_type": data.final_exit_type,
+        "comment": data.comment,
+        "changed_by": current_user.get("name", current_user.get("username", "Admin")),
+        "timestamp": now
+    }
+    timeline = exit_req.get("timeline", [])
+    add_timeline_event(
+        timeline, "exit_type_changed",
+        current_user.get("name", "Admin"),
+        f"Exit type changed to '{data.final_exit_type.title()}'. Comment: {data.comment}"
+    )
+    await db.exit_requests.update_one(
+        {"_id": ObjectId(exit_id)},
+        {
+            "$set": {"final_exit_type": data.final_exit_type, "timeline": timeline, "updated_at": now},
+            "$push": {"exit_type_log": log_entry}
+        }
+    )
+    await db.employees.update_one(
+        {"employee_id": exit_req["employee_id"]},
+        {"$set": {"final_exit_type": data.final_exit_type}}
+    )
+    return {"message": f"Exit type updated to '{data.final_exit_type}'", "final_exit_type": data.final_exit_type}
+
+
+@router.post("/direct-exit")
+async def direct_exit(data: DirectExitRequest, current_user: dict = Depends(get_current_user)):
+    """HR Admin directly marks an employee as absconding or terminated — bypasses resignation workflow."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Only HR Admin or Management can perform a direct exit")
+    if data.final_exit_type not in ("absconding", "terminated"):
+        raise HTTPException(status_code=422, detail="Direct exit type must be: absconding or terminated")
+
+    emp = await db.employees.find_one({"employee_id": data.employee_id})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    if emp.get("status") == "exited":
+        raise HTTPException(status_code=400, detail="Employee has already exited")
+
+    existing = await db.exit_requests.find_one({
+        "employee_id": data.employee_id,
+        "status": {"$nin": ["rejected", "completed"]}
+    })
+    if existing:
+        raise HTTPException(status_code=400, detail="An active exit request already exists for this employee")
+
+    now = datetime.now(timezone.utc).isoformat()
+    lwd = data.last_working_day or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    timeline = []
+    add_timeline_event(timeline, "submitted", current_user.get("name", "Admin"),
+                       f"Direct exit marked by HR. Type: {data.final_exit_type.title()}. Reason: {data.reason}")
+    add_timeline_event(timeline, "fully_approved", "System",
+                       f"Direct exit — no approval chain required. Last working day: {lwd}.")
+
+    doc = {
+        "employee_id": data.employee_id,
+        "employee_name": f"{emp.get('first_name','')} {emp.get('last_name','')}".strip(),
+        "designation": emp.get("designation", ""),
+        "department": emp.get("department", ""),
+        "branch": emp.get("branch", ""),
+        "joining_date": emp.get("joining_date", ""),
+        "resignation_date": now[:10],
+        "reason": data.reason,
+        "resignation_letter": None,
+        "notice_period_days": 0,
+        "status": "completed",
+        "approval_chain": [],
+        "last_working_day": lwd,
+        "final_exit_type": data.final_exit_type,
+        "exit_type_log": [{"final_exit_type": data.final_exit_type, "comment": f"Direct exit. Reason: {data.reason}",
+                           "changed_by": current_user.get("name", "Admin"), "timestamp": now}],
+        "noc_assignments": {},
+        "noc_clearances": {},
+        "final_documents": {"fnf_sheet": None, "relieving_letter": None},
+        "timeline": timeline,
+        "created_at": now,
+        "updated_at": now
+    }
+    result = await db.exit_requests.insert_one(doc)
+    doc["id"] = str(result.inserted_id)
+    doc.pop("_id", None)
+
+    await db.employees.update_one(
+        {"employee_id": data.employee_id},
+        {"$set": {"status": "exited", "last_working_day": lwd, "final_exit_type": data.final_exit_type}}
+    )
+    await db.users.update_one(
+        {"employee_id": data.employee_id},
+        {"$set": {"is_active": False}}
+    )
+    return doc
 
 
 async def auto_exit_employees_past_lwd() -> dict:

@@ -556,16 +556,10 @@ async def today_attendance(current_user: dict = Depends(get_current_user)):
     emp_query = {"status": {"$in": ["active", "probation"]}}
 
     if role == "managers":
-        from services.hierarchy import get_descendant_employee_ids
-        scope_ids = list(await get_descendant_employee_ids(me_id)) if me_id else []
-        if me_id:
-            scope_ids.append(me_id)
-        if scope_ids:
-            base_query["employee_id"] = {"$in": scope_ids}
-            emp_query["employee_id"] = {"$in": scope_ids}
-        else:
-            base_query["employee_id"] = "__none__"
-            emp_query["employee_id"] = "__none__"
+        from services.hierarchy import get_manager_scope_excluding_ho
+        scope_ids = await get_manager_scope_excluding_ho(me_id)
+        base_query["employee_id"] = {"$in": scope_ids}
+        emp_query["employee_id"] = {"$in": scope_ids}
     elif role not in ["hr_admin", "management"]:
         # Employee/field_agent — only own record
         base_query["employee_id"] = me_id
@@ -598,6 +592,23 @@ async def today_attendance(current_user: dict = Depends(get_current_user)):
 
 import base64 as _b64
 from fastapi.responses import Response as _Response
+
+@router.get("/branches")
+async def get_attendance_branches(current_user: dict = Depends(get_current_user)):
+    """Return distinct branches visible to the current user for branch-tab filtering."""
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    role = current_user.get("role")
+    me_id = current_user.get("employee_id")
+    emp_q: dict = {"status": {"$in": ["active", "probation", "notice_period"]}, "branch": {"$exists": True, "$ne": None, "$ne": ""}}
+    if role == "managers":
+        from services.hierarchy import get_manager_scope_excluding_ho
+        scope = await get_manager_scope_excluding_ho(me_id)
+        emp_q["employee_id"] = {"$in": scope}
+    emps = await db.employees.find(emp_q, {"_id": 0, "branch": 1}).to_list(1000)
+    branches = sorted(set(e["branch"] for e in emps if e.get("branch")))
+    return branches
+
 
 @router.get("/employee-photo/{employee_id}")
 async def get_employee_passport_photo(
@@ -735,9 +746,9 @@ async def list_active_field_staff(current_user: dict = Depends(get_current_user)
     me_id = current_user.get("employee_id")
     rec_query = {"date": today, "punch_in_time": {"$exists": True}}
     if role == "managers":
-        from services.hierarchy import get_descendant_employee_ids
-        scope = list(await get_descendant_employee_ids(me_id)) if me_id else []
-        if not scope:
+        from services.hierarchy import get_manager_scope_excluding_ho
+        scope = await get_manager_scope_excluding_ho(me_id)
+        if scope == ["__none__"]:
             return []
         rec_query["employee_id"] = {"$in": scope}
 
@@ -795,12 +806,13 @@ async def list_attendance(
     date_to: str = None,
     status: str = None,
     search: str = None,
+    branch: str = None,
     limit: int = 500,
     current_user: dict = Depends(get_current_user),
 ):
     """List attendance records.
     - hr_admin / management: full access; no scoping
-    - managers (reporting manager): defaults to direct reports + own records
+    - managers (reporting manager): defaults to direct reports + own records (HO staff excluded)
     - employees / field_agent: only own records
     """
     role = current_user.get("role")
@@ -813,9 +825,8 @@ async def list_attendance(
         if role in ["hr_admin", "management"]:
             query["employee_id"] = employee_id
         elif role == "managers":
-            from services.hierarchy import get_descendant_employee_ids
-            allowed = await get_descendant_employee_ids(me_id) if me_id else set()
-            allowed.add(me_id)
+            from services.hierarchy import get_manager_scope_excluding_ho
+            allowed = set(await get_manager_scope_excluding_ho(me_id))
             if employee_id not in allowed:
                 raise HTTPException(status_code=403, detail="Not allowed to view this employee's attendance")
             query["employee_id"] = employee_id
@@ -825,11 +836,9 @@ async def list_attendance(
         if role in ["hr_admin", "management"]:
             pass  # no scope — see everyone
         elif role == "managers":
-            from services.hierarchy import get_descendant_employee_ids
-            scope_ids = list(await get_descendant_employee_ids(me_id)) if me_id else []
-            if me_id:
-                scope_ids.append(me_id)
-            query["employee_id"] = {"$in": scope_ids} if scope_ids else me_id or "__none__"
+            from services.hierarchy import get_manager_scope_excluding_ho
+            scope_ids = await get_manager_scope_excluding_ho(me_id)
+            query["employee_id"] = {"$in": scope_ids}
         else:
             query["employee_id"] = me_id
 
@@ -863,6 +872,20 @@ async def list_attendance(
                 return []
             query["employee_id"] = {"$in": ids}
 
+    # Branch filter — only for admin/management (managers see their own scope)
+    if branch and role in ["hr_admin", "management", "managers"]:
+        existing_emp_filter = query.get("employee_id")
+        branch_q: dict = {"branch": branch}
+        if isinstance(existing_emp_filter, dict) and "$in" in existing_emp_filter:
+            branch_q["employee_id"] = existing_emp_filter
+        elif isinstance(existing_emp_filter, str):
+            branch_q["employee_id"] = existing_emp_filter
+        branch_matches = await db.employees.find(branch_q, {"employee_id": 1, "_id": 0}).to_list(500)
+        branch_ids = [m["employee_id"] for m in branch_matches]
+        if not branch_ids:
+            return []
+        query["employee_id"] = {"$in": branch_ids}
+
     records = await db.attendance_records.find(query).sort("date", -1).limit(max(1, min(limit, 2000))).to_list(2000)
 
     # Enrich with employee name for the team view
@@ -870,7 +893,7 @@ async def list_attendance(
         emp_ids = list({r["employee_id"] for r in records})
         emps = await db.employees.find(
             {"employee_id": {"$in": emp_ids}},
-            {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "designation": 1, "department": 1},
+            {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "designation": 1, "department": 1, "branch": 1},
         ).to_list(2000)
         emap = {e["employee_id"]: e for e in emps}
         out = []
@@ -880,6 +903,7 @@ async def list_attendance(
             d["employee_name"] = f"{e.get('first_name','')} {e.get('last_name','')}".strip() or d.get("employee_id")
             d["designation"] = e.get("designation", "")
             d["department"] = e.get("department", "")
+            d["branch"] = e.get("branch", "")
             out.append(d)
         return out
     return []
@@ -1258,8 +1282,14 @@ async def list_reg_requests(
     current_user: dict = Depends(get_current_user),
 ):
     query: dict = {}
-    if current_user.get("role") in ["employee", "field_agent"]:
-        query["employee_id"] = current_user.get("employee_id")
+    role = current_user.get("role")
+    me_id = current_user.get("employee_id")
+    if role in ["employee", "field_agent"]:
+        query["employee_id"] = me_id
+    elif role == "managers":
+        from services.hierarchy import get_manager_scope_excluding_ho
+        scope = await get_manager_scope_excluding_ho(me_id)
+        query["employee_id"] = {"$in": scope}
     if status:
         query["status"] = status
     docs = await db.attendance_reg_requests.find(query).sort("created_at", -1).to_list(500)

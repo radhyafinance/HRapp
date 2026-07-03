@@ -125,11 +125,8 @@ async def dashboard_stats(current_user: dict = Depends(get_current_user)):
     pending_leave_query = {"status": "pending"}
 
     if role == "managers":
-        from services.hierarchy import get_descendant_employee_ids
-        scope = list(await get_descendant_employee_ids(me_id)) if me_id else []
-        if me_id:
-            scope.append(me_id)
-        scope = scope or ["__none__"]
+        from services.hierarchy import get_manager_scope_excluding_ho
+        scope = await get_manager_scope_excluding_ho(me_id)
         emp_query["employee_id"] = {"$in": scope}
         att_query["employee_id"] = {"$in": scope}
         leave_today_query["employee_id"] = {"$in": scope}
@@ -164,9 +161,20 @@ async def dashboard_stats(current_user: dict = Depends(get_current_user)):
 async def recent_activity(current_user: dict = Depends(get_current_user)):
     activities = []
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    role = current_user.get("role")
+    me_id = current_user.get("employee_id")
 
-    att = await db.attendance_records.find({"date": today}).sort("punch_in_time", -1).to_list(5)
-    leaves = await db.leave_applications.find({}).sort("applied_at", -1).to_list(5)
+    att_q: dict = {"date": today}
+    leave_q: dict = {}
+
+    if role == "managers":
+        from services.hierarchy import get_manager_scope_excluding_ho
+        scope = await get_manager_scope_excluding_ho(me_id)
+        att_q["employee_id"] = {"$in": scope}
+        leave_q["employee_id"] = {"$in": scope}
+
+    att = await db.attendance_records.find(att_q).sort("punch_in_time", -1).to_list(5)
+    leaves = await db.leave_applications.find(leave_q).sort("applied_at", -1).to_list(5)
 
     # Batch-fetch employee names for all IDs referenced
     all_ids = list({a.get("employee_id") for a in att} | {l.get("employee_id") for l in leaves} - {None})
@@ -236,3 +244,93 @@ async def field_agents_live(current_user: dict = Depends(get_current_user)):
                 } if (last_loc or session.get("punch_in_location")) else None,
             })
     return result
+
+
+@router.get("/drilldown/present")
+async def drilldown_present(current_user: dict = Depends(get_current_user)):
+    """Return list of employees who have punched in today."""
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    role = current_user.get("role")
+    me_id = current_user.get("employee_id")
+    q = {"date": today, "punch_in_time": {"$exists": True, "$ne": None}}
+    if role == "managers":
+        from services.hierarchy import get_manager_scope_excluding_ho
+        scope = await get_manager_scope_excluding_ho(me_id)
+        q["employee_id"] = {"$in": scope}
+    records = await db.attendance_records.find(q).to_list(500)
+    emp_ids = [r["employee_id"] for r in records]
+    emps = await db.employees.find({"employee_id": {"$in": emp_ids}},
+        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "designation": 1, "department": 1, "branch": 1}).to_list(500)
+    emap = {e["employee_id"]: e for e in emps}
+    return [{
+        "employee_id": r["employee_id"],
+        "name": f"{emap.get(r['employee_id'], {}).get('first_name','')} {emap.get(r['employee_id'], {}).get('last_name','')}".strip(),
+        "designation": emap.get(r["employee_id"], {}).get("designation", ""),
+        "branch": emap.get(r["employee_id"], {}).get("branch", ""),
+        "punch_in_time": r.get("punch_in_time"),
+        "punch_out_time": r.get("punch_out_time"),
+        "status": r.get("status"),
+    } for r in records]
+
+
+@router.get("/drilldown/absent")
+async def drilldown_absent(current_user: dict = Depends(get_current_user)):
+    """Return list of active employees who have NOT punched in today."""
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    role = current_user.get("role")
+    me_id = current_user.get("employee_id")
+    emp_q = {"status": {"$in": ["active", "probation"]}}
+    if role == "managers":
+        from services.hierarchy import get_manager_scope_excluding_ho
+        scope = await get_manager_scope_excluding_ho(me_id)
+        emp_q["employee_id"] = {"$in": scope}
+    all_emps = await db.employees.find(emp_q, {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "designation": 1, "department": 1, "branch": 1}).to_list(500)
+    # Find who has punched in
+    att_q = {"date": today, "punch_in_time": {"$exists": True, "$ne": None}}
+    if role == "managers":
+        att_q["employee_id"] = emp_q.get("employee_id", {"$exists": True})
+    punched = {r["employee_id"] async for r in db.attendance_records.find(att_q, {"employee_id": 1, "_id": 0})}
+    # Also those on approved leave
+    leave_q = {"status": "approved", "start_date": {"$lte": today}, "end_date": {"$gte": today}}
+    if role == "managers":
+        leave_q["employee_id"] = emp_q.get("employee_id", {"$exists": True})
+    on_leave = {l["employee_id"] async for l in db.leave_applications.find(leave_q, {"employee_id": 1, "_id": 0})}
+    return [{
+        "employee_id": e["employee_id"],
+        "name": f"{e.get('first_name','')} {e.get('last_name','')}".strip(),
+        "designation": e.get("designation", ""),
+        "branch": e.get("branch", ""),
+    } for e in all_emps if e["employee_id"] not in punched and e["employee_id"] not in on_leave]
+
+
+@router.get("/drilldown/on-leave")
+async def drilldown_on_leave(current_user: dict = Depends(get_current_user)):
+    """Return list of employees on approved leave today."""
+    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    role = current_user.get("role")
+    me_id = current_user.get("employee_id")
+    q = {"status": "approved", "start_date": {"$lte": today}, "end_date": {"$gte": today}}
+    if role == "managers":
+        from services.hierarchy import get_manager_scope_excluding_ho
+        scope = await get_manager_scope_excluding_ho(me_id)
+        q["employee_id"] = {"$in": scope}
+    leaves = await db.leave_applications.find(q).to_list(500)
+    emp_ids = list({l["employee_id"] for l in leaves})
+    emps = await db.employees.find({"employee_id": {"$in": emp_ids}},
+        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "designation": 1, "branch": 1}).to_list(500)
+    emap = {e["employee_id"]: e for e in emps}
+    return [{
+        "employee_id": l["employee_id"],
+        "name": f"{emap.get(l['employee_id'],{}).get('first_name','')} {emap.get(l['employee_id'],{}).get('last_name','')}".strip(),
+        "designation": emap.get(l["employee_id"], {}).get("designation", ""),
+        "branch": emap.get(l["employee_id"], {}).get("branch", ""),
+        "leave_type": l.get("leave_type", ""),
+        "start_date": l.get("start_date"),
+        "end_date": l.get("end_date"),
+    } for l in leaves]
