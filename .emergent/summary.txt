@@ -2,25 +2,17 @@
 
 **User's preferred language**: English (INSTRUCT NEXT AGENT: You MUST respond in English only)
 
-**what currently exists?**: A robust PWA HR application with role-based access control. Features include geofenced/selfie attendance, advanced leave management with admin overrides/edits/cancellations, passkey biometric login, EPF UAN validation, hierarchical employee exit management workflow, HR admin leave application proxying, and background schedulers for automated employee exiting past their LWD.
+**what currently exists?**: A robust PWA HR application with role-based access control. Features include geofenced/selfie attendance, advanced leave management, EPF UAN verification, hierarchical exit workflow with specific exit typing (Exit/Absconding/Terminated), branch-wise dashboard drill-downs, and filtered visibility preventing Branch/District managers from seeing Head Office (HO) staff data. Note: Biometric/Passkey login has been completely removed per user request.
 
 **Last working item**:
-    - Last item agent was working: Implementing two new features: (1) Admin ability to apply for leave on behalf of any employee (with auto-approval and bypassing standard leave restrictions), and (2) Auto-exit cron/scheduler that marks employees as 'exited' automatically once their Last Working Day (LWD) has passed.
+    - Last item agent was working: Fixing the missing loading spinner state on the Verify Account (bank verification) button in .
     - Status: USER VERIFICATION PENDING
     - Agent Testing Done: Y
-    - Which testing method agent to use?: NA (testing is already done via  and bash python curl scripts)
+    - Which testing method agent to use?: NA (Already tested via manual frontend validation)
     - User Testing Done: N
 
 **All Pending/In progress Issue list**:
-  Issue 1: Passkey/WebAuthn domain UI improvements (P2)
-     - Attempted fixes: None yet.
-     - Next debug checklist: Update  to filter out passkeys that do not match the current request's / and add a banner to the UI for production users.
-     - Why fix this issue and what will be achieved with the fix?: Prevents user confusion when they see biometric is registered from the preview domain, but the login button fails on the production domain.
-     - Status: BLOCKED (Awaiting user approval to proceed)
-     - Is recurring issue?: N
-     - Should Test frontend/backend/both after fix?: Both
-
-  Issue 2: hr_admin self-regularisation UI (P3)
+  Issue 1: hr_admin self-regularisation UI (P3)
      - Attempted fixes: None.
      - Next debug checklist: Allow hr_admin to request regularisation on themselves directly from the standard UI instead of forcing the Add Record bypass workflow.
      - Why fix this issue: Keeps the audit trail consistent.
@@ -28,7 +20,7 @@
      - Is recurring issue?: N
      - Should Test frontend/backend/both after fix?: Both
 
-  Issue 3: Payroll recalculate button missing (P2)
+  Issue 2: Payroll recalculate button missing (P2)
      - Attempted fixes: None.
      - Next debug checklist: Add a Recalculate LOP/Payroll button for draft payroll records.
      - Why fix this issue: Ease of use for HR when systemic changes are made.
@@ -36,7 +28,7 @@
      - Is recurring issue: N
      - Should test frontend/backend/both after fix?: Both
 
-  Issue 4: Payroll Employee Search Bar (P3)
+  Issue 3: Payroll Employee Search Bar (P3)
      - Attempted fixes: None.
      - Next debug checklist: Implement a quick search-by-employee filter on the Payroll list UI.
      - Why fix this issue: Scrolling through 70+ records is tedious.
@@ -44,21 +36,30 @@
      - Is recurring issue: N
      - Should test frontend/backend/both after fix?: Frontend
 
+*(Note: The previous issue regarding WebAuthn/Passkey domain improvements was dropped as the feature was completely removed).*
+
 **In progress Task List**: 
   None
 
 **Upcoming and Future Tasks**
     - Task 1: Letter Generation PDFs (P0) - Implement actual PDF generation and download for Offer Letters, Appointment Letters, Warning Letters, and Confirmation Letters.
-    - Task 2: Punch In with Face Feature (P1) - Combine WebAuthn biometric login + immediate attendance punch-in into a single 1-tap flow for field staff.
-    - Task 3: Leave Encashment Calculation (P2) - Logic to compute and disburse EL/PL encashment during payroll or exit.
-    - Task 4: Employee Self-Portal for Document Upload (P2) - Allow existing employees to login and upload their own documents.
-    - Task 5: Training records module (P2)
-    - Task 6: Asset management integration (P2)
-    - Task 7: Document Completeness Scope Refinement (P3) - Scope  to manager's sub-tree instead of whole company.
+    - Task 2: Leave Encashment Calculation (P2) - Logic to compute and disburse EL/PL encashment during payroll or exit.
+    - Task 3: Employee Self-Portal for Document Upload (P2) - Allow existing employees to login and upload their own documents.
+    - Task 4: Training records module (P2)
+    - Task 5: Asset management integration (P2)
+    - Task 6: Document Completeness Scope Refinement (P3) - Scope  to manager's sub-tree instead of whole company.
+
+*(Note: Punch In with Face task combining WebAuthn biometric login was removed due to the total removal of biometric login logic).*
 
 **Completed work in this session**
-- Admin Apply Leave for Employee: UI dropdown and backend logic to allow Admin/Management to apply for leaves on behalf of employees. Auto-approves the request and bypasses strict client-side duration policy blocks. (DONE)
-- Auto-exit after LWD: Added an asynchronous background task  inside  that periodically calls a new function in  () to mark employees as exited once their LWD has passed. (DONE)
+- Exit status classification (Exit/Absconding/Terminated) with historical logging and change comments. (DONE)
+- Excluded Head Office (HO) staff attendance, leaves, and regularisations from being visible to BM/DMs. (DONE)
+- Dashboard tiles made clickable linking to dedicated tabs, paired with a new drilldown modal. (DONE)
+- Added branch-wise attendance filtering tabs for Admins/Managers in the team records. (DONE)
+- Attendance tables now display the punch-out time alongside punch-in. (DONE)
+- Completely removed WebAuthn/Biometric login functionality and setup UI. (DONE)
+- Restricted Docs completion ring column in the Employees tab to be visible only to  and . (DONE)
+- Fixed missing loading spinner on Bank Account Verification button. (DONE)
 
 **Earlier issues found/mentioned but not fixed**
   None
@@ -73,45 +74,55 @@
 
 **Key Technical Concepts**
 Frontend: React, Tailwind, Axios.
-Backend: FastAPI, MongoDB, Pydantic, Background Schedulers via  inside FastAPI app lifespan/startup.
+Backend: FastAPI, MongoDB, Pydantic, Background asyncio schedulers.
 
 **key DB schema**
-  - : Tracks leave arrays.
-  - : Tracks daily punch cards.
-  - : Tracks resignation workflows and hierarchical .
-  - : Holds  which flips to  upon LWD.
+  - : Now includes  and historical action arrays.
+  - : Holds  which handles exited/absconding/terminated, and holds reporting structures.
+  - : Contains punch logs and session arrays.
 
 **changes in tech stack**
-  - Added new background scheduling loop inside  for automated employee status updates ().
+  - WebAuthn has been completely purged from the codebase.
 
 **All files of reference**
-  -  (Updated to auto-approve if applied by admin)
-  -  (Updated Apply Leave modal to include an employee selector for Admin and disabled client-side restrictions like CL > 2 days)
-  -  (Added  function)
-  -  (Added  to the startup tasks)
-  -  (Updated)
+  -  (Added exit type change endpoints and Direct Exit capability)
+  -  (Added branch fetch logic and HO staff filtering)
+  -  (Added drilldown endpoint)
+  -  (Added Drilldown Modal, linked StatCards)
+  -  (Added Direct Exit and Change Type Modals)
+  -  (Added Branch tabs and punch-out UI)
+  -  (Removed Biometric flow)
+  -  (Docs column visibility scoping)
+  -  (Added  for Bank Verify spinner)
   -  (Updated)
 
 **Areas that need refactoring**: 
--  is over 1500 lines long and handles multiple complex modals (Apply, Edit, Cancel, Details). It should ideally be broken down into sub-components.
+-  (>1500 lines) and  (>1300 lines) are very large and should ideally be modularised into smaller components/services.
 
 **key api endpoints**
   - 
-  - Internal backend func:  triggered by scheduler.
-
-**Critical Info for New Agent**
-  - **Two Environments Config**: The app exists in PREVIEW (dev) and PRODUCTION (deployed). User occasionally asks questions based on the live production DB. Always remember code changes only reflect in PREVIEW until the user pushes a new deployment.
-  - **Background Tasks**: There are now two distinct asyncio background loops running in : face photo purging and auto-exiting employees. Ensure you don't inadvertently block the main thread.
-
-**documents and test reports created in this job**
-  -  (Updated)
-  -  (Updated)
+  - 
   - 
 
+**Critical Info for New Agent**
+  - **Two Environments Config**: Code changes only reflect in the PREVIEW environment until pushed to PRODUCTION.
+  - **Biometric Removal**: WebAuthn biometric login was systematically removed entirely per the user's explicit request. Do not attempt to re-introduce or fix biometric tickets from old PRD drafts.
+  -  utility in backend natively handles hierarchical manager scoping, and a custom HO-exclusion filter was bolted on top for BM/DMs.
+
+**documents and test reports created in this job**
+  - 
+  - 
+  -  (Used to verify the 7 primary feature requests)
+
 **Last 10 User Messages and any pending HUMAN messages** 
- 1. *User*: Please use ask_human tool and confirm your plan now.
- 2. *Agent*: Sends plan for confirmation.
- 3. *User*: Leaves: Admin should also be able to apply leave for any employee. Employee exit: After last working day, employee should be marked as exited.
+ 1. *User*: Provides 7 new requirements (Exit classification, HO filtering, Clickable dashboard tiles, Branch attendance, Punch out time visibility, full removal of Biometric).
+ 2. *Agent*: Asks clarifying questions using .
+ 3. *User*: Clarifies scope for BM visibility, branch views, and confirms full removal of biometric login.
+ 4. *Agent*: Implements the 7 requirements and runs  to verify changes.
+ 5. *User*: Requested that the Docs column under the Employees tab be restricted only to admin and management roles.
+ 6. *Agent*: Fixed and updated visibility logic.
+ 7. *User*: Reported a bug where the Verify Account button doesn't show a loading/spinner state when clicked.
+ 8. *Agent*: Identified missing  state, applied the fix, and finished.
  *(No pending human messages).*
 
 **Project Health Check:**
@@ -122,16 +133,16 @@ Healthy. No Mocked endpoints.
 	 •	Google Gemini 2.5 Flash (Aadhaar & PAN OCR) — uses Emergent LLM Key.
 	 •	Resend (Email OTP and Notifications) — requires User API Key.
 	 •	Transistorsoft Background Geolocation — Direct API hook.
-	 •	WebAuthn (Device Biometrics) — Direct API logic.
+    *(WebAuthn has been removed).*
 
 **Testing status**
-  - Testing agent used after significant changes: YES ( was used).
+  - Testing agent used after significant changes: YES ()
   - Troubleshoot agent used after agent stuck in loop: NO
   - Test files created: None
-  - Known regressions: None (Bug caught by testing agent regarding client-side leave policies blocking admin was immediately fixed and verified).
+  - Known regressions: None
 
 **Credentials to test flow:**
   - HR Admin:  /  
 
 **What agent forgot to execute**
-- The agent successfully executed and rigorously tested both requests. Nothing was missed.</analysis>
+- The agent properly executed all requirements, including the two supplementary bug fixes at the end of the conversation. Nothing was overlooked.</analysis>
