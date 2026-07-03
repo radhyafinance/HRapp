@@ -16,7 +16,7 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 - `employee`: HO staff - Self-service
 - `field_agent`: FO/Field - Mobile attendance
 
-## What's Implemented (Updated Jun 2026)
+## What's Implemented (Updated Jul 2026)
 ### ✅ Phase 1 Complete
 1. **Authentication** - JWT login, role-based access, user management
 2. **Employee Management** - CRUD, bulk CSV upload, salary components
@@ -25,8 +25,17 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 5. **Leave Management** - CL/SL/EL/Maternity/Paternity, balance tracking, approval workflow
 6. **Payroll** - EPF 12%, ESIC 0.75%/3.25%, Gratuity provision, NEFT Excel export
 7. **Performance Management** - Half-yearly reviews, self/manager assessment, CTC increase
-8. **Exit Management** — Full workflow: Resignation submission (text+file upload), sequential approval chain (Manager→Senior Manager→Admin), NOC clearances with 5 sections (Branch Manager/Accounts/IT/Audit/HR), auto-assigned NOC owners by designation, F&F settlement upload, auto-disable login after LWD, full timeline
+8. **Exit Management** — Full workflow with exit type classification, Direct Exit, change-exit-type log
 9. **Letter Generation** - Appointment, Offer, Promotion, Warning, Experience, Relieving, Increment
+
+### ✅ Phase 6 (Jul 2026) — Visibility, Dashboard & Exit Type Enhancements
+- **Exit Final Status (Exit/Absconding/Terminated)**: Admin must choose exit type during final approval. Status can be changed later with comment and full change log. Absconding/Terminated can bypass resignation workflow via "Direct Exit" button.
+- **HO Attendance Visibility (role=employee excluded from managers)**: Managers (BMs/DMs) cannot see HO staff attendance, leaves, regularisation requests, or dashboard stats. `get_manager_scope_excluding_ho()` added to hierarchy.py.
+- **Dashboard Tiles Clickable**: Total Employees→/employees, Present/Absent/OnLeave→drilldown modal (with live employee list), Pending Leaves→/leaves, Exit Requests→/exit.
+- **Branch-wise Attendance**: Branch filter tabs on team attendance page (admin/management/managers). `GET /api/attendance/branches` endpoint returns branches visible to current user.
+- **Punch Out Time Display**: Now shown in Today's Summary list items and Roster cards (was missing).
+- **Biometric Login Removed**: Fingerprint login button and WebAuthn setup card fully removed from UI.
+- **Files**: `/app/backend/routes/exit_routes.py`, `/app/backend/routes/attendance.py`, `/app/backend/routes/leaves.py`, `/app/backend/routes/dashboard.py`, `/app/backend/services/hierarchy.py`, `/app/frontend/src/pages/Login.js`, `/app/frontend/src/pages/Dashboard.js`, `/app/frontend/src/pages/ExitManagement.js`, `/app/frontend/src/pages/Attendance.js`
 
 ### ✅ Phase 5 (Jun 2026) — Regularisation + Comp-Off Improvements
 - **Regularisation + Leave Integration**: When HR marks attendance as `leave` during regularisation (Add Record / Edit Record), a "Leave Type" dropdown appears (CL/SL/EL/Marriage/Comp-Off/etc.) and 1 day is **automatically deducted** from the selected leave balance. Works for both PATCH and POST regularisation endpoints. Stores `leave_type` on the attendance record. For Comp-Off, deducts from manual balance first, then oldest approved grant.

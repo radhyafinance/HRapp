@@ -681,7 +681,11 @@ async def change_exit_type(exit_id: str, data: UpdateExitTypeRequest, current_us
         raise HTTPException(status_code=403, detail="Only HR Admin or Management can change exit type")
     if data.final_exit_type not in ("exit", "absconding", "terminated"):
         raise HTTPException(status_code=422, detail="final_exit_type must be: exit, absconding, or terminated")
-    exit_req = await db.exit_requests.find_one({"_id": ObjectId(exit_id)})
+    try:
+        oid = ObjectId(exit_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid exit ID format")
+    exit_req = await db.exit_requests.find_one({"_id": oid})
     if not exit_req:
         raise HTTPException(status_code=404, detail="Exit request not found")
     if exit_req.get("status") not in ("noc_in_progress", "noc_complete", "completed"):
@@ -701,7 +705,7 @@ async def change_exit_type(exit_id: str, data: UpdateExitTypeRequest, current_us
         f"Exit type changed to '{data.final_exit_type.title()}'. Comment: {data.comment}"
     )
     await db.exit_requests.update_one(
-        {"_id": ObjectId(exit_id)},
+        {"_id": oid},
         {
             "$set": {"final_exit_type": data.final_exit_type, "timeline": timeline, "updated_at": now},
             "$push": {"exit_type_log": log_entry}
