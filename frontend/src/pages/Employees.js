@@ -222,7 +222,7 @@ export default function Employees() {
           </colgroup>
           <thead>
             <tr className="bg-slate-50 border-b border-slate-200">
-              {["Employee", "Role / Dept", "Branch / Manager", "Verifications", "Status", "Docs", ""].map((h, i) => (
+              {["Employee", "Role / Dept", "Branch / Manager", "Verifications", "Status", ...(["hr_admin","management"].includes(user?.role) ? ["Docs"] : []), ""].map((h, i) => (
                 <th key={i} className="px-3 py-2.5 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
               ))}
             </tr>
@@ -279,12 +279,14 @@ export default function Employees() {
                     {STATUS_LABELS[emp.status] || emp.status}
                   </span>
                 </td>
-                {/* Docs ring */}
+                {/* Docs ring — admin/management only */}
+                {["hr_admin","management"].includes(user?.role) && (
                 <td className="px-3 py-2">
                   <button onClick={() => setShowView({ ...emp, _initialTab: "docs" })} className="cursor-pointer" title="View documents" data-testid={`docs-ring-${emp.employee_id}`}>
                     <DocCompletenessRing uploaded={completeness[emp.employee_id]?.uploaded || 0} total={completeness[emp.employee_id]?.total || 23} />
                   </button>
                 </td>
+                )}
                 {/* Actions */}
                 <td className="px-3 py-2">
                   <button onClick={() => setShowView(emp)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-500" data-testid={`view-emp-${emp.employee_id}`}><Eye size={15} /></button>
