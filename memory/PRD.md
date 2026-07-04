@@ -464,6 +464,13 @@ Full-ISO timestamps (`queued_at`, `verified_at`, audit `created_at`) intentional
 - **Files**: `/app/frontend/src/utils/api.js`
 
 
+## Bug Fix — Comp-Off Leave Not Auto-Deducted (Jul 2026)
+- **Root Cause**: `BALANCE_TRACKED = ["CL", "SL", "EL", "Marriage"]` in both `approve_leave()` and `apply_leave()` (auto-approve path). "Comp-Off" was never in this list, so the `$inc` deduction block was silently skipped on every Comp-Off approval.
+- **Fix**: Added a dedicated Comp-Off deduction block in both paths that: (1) checks manual `Comp-Off` balance in `leave_balances` first (deducts `used`/`remaining`), (2) falls back to marking the oldest approved `comp_off_grants` record as `"used"`.
+- **Files**: `/app/backend/routes/leaves.py` — `approve_leave()` and `apply_leave()`
+- **Tested**: 29/29 backend tests pass (both grant-based and manual-balance deduction paths; CL/SL regression confirmed)
+
+
 ## Payslip Visibility Rule Change + Unpublished Banner (Jul 2026)
 - **Change**: Employees now see payslips **only when status = `paid`** (previously `processed` was also sufficient). Draft and processed records are hidden from employees until HR explicitly marks them as paid.
 - **"Mark All Paid" button** (was "Publish Payslips") — now promotes both `draft` AND `processed` records to `paid` for the selected month in one click.
