@@ -464,6 +464,12 @@ Full-ISO timestamps (`queued_at`, `verified_at`, audit `created_at`) intentional
 - **Files**: `/app/frontend/src/utils/api.js`
 
 
+## Payslip Visibility Rule Change + Unpublished Banner (Jul 2026)
+- **Change**: Employees now see payslips **only when status = `paid`** (previously `processed` was also sufficient). Draft and processed records are hidden from employees until HR explicitly marks them as paid.
+- **"Mark All Paid" button** (was "Publish Payslips") — now promotes both `draft` AND `processed` records to `paid` for the selected month in one click.
+- **Unpublished payslips banner** — amber warning banner appears at the top of the Payroll page for HR/management whenever past-period payroll records exist that are NOT marked as paid. Each flagged period shows a "Release [Month]" quick-action button.
+- **Files**: `/app/backend/routes/payroll.py` (`_is_payslip_visible_to_employee`, `/publish` endpoint), `/app/frontend/src/pages/Payroll.js` (banner, button label)
+
 ## Bug Fix — Payslip Visibility + Publish Payslips (Jul 2026)
 - **Root Cause**: Payroll records are created as `draft`. The gating rule `_is_payslip_visible_to_employee()` hides `draft` records from employees — only `processed` or `paid` records are shown. Previously HR had to open every single payslip modal and click "Save" to promote it to `processed`, one by one.
 - **Also Fixed**: Period filter dropdown was hardcoded up to `2026-05` — months from June 2026 onward weren't selectable.

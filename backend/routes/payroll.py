@@ -31,13 +31,14 @@ def _is_non_working_saturday(d: date, sat_rule: Optional[str]) -> bool:
 def _is_payslip_visible_to_employee(record: dict) -> bool:
     """Gating rule for non-admin payslip visibility:
 
-    1. Status must be `processed` or `paid` (drafts are hidden).
+    1. Status must be `paid` — draft and processed records are hidden until HR
+       explicitly publishes (marks as paid) the payroll for the period.
     2. The period's month must have ENDED — i.e., today must be on or after
        the 1st of the month after the payroll period.
 
     HR Admin / Management bypass this and see everything.
     """
-    if record.get("status") not in ("processed", "paid"):
+    if record.get("status") != "paid":
         return False
     period = record.get("period", "") or ""
     try:
@@ -352,7 +353,7 @@ async def list_payroll(
     elif employee_id:
         query["employee_id"] = employee_id
     records = await db.payroll_records.find(query).sort([("period", -1), ("employee_id", 1)]).to_list(500)
-    # Gate visibility for non-admin roles: only processed/paid AND past month-end
+    # Gate visibility for non-admin roles: only paid AND past month-end
     if role not in ["hr_admin", "management"]:
         records = [r for r in records if _is_payslip_visible_to_employee(r)]
     return [pay_to_dict(r) for r in records]
@@ -430,8 +431,8 @@ async def finalize_payroll(record_id: str, current_user: dict = Depends(get_curr
 
 @router.post("/publish")
 async def publish_payslips(period: str, current_user: dict = Depends(get_current_user)):
-    """Bulk-promote all draft payroll records for a period to 'processed',
-    making them visible to employees. HR Admin / Management only."""
+    """Bulk-mark all unpaid (draft/processed) payroll records for a period as 'paid',
+    making them immediately visible to employees. HR Admin / Management only."""
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
     try:
@@ -440,8 +441,8 @@ async def publish_payslips(period: str, current_user: dict = Depends(get_current
     except (ValueError, AttributeError):
         raise HTTPException(status_code=400, detail="Period must be in YYYY-MM format")
     res = await db.payroll_records.update_many(
-        {"period": period, "status": "draft"},
-        {"$set": {"status": "processed", "published_at": datetime.now(timezone.utc).isoformat(),
+        {"period": period, "status": {"$in": ["draft", "processed"]}},
+        {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc).isoformat(),
                   "published_by": current_user.get("employee_id") or current_user.get("username")}},
     )
     return {"period": period, "published": res.modified_count}

@@ -111,14 +111,14 @@ export default function Payroll() {
 
   const publishPayslips = async () => {
     const p = `${selectedYear}-${String(selectedMonth).padStart(2, "0")}`;
-    if (!window.confirm(`Publish all draft payslips for ${months[selectedMonth-1]} ${selectedYear}?\n\nThis will make them visible to employees immediately.`)) return;
+    if (!window.confirm(`Mark all unpaid payslips as Paid for ${months[selectedMonth-1]} ${selectedYear}?\n\nEmployees will be able to view their payslips immediately.`)) return;
     setPublishing(true);
     try {
       const res = await API.post(`/payroll/publish?period=${p}`);
       if (res.data.published === 0) {
-        alert(`No draft payslips found for ${months[selectedMonth-1]} ${selectedYear}. All records may already be published.`);
+        alert(`All payslips for ${months[selectedMonth-1]} ${selectedYear} are already marked as Paid.`);
       } else {
-        alert(`Published ${res.data.published} payslip(s) for ${months[selectedMonth-1]} ${selectedYear}. Employees can now view their payslips.`);
+        alert(`${res.data.published} payslip(s) for ${months[selectedMonth-1]} ${selectedYear} marked as Paid. Employees can now view them.`);
         fetchRecords();
       }
     } catch (e) {
@@ -252,9 +252,9 @@ export default function Payroll() {
               <Play size={14} /> {processing ? "Processing..." : "Process Payroll"}
             </button>
             <button onClick={publishPayslips} disabled={publishing} data-testid="publish-payslips-btn"
-              title="Bulk-publish all draft payslips for this month — makes them visible to employees"
+              title="Mark all unpaid payslips as Paid for this month — makes them visible to employees"
               className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-semibold hover:bg-indigo-700 disabled:opacity-60 transition-colors">
-              <Send size={14} /> {publishing ? "Publishing..." : "Publish Payslips"}
+              <Send size={14} /> {publishing ? "Publishing..." : "Mark All Paid"}
             </button>
             <button onClick={downloadNEFT} data-testid="download-neft-btn"
               className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 transition-colors">
@@ -287,6 +287,58 @@ export default function Payroll() {
         </select>
       </div>
       )}
+
+      {/* Unpublished payslips banner — shown to HR admin/management only */}
+      {isManager && (() => {
+        // Find all past periods (ended months) that have any non-paid records
+        const now = new Date();
+        const unpaidByPeriod = {};
+        records.forEach(r => {
+          if (r.status === "paid") return;
+          const [y, m] = (r.period || "").split("-").map(Number);
+          if (!y || !m) return;
+          // Only flag periods whose month has already ended
+          const periodEnd = new Date(y, m, 1); // 1st of next month
+          if (now >= periodEnd) {
+            unpaidByPeriod[r.period] = (unpaidByPeriod[r.period] || 0) + 1;
+          }
+        });
+        const unpaidPeriods = Object.entries(unpaidByPeriod).sort((a, b) => b[0].localeCompare(a[0]));
+        if (unpaidPeriods.length === 0) return null;
+        return (
+          <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3" data-testid="unpublished-payslips-banner">
+            <div className="flex items-start gap-2 flex-1">
+              <span className="mt-0.5 text-amber-500"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></span>
+              <div>
+                <p className="text-sm font-semibold text-amber-800">Payslips not yet released to employees</p>
+                <p className="text-xs text-amber-700 mt-0.5">
+                  {unpaidPeriods.map(([p, cnt]) => `${p}: ${cnt} unpaid`).join(" · ")}
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {unpaidPeriods.map(([p]) => {
+                const [y, m] = p.split("-").map(Number);
+                return (
+                  <button key={p} onClick={async () => {
+                    if (!window.confirm(`Mark all payslips for ${months[m-1]} ${y} as Paid?\nEmployees will be able to view their payslips immediately.`)) return;
+                    setPublishing(true);
+                    try {
+                      const res = await API.post(`/payroll/publish?period=${p}`);
+                      alert(`${res.data.published} payslip(s) for ${months[m-1]} ${y} are now visible to employees.`);
+                      fetchRecords();
+                    } catch (e) { alert(e.response?.data?.detail || "Publish failed"); }
+                    finally { setPublishing(false); }
+                  }} disabled={publishing}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-lg disabled:opacity-60 transition-colors whitespace-nowrap">
+                    <Send size={11} /> Release {months[m-1]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Summary card — visible whenever the user has filtered to a single period */}
       {isManager && filterPeriod && records.length > 0 && (() => {
