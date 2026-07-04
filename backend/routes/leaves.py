@@ -369,6 +369,29 @@ async def apply_leave(data: LeaveApplyRequest, current_user: dict = Depends(get_
                     f"{data.leave_type}.remaining": -days,
                 }},
             )
+        elif data.leave_type == "Comp-Off":
+            # Deduct from manual balance first, then oldest approved grant
+            fy = get_financial_year()
+            bal = await db.leave_balances.find_one(
+                {"employee_id": emp_id, "year": fy}, {"_id": 0, "Comp-Off": 1}
+            ) or {}
+            stored_co = bal.get("Comp-Off")
+            if stored_co and isinstance(stored_co, dict) and stored_co.get("remaining", 0) > 0:
+                await db.leave_balances.update_one(
+                    {"employee_id": emp_id, "year": fy},
+                    {"$inc": {"Comp-Off.used": days, "Comp-Off.remaining": -days}},
+                )
+            else:
+                for _ in range(int(days)):
+                    grant = await db.comp_off_grants.find_one(
+                        {"employee_id": emp_id, "status": "approved"},
+                        sort=[("earn_date", 1)],
+                    )
+                    if grant:
+                        await db.comp_off_grants.update_one(
+                            {"_id": grant["_id"]},
+                            {"$set": {"status": "used", "used_at": datetime.now(timezone.utc).isoformat()}},
+                        )
     else:
         await _notify_leave_applied({**doc, "_id": result.inserted_id}, employee)
     return doc
@@ -822,6 +845,33 @@ async def approve_leave(leave_id: str, data: LeaveApproveRequest, current_user: 
                 f"{deduct_type}.remaining": -leave["days"],
             }},
         )
+
+    # Comp-Off deduction — deduct from manual balance first, then oldest approved grant
+    if new_status == "approved" and deduct_type == "Comp-Off":
+        fy = get_financial_year()
+        bal = await db.leave_balances.find_one(
+            {"employee_id": leave["employee_id"], "year": fy}, {"_id": 0, "Comp-Off": 1}
+        ) or {}
+        stored_co = bal.get("Comp-Off")
+        if stored_co and isinstance(stored_co, dict) and stored_co.get("remaining", 0) > 0:
+            # Deduct from manually managed balance
+            await db.leave_balances.update_one(
+                {"employee_id": leave["employee_id"], "year": fy},
+                {"$inc": {"Comp-Off.used": leave["days"], "Comp-Off.remaining": -leave["days"]}},
+            )
+        else:
+            # Deduct from oldest approved comp-off grant(s)
+            days_to_deduct = int(leave.get("days", 1))
+            for _ in range(days_to_deduct):
+                grant = await db.comp_off_grants.find_one(
+                    {"employee_id": leave["employee_id"], "status": "approved"},
+                    sort=[("earn_date", 1)],
+                )
+                if grant:
+                    await db.comp_off_grants.update_one(
+                        {"_id": grant["_id"]},
+                        {"$set": {"status": "used", "used_at": datetime.now(timezone.utc).isoformat()}},
+                    )
 
     # Sync attendance for half-day leaves
     if new_status == "approved":

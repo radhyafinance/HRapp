@@ -1,0 +1,70 @@
+{
+  "summary": "Iteration 20 — Full backend verification of Comp-Off leave deduction bug fix. Tested both deduction paths in approve_leave() and apply_leave() with grant-based and manual balance scenarios, plus CL/SL regression checks. All 29 tests passed.",
+
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+
+  "test_results": {
+    "A_approve_leave_grant_path": "PASS (6/6) — created test comp_off_grant for RMF0010, inserted pending Comp-Off leave, admin approved via PUT /api/leaves/{id}/approve, grant confirmed status='used' + used_at set, balances/all shows remaining=0",
+    "B_approve_leave_manual_balance_path": "PASS (4/4) — set manual Comp-Off balance (3 remaining) for RMF0016, inserted pending Comp-Off leave, admin approved, Comp-Off.remaining decremented to 2, Comp-Off.used incremented to 1",
+    "C_apply_leave_autoapprove_grant_path": "PASS (5/5) — created test grant for RMF0012, HR applied Comp-Off on behalf (auto-approve triggered), grant confirmed 'used' immediately with used_at set",
+    "D_apply_leave_autoapprove_manual_balance": "PASS (4/4) — set manual Comp-Off balance (4 total, 1 used, 3 remaining) for RMF0005, HR applied on behalf, Comp-Off.remaining decremented to 2, used incremented to 2",
+    "E_cl_leave_regression": "PASS (4/4) — CL leave approval still correctly deducts CL balance after Comp-Off fix; approval_type='cl' (not hardcoded 'sl')",
+    "F_sl_leave_regression": "PASS (4/4) — SL leave approval still correctly deducts SL balance after Comp-Off fix; approval_type='sl'",
+    "H_compoff_approve_no_grants_no_crash": "PASS (2/2) — approving Comp-Off leave when employee has no grants and no manual balance returns 200 without error; for loop is a no-op"
+  },
+
+  "test_report_links": [
+    "/app/backend/tests/test_iter20_compoff_leave_deduction.py",
+    "/app/test_reports/pytest/pytest_iter20.xml"
+  ],
+
+  "action_items": [],
+
+  "critical_code_review_comments": [
+    "Bug fix is correct and complete: both approve_leave() (lines 849-874) and apply_leave() (lines 372-394) now properly handle Comp-Off deduction.",
+    "Deduction priority is correct: manual balance (leave_balances.Comp-Off) checked first, falls back to oldest approved comp_off_grants grant.",
+    "Edge case handled: if employee has no approved grants AND no manual balance, the for loop is a no-op and returns 200 (no crash).",
+    "approve_leave() returns approval_type='comp_off' in response — consistent with other leave types.",
+    "GET /api/leaves/balances/all correctly shows 0 remaining after the only approved grant is marked 'used' (grant-count fallback path works)."
+  ],
+
+  "updated_files": [
+    "/app/backend/tests/test_iter20_compoff_leave_deduction.py"
+  ],
+
+  "success_rate": {
+    "backend": "100% (29/29 passed)",
+    "frontend": "N/A (backend-only testing requested)"
+  },
+
+  "test_credentials": {
+    "admin": "admin / Admin@12345",
+    "note": "All tests used admin account only. Employee accounts not needed for backend testing."
+  },
+
+  "seed_data_creation": "Inserted 2 temporary comp_off_grants (for RMF0010 and RMF0012) during test setup; both deleted by cleanup fixture. Set manual Comp-Off balances for RMF0016 and RMF0005 during tests; cleaned up (unset) by fixture. All test leave applications cleaned up.",
+
+  "retest_needed": false,
+
+  "main_agent_can_self_test": false,
+
+  "context_for_next_testing_agent": "Comp-Off leave deduction bug fix fully verified (iteration 20). Both code paths in approve_leave() and apply_leave() are working. Key confirmed behaviors: (1) grant-based deduction: oldest approved comp_off_grant marked 'used' with used_at set; (2) manual balance path: leave_balances.Comp-Off.remaining decremented, .used incremented; (3) deduction priority: manual balance > grants; (4) no crash when no grants/balance available; (5) CL and SL regression confirmed working. DB state is clean after tests. Only the pre-existing RMF0009 approved grant (id: 69fc6cf27746668d4e9276f9) remains.",
+
+  "rca_of_issues": {
+    "compoff_not_deducted_on_approval": {
+      "location": "approve_leave() in /app/backend/routes/leaves.py, line 828",
+      "root_cause": "BALANCE_TRACKED = ['CL', 'SL', 'EL', 'Marriage'] — 'Comp-Off' was missing. The code only ran $inc for leave types in this list. Comp-Off approval silently succeeded without any balance deduction.",
+      "fix_applied": "Added a separate `if new_status == 'approved' and deduct_type == 'Comp-Off':` block after the BALANCE_TRACKED check in both approve_leave() and apply_leave(). Deducts from manual leave_balances.Comp-Off first, falls back to marking oldest approved comp_off_grants record as 'used'.",
+      "test_verification": "All 6 deduction tests pass: grant path (A, C), manual balance path (B, D), regression CL (E), regression SL (F), no-grant idempotency (H)."
+    }
+  }
+}
