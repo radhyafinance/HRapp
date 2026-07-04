@@ -428,6 +428,25 @@ async def finalize_payroll(record_id: str, current_user: dict = Depends(get_curr
     return {"message": "Payroll marked as paid"}
 
 
+@router.post("/publish")
+async def publish_payslips(period: str, current_user: dict = Depends(get_current_user)):
+    """Bulk-promote all draft payroll records for a period to 'processed',
+    making them visible to employees. HR Admin / Management only."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    try:
+        y, m = period.split("-")
+        int(y); int(m)
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=400, detail="Period must be in YYYY-MM format")
+    res = await db.payroll_records.update_many(
+        {"period": period, "status": "draft"},
+        {"$set": {"status": "processed", "published_at": datetime.now(timezone.utc).isoformat(),
+                  "published_by": current_user.get("employee_id") or current_user.get("username")}},
+    )
+    return {"period": period, "published": res.modified_count}
+
+
 @router.get("/export/neft")
 async def export_neft(period: str, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management"]:

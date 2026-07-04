@@ -1,7 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useMemo } from "react";
 import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
-import { Play, Download, Eye, X, FileText, Save, CheckCircle2, Trash2 } from "lucide-react";
+import { Play, Download, Eye, X, FileText, Save, CheckCircle2, Trash2, Send } from "lucide-react";
 
 function Modal({ title, onClose, children }) {
   return (
@@ -43,7 +43,23 @@ export default function Payroll() {
   const [editRemarks, setEditRemarks] = useState("");
   const [savingEdits, setSavingEdits] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
+  const [publishing, setPublishing] = useState(false);
   const isManager = ["hr_admin", "management"].includes(user?.role);
+
+  // Build dynamic period list: 2025-01 up to current month
+  const periodOptions = useMemo(() => {
+    const opts = [];
+    const now = new Date();
+    const endYear = now.getFullYear();
+    const endMonth = now.getMonth() + 1;
+    for (let y = 2025; y <= endYear; y++) {
+      const maxM = y === endYear ? endMonth : 12;
+      for (let m = 1; m <= maxM; m++) {
+        opts.push(`${y}-${String(m).padStart(2, "0")}`);
+      }
+    }
+    return opts.reverse(); // most recent first
+  }, []);
 
   // When opening the payslip modal, prime edit fields with stored values
   const openSlip = (r) => {
@@ -90,6 +106,23 @@ export default function Payroll() {
       alert(e.response?.data?.detail || "Failed to mark as paid");
     } finally {
       setFinalizing(false);
+    }
+  };
+
+  const publishPayslips = async () => {
+    const p = `${selectedYear}-${String(selectedMonth).padStart(2, "0")}`;
+    const draftCount = records.filter(r => r.period === p && r.status === "draft").length;
+    if (draftCount === 0) { alert("No draft payslips to publish for this period."); return; }
+    if (!window.confirm(`Publish ${draftCount} draft payslip(s) for ${months[selectedMonth-1]} ${selectedYear}?\n\nThis will make them visible to employees immediately.`)) return;
+    setPublishing(true);
+    try {
+      const res = await API.post(`/payroll/publish?period=${p}`);
+      alert(`Published ${res.data.published} payslip(s). Employees can now view their payslips.`);
+      fetchRecords();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Publish failed");
+    } finally {
+      setPublishing(false);
     }
   };
 
@@ -210,11 +243,16 @@ export default function Payroll() {
             </select>
             <select value={selectedYear} onChange={e => setSelectedYear(+e.target.value)}
               className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-[#E85B1E] outline-none">
-              {[2023, 2024, 2025, 2026].map(y => <option key={y} value={y}>{y}</option>)}
+              {[2023, 2024, 2025, 2026, 2027].map(y => <option key={y} value={y}>{y}</option>)}
             </select>
             <button onClick={handleProcess} disabled={processing} data-testid="process-payroll-btn"
               className="flex items-center gap-2 px-4 py-2 bg-[#1E2A47] text-white rounded-lg text-sm font-semibold hover:bg-[#2A3A5E] disabled:opacity-60 transition-colors">
               <Play size={14} /> {processing ? "Processing..." : "Process Payroll"}
+            </button>
+            <button onClick={publishPayslips} disabled={publishing} data-testid="publish-payslips-btn"
+              title="Bulk-publish all draft payslips for this month — makes them visible to employees"
+              className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-semibold hover:bg-indigo-700 disabled:opacity-60 transition-colors">
+              <Send size={14} /> {publishing ? "Publishing..." : "Publish Payslips"}
             </button>
             <button onClick={downloadNEFT} data-testid="download-neft-btn"
               className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 transition-colors">
@@ -241,7 +279,7 @@ export default function Payroll() {
         <select value={filterPeriod} onChange={e => setFilterPeriod(e.target.value)}
           className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="payroll-period-filter">
           <option value="">All Periods</option>
-          {["2025-01","2025-02","2025-03","2025-04","2025-05","2025-06","2025-07","2025-08","2025-09","2025-10","2025-11","2025-12","2026-01","2026-02","2026-03","2026-04","2026-05"].map(p => (
+          {periodOptions.map(p => (
             <option key={p} value={p}>{p}</option>
           ))}
         </select>
