@@ -111,14 +111,16 @@ export default function Payroll() {
 
   const publishPayslips = async () => {
     const p = `${selectedYear}-${String(selectedMonth).padStart(2, "0")}`;
-    const draftCount = records.filter(r => r.period === p && r.status === "draft").length;
-    if (draftCount === 0) { alert("No draft payslips to publish for this period."); return; }
-    if (!window.confirm(`Publish ${draftCount} draft payslip(s) for ${months[selectedMonth-1]} ${selectedYear}?\n\nThis will make them visible to employees immediately.`)) return;
+    if (!window.confirm(`Publish all draft payslips for ${months[selectedMonth-1]} ${selectedYear}?\n\nThis will make them visible to employees immediately.`)) return;
     setPublishing(true);
     try {
       const res = await API.post(`/payroll/publish?period=${p}`);
-      alert(`Published ${res.data.published} payslip(s). Employees can now view their payslips.`);
-      fetchRecords();
+      if (res.data.published === 0) {
+        alert(`No draft payslips found for ${months[selectedMonth-1]} ${selectedYear}. All records may already be published.`);
+      } else {
+        alert(`Published ${res.data.published} payslip(s) for ${months[selectedMonth-1]} ${selectedYear}. Employees can now view their payslips.`);
+        fetchRecords();
+      }
     } catch (e) {
       alert(e.response?.data?.detail || "Publish failed");
     } finally {

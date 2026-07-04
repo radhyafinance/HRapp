@@ -462,3 +462,13 @@ Full-ISO timestamps (`queued_at`, `verified_at`, audit `created_at`) intentional
 - **Root Cause**: All file upload calls (Leaves, Employees, ExitManagement, CandidateApply) were manually setting `Content-Type: multipart/form-data` without the required `boundary` parameter. Production proxies (nginx) are stricter and reject boundary-less multipart requests.
 - **Fix**: Added FormData detection in axios interceptor (`/app/frontend/src/utils/api.js`). When request body is FormData, Content-Type is deleted so the browser sets it automatically with the correct boundary. Removed all manual `Content-Type: multipart/form-data` overrides from: `Leaves.js`, `Employees.js` (×2), `ExitManagement.js` (×2), `CandidateApply.js`.
 - **Files**: `/app/frontend/src/utils/api.js`
+
+
+## Bug Fix — Payslip Visibility + Publish Payslips (Jul 2026)
+- **Root Cause**: Payroll records are created as `draft`. The gating rule `_is_payslip_visible_to_employee()` hides `draft` records from employees — only `processed` or `paid` records are shown. Previously HR had to open every single payslip modal and click "Save" to promote it to `processed`, one by one.
+- **Also Fixed**: Period filter dropdown was hardcoded up to `2026-05` — months from June 2026 onward weren't selectable.
+- **Fixes**:
+  1. **New backend endpoint** `POST /api/payroll/publish?period=YYYY-MM` — bulk-promotes ALL `draft` records for the period to `processed` in one shot.
+  2. **"Publish Payslips" button** added to the Payroll toolbar (indigo). HR selects the month → clicks Publish → all draft payslips become visible to employees immediately.
+  3. **Period dropdown now dynamic** — built from 2025-01 up to the current month via `useMemo`; no hardcoded end.
+- **Files**: `/app/backend/routes/payroll.py`, `/app/frontend/src/pages/Payroll.js`
