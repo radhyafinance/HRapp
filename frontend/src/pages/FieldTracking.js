@@ -33,6 +33,14 @@ export default function FieldTracking() {
   const [date, setDate] = useState(toLocalDateStr());
   const [devFilter, setDevFilter] = useState("");
 
+  // Distance report + odometer management
+  const [distDate, setDistDate] = useState(toLocalDateStr());
+  const [distData, setDistData] = useState(null);
+  const [distLoading, setDistLoading] = useState(false);
+  const [odoList, setOdoList] = useState([]);
+  const [odoSearch, setOdoSearch] = useState("");
+  const [odoLoading, setOdoLoading] = useState(false);
+
   // History mode
   const [histEmpSearch, setHistEmpSearch] = useState("");
   const [histDate, setHistDate] = useState(toLocalDateStr());
@@ -68,6 +76,39 @@ export default function FieldTracking() {
     } catch (e) { console.error(e); }
   };
 
+  const fetchDistance = async (d) => {
+    setDistLoading(true);
+    try { const res = await API.get("/tracker/distance", { params: { date_str: d } }); setDistData(res.data); }
+    catch (e) { console.error(e); } finally { setDistLoading(false); }
+  };
+
+  const fetchOdoList = async () => {
+    setOdoLoading(true);
+    try { const res = await API.get("/tracker/odometer/employees"); setOdoList(res.data); }
+    catch (e) { console.error(e); } finally { setOdoLoading(false); }
+  };
+
+  const toggleOdo = async (id) => {
+    try {
+      const res = await API.post(`/tracker/odometer/toggle/${id}`);
+      setOdoList(list => list.map(x => x.employee_id === id
+        ? { ...x, odometer_required: res.data.odometer_required } : x));
+    } catch (e) { console.error(e); }
+  };
+
+  const exportDistance = async () => {
+    const to = distDate;
+    const from = new Date(new Date(distDate).getTime() - 29 * 86400000).toISOString().slice(0, 10);
+    try {
+      const res = await API.get("/tracker/distance/export",
+        { params: { from_date: from, to_date: to }, responseType: "blob" });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement("a");
+      a.href = url; a.download = `distance_${from}_to_${to}.xlsx`; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) { console.error(e); }
+  };
+
   const fetchTrack = async (empId, d) => {
     setTrackLoading(true);
     try {
@@ -90,7 +131,13 @@ export default function FieldTracking() {
     if (tab === "live") fetchActive();
     else if (tab === "devices") fetchDevices();
     else if (tab === "history" && histEmployees.length === 0) fetchEmployees();
+    else if (tab === "distance") fetchDistance(distDate);
+    else if (tab === "odometer") fetchOdoList();
   }, [isManager, tab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (isManager && tab === "distance") fetchDistance(distDate);
+  }, [distDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Auto-refresh every 30s on live / devices tab when not drilled in
   useEffect(() => {
@@ -156,6 +203,8 @@ export default function FieldTracking() {
           {[
             ["live", `Active Today (${activeStaff.length})`],
             ["devices", `Tracker Devices (${devices.length})`],
+            ["distance", "Distance"],
+            ["odometer", "Odometer"],
             ["history", "History"],
           ].map(([val, label]) => (
             <button key={val} onClick={() => setTab(val)} data-testid={`ft-tab-${val}`}
@@ -163,6 +212,115 @@ export default function FieldTracking() {
               {label}
             </button>
           ))}
+        </div>
+      )}
+
+      {/* TAB: Distance travelled */}
+      {!selected && !histSelected && tab === "distance" && (
+        <div className="space-y-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex flex-wrap gap-3 items-center">
+            <input type="date" value={distDate} onChange={e => setDistDate(e.target.value)}
+              className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
+              data-testid="distance-date" />
+            {distData && (
+              <span className="text-sm text-slate-600">
+                Team total (GPS): <strong className="text-[#1E2A47]">{distData.total_gps_km} km</strong>
+              </span>
+            )}
+            <button onClick={exportDistance} data-testid="distance-export"
+              className="ml-auto flex items-center gap-1.5 px-3 py-2 bg-[#12855a] text-white rounded-lg text-xs font-semibold hover:bg-[#0f6f4c]">
+              Export 30 days (Excel)
+            </button>
+          </div>
+          <p className="text-xs text-slate-400 -mt-2 px-1">GPS distance is a filtered straight-line estimate from 3-min pings. Odometer km (for tracked staff) is the reimbursement figure.</p>
+          <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead><tr className="bg-slate-50 border-b">
+                  {["Employee", "GPS km (est.)", "Odometer km", "Odometer status"].map(h =>
+                    <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>)}
+                </tr></thead>
+                <tbody>
+                  {distLoading ? <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                  : !distData || distData.rows.length === 0 ? <tr><td colSpan={4} className="px-4 py-12 text-center text-slate-400">No distance data for this date.</td></tr>
+                  : distData.rows.map(r => {
+                    const st = r.odo_status === "complete" ? ["Complete", "bg-green-100 text-green-700"]
+                      : r.odo_status === "missing" ? ["Missing", "bg-red-100 text-red-700"]
+                      : ["—", "bg-slate-100 text-slate-400"];
+                    return (
+                      <tr key={r.employee_id} className="border-b border-slate-100 hover:bg-slate-50">
+                        <td className="px-4 py-3">
+                          <p className="text-sm font-medium text-[#0F172A]">{r.name}</p>
+                          <p className="text-xs text-[#E85B1E] font-mono">{r.employee_id}</p>
+                        </td>
+                        <td className="px-4 py-3 text-sm font-semibold text-[#1E2A47]">{r.gps_km} km</td>
+                        <td className="px-4 py-3 text-sm text-slate-700">
+                          {r.odo_km != null ? <strong>{r.odo_km} km</strong>
+                            : r.odometer_required ? <span className="text-slate-400">—</span>
+                            : <span className="text-slate-300">not tracked</span>}
+                          {r.odo_start_km != null && r.odo_end_km != null &&
+                            <span className="block text-[11px] text-slate-400">{r.odo_start_km} → {r.odo_end_km}</span>}
+                        </td>
+                        <td className="px-4 py-3">
+                          {r.odometer_required
+                            ? <span className={`px-2 py-1 rounded-full text-xs font-medium ${st[1]}`}>{st[0]}</span>
+                            : <span className="text-xs text-slate-300">—</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB: Odometer tracking management */}
+      {!selected && !histSelected && tab === "odometer" && (
+        <div className="space-y-4">
+          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input value={odoSearch} onChange={e => setOdoSearch(e.target.value)}
+                placeholder="Search employees to enable odometer tracking..."
+                className="w-full border border-slate-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
+                data-testid="odo-search" />
+            </div>
+            <p className="text-xs text-slate-400 mt-2">Enabled staff must photograph their odometer at start &amp; end of day. Missing readings are flagged here and to the employee.</p>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead><tr className="bg-slate-50 border-b">
+                  {["Employee", "Designation", "Odometer tracking"].map(h =>
+                    <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>)}
+                </tr></thead>
+                <tbody>
+                  {odoLoading ? <tr><td colSpan={3} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                  : odoList.filter(e => {
+                      if (!odoSearch) return true;
+                      const q = odoSearch.toLowerCase();
+                      return e.employee_id.toLowerCase().includes(q) || (e.name || "").toLowerCase().includes(q);
+                    }).map(e => (
+                    <tr key={e.employee_id} className="border-b border-slate-100 hover:bg-slate-50">
+                      <td className="px-4 py-3">
+                        <p className="text-sm font-medium text-[#0F172A]">{e.name}</p>
+                        <p className="text-xs text-[#E85B1E] font-mono">{e.employee_id}</p>
+                      </td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{e.designation || "-"}</td>
+                      <td className="px-4 py-3">
+                        <button onClick={() => toggleOdo(e.employee_id)} data-testid={`odo-toggle-${e.employee_id}`}
+                          className={`relative w-11 h-6 rounded-full transition-colors ${e.odometer_required ? "bg-[#12855a]" : "bg-slate-300"}`}>
+                          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${e.odometer_required ? "translate-x-5" : ""}`} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
 
@@ -244,7 +402,7 @@ export default function FieldTracking() {
                 </tr></thead>
                 <tbody>
                   {loading ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
-                  : filteredDevices.length === 0 ? <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-400">No tracker devices configured yet. Open an employee → Tracker tab to set one up.</td></tr>
+                  : filteredDevices.length === 0 ? <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-400">No tracker devices yet. A device is created automatically when a field employee logs into the Radhya HR app and punches in.</td></tr>
                   : filteredDevices.map(d => {
                     const style = FRESHNESS_STYLES[d.freshness] || FRESHNESS_STYLES.never;
                     return (
@@ -342,7 +500,7 @@ export default function FieldTracking() {
 
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
             <AlertCircle size={13} className="inline mr-1" />
-            View any employee's route on any past date — works with both PWA pings and Traccar Client pings. No attendance record required.
+            View any employee's route on any past date from their app GPS pings. No attendance record required.
           </div>
         </div>
       )}

@@ -148,6 +148,22 @@ async def _daily_auto_exit_loop():
             await asyncio.sleep(24 * 3600)
 
 
+async def _odometer_reminder_loop():
+    """Hourly nudge for employees who owe an odometer photo; escalates to HR
+    after 19:00 IST. The reminder function itself gates on work hours."""
+    from routes.tracker import run_odometer_reminders
+    while True:
+        try:
+            await asyncio.sleep(3600)  # hourly
+            await run_odometer_reminders()
+        except asyncio.CancelledError:
+            logger.info("Odometer reminder scheduler stopped")
+            raise
+        except Exception as e:
+            logger.error(f"Odometer reminder scheduler failed: {e}")
+            await asyncio.sleep(3600)
+
+
 @app.on_event("startup")
 async def startup():
     db = db_instance
@@ -211,6 +227,14 @@ async def startup():
 
     # Start the daily 02:00 IST scheduler for ongoing photo cleanup
     app.state.face_photo_purge_task = asyncio.create_task(_daily_face_photo_purge_loop())
+
+    # Hourly odometer-reminder scheduler
+    try:
+        await db.odometer_readings.create_index([("employee_id", 1), ("date", 1), ("kind", 1)], unique=True)
+        await db.location_logs.create_index([("employee_id", 1), ("date", 1)])
+    except Exception:
+        pass
+    app.state.odometer_reminder_task = asyncio.create_task(_odometer_reminder_loop())
 
     # Auto-exit: mark employees whose LWD has already passed on startup
     try:
@@ -294,7 +318,7 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    for task_name in ("face_photo_purge_task", "auto_exit_task"):
+    for task_name in ("face_photo_purge_task", "auto_exit_task", "odometer_reminder_task"):
         task = getattr(app.state, task_name, None)
         if task and not task.done():
             task.cancel()

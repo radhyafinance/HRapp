@@ -1,40 +1,46 @@
-"""Traccar Client (OsmAnd protocol) endpoint.
+"""Location ingestion endpoint (OsmAnd protocol).
 
-Field staff install the free Traccar Client app (Play Store / App Store) which
-provides reliable background GPS tracking even when the phone is locked —
-something a PWA fundamentally cannot do.
+The Radhya HR Android app's built-in background GPS tracker posts location
+fixes here every few minutes while an employee is punched in — even when the
+phone is locked or the app is closed. It uses the simple OsmAnd query format so
+the endpoint stays generic (any OsmAnd-compatible client works too).
 
-Each employee is issued a unique device identifier of the form
+Each employee has a unique device identifier of the form
 `<employee_id>:<secret>` (e.g. `RMF0001:a4f2...`). The app pings:
 
   GET /api/tracker/osmand?id=<identifier>&lat=..&lon=..&timestamp=..&accuracy=..
 
-The endpoint is intentionally public (no JWT) because Traccar Client cannot
-send bearer tokens. Authentication is via the secret embedded in the identifier.
-Pings with unknown/invalid identifiers are silently ignored (still 200 OK so
-scanners get no signal).
+The endpoint is intentionally public (no JWT) because these background pings
+can't carry bearer tokens. Authentication is via the secret embedded in the
+identifier. Pings with unknown/invalid identifiers are silently ignored (still
+200 OK so scanners get no signal).
 """
 from fastapi import APIRouter, HTTPException, Depends, Request, Response
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from typing import Optional
 from database import db
 from auth_utils import get_current_user
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import secrets
+import math
+import io
 
 router = APIRouter()
 
 
 # ──────────────────────────────────────────────────────────────
-#  Public endpoint — accepts Traccar Client pings
+#  Public endpoint — accepts background location pings
 # ──────────────────────────────────────────────────────────────
 
 @router.api_route("/osmand", methods=["GET", "POST"])
-async def traccar_ping(request: Request):
-    """OsmAnd-protocol ping from Traccar Client / TS Background Geolocation.
-    Accepts:
-      - GET with query string (Traccar Client default on older Android)
-      - POST with query string body (Traccar Client default)
+async def ingest_ping(request: Request):
+    """OsmAnd-protocol location ping from the app's background tracker.
+    Accepts (for compatibility with any OsmAnd-style client):
+      - GET with query string
+      - POST with query string body
       - POST with form-encoded body
-      - POST with JSON body (Transistorsoft Background Geolocation)
+      - POST with JSON body (nested location objects)
     Identifier param is accepted as `id` OR `device_id` OR `deviceid`.
     GPS coords accepted as `lat`/`lon` OR inside a nested `location.coords.latitude`.
     Returns 200 on success or silent-drop.
@@ -51,13 +57,13 @@ async def traccar_ping(request: Request):
         except Exception:
             pass
 
-        # Try JSON body (Transistorsoft sends JSON by default)
+        # Try JSON body (some OsmAnd-style clients send JSON)
         try:
             body = await request.json()
             if isinstance(body, dict):
                 _flatten_json(body, qp)
             elif isinstance(body, list) and body:
-                # TS sends an array of location objects — process each, use first for identifier
+                # some clients send an array of location objects — process each
                 for item in body:
                     if isinstance(item, dict):
                         local = dict(qp)
@@ -73,7 +79,7 @@ async def traccar_ping(request: Request):
 
 def _flatten_json(obj: dict, out: dict, prefix: str = ""):
     """Flatten nested JSON into flat lowercase keys.
-    Also maps common Transistorsoft field names to our expected names.
+    Also maps common nested GPS field names to our flat keys.
     """
     for k, v in obj.items():
         key = (prefix + k).lower()
@@ -84,7 +90,7 @@ def _flatten_json(obj: dict, out: dict, prefix: str = ""):
         else:
             out.setdefault(key, v)
 
-    # Map TS-specific nested paths to our expected flat keys
+    # Map nested coord paths to our expected flat keys
     mappings = {
         "coords.latitude": "lat",
         "coords.longitude": "lon",
@@ -102,7 +108,7 @@ def _flatten_json(obj: dict, out: dict, prefix: str = ""):
     for src, dst in mappings.items():
         if src in out and dst not in out:
             val = out[src]
-            # TS sends battery.level as 0.0-1.0 → convert to percentage
+            # some clients send battery.level as 0.0-1.0 → convert to percentage
             if src == "battery.level" and isinstance(val, (int, float)) and 0 <= val <= 1:
                 val = round(val * 100, 1)
             out[dst] = val
@@ -179,7 +185,7 @@ async def _process_ping(qp: dict, request: Request):
         "bearing": _safe_float(qp.get("bearing")),
         "battery": _safe_float(qp.get("batt")),
         "timestamp": ts.isoformat(),
-        "source": "traccar",
+        "source": "app",
     }
     await db.location_logs.insert_one(log)
 
@@ -214,7 +220,7 @@ def _new_secret() -> str:
 
 @router.get("/devices")
 async def list_devices(current_user: dict = Depends(get_current_user)):
-    """List all configured Traccar devices with freshness status.
+    """List all configured tracker devices with freshness status.
     Works independent of attendance so admins can diagnose silent devices."""
     if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -286,7 +292,7 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
 
 @router.get("/config/{employee_id}")
 async def get_tracker_config(employee_id: str, current_user: dict = Depends(get_current_user)):
-    """Return the Traccar Client setup details for an employee.
+    """Return the tracking setup details (identifier) for an employee.
     Creates a tracker config lazily on first fetch."""
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -422,3 +428,407 @@ async def toggle_active(employee_id: str, current_user: dict = Depends(get_curre
         {"$set": {"active": new_state}},
     )
     return {"employee_id": employee_id, "active": new_state}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Distance travelled + odometer (reimbursement)
+# ══════════════════════════════════════════════════════════════════
+
+# GPS straight-line distance thresholds (jitter filtering)
+_MIN_MOVE_M = 30        # sub-30 m hops = GPS jitter while stationary → ignore
+_MAX_ACCURACY_M = 100   # drop fixes worse than 100 m
+_MAX_SPEED_MS = 42.0    # ~150 km/h; faster-implied segments are bad fixes
+
+
+def _today() -> str:
+    # Matches the date basis used by /my-config and the ping log (UTC).
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _haversine_m(lat1, lon1, lat2, lon2):
+    R = 6371000.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlmb = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    return 2 * R * math.asin(math.sqrt(a))
+
+
+def _ts_seconds(ts):
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+async def _gps_distance_km(employee_id: str, date_str: str) -> float:
+    """Filtered straight-line distance (km) from the day's location pings."""
+    cur = db.location_logs.find(
+        {"employee_id": employee_id, "date": date_str},
+        {"_id": 0, "latitude": 1, "longitude": 1, "accuracy": 1, "timestamp": 1},
+    ).sort("timestamp", 1)
+    total = 0.0
+    prev = None  # (lat, lon, secs)
+    async for d in cur:
+        lat, lon = d.get("latitude"), d.get("longitude")
+        if lat is None or lon is None:
+            continue
+        acc = d.get("accuracy")
+        if acc is not None and acc > _MAX_ACCURACY_M:
+            continue
+        secs = _ts_seconds(d.get("timestamp"))
+        if prev is not None:
+            seg = _haversine_m(prev[0], prev[1], lat, lon)
+            if seg < _MIN_MOVE_M:
+                continue  # stationary jitter — keep the previous anchor
+            if secs is not None and prev[2] is not None:
+                dt = secs - prev[2]
+                if dt > 0 and (seg / dt) > _MAX_SPEED_MS:
+                    continue  # implausible jump — skip this fix, keep the anchor
+            total += seg
+        prev = (lat, lon, secs)
+    return round(total / 1000.0, 2)
+
+
+async def _att_punch_state(employee_id: str, date_str: str):
+    """(punched_in_today, punched_out_today) from the attendance record."""
+    att = await db.attendance_records.find_one({"employee_id": employee_id, "date": date_str})
+    if not att:
+        return (False, False)
+    sessions = att.get("sessions") or []
+    if not sessions and att.get("punch_in_time"):
+        return (True, bool(att.get("punch_out_time")))
+    has_in = any(s.get("punch_in_time") for s in sessions)
+    has_out = any(s.get("punch_out_time") for s in sessions)
+    return (has_in, has_out)
+
+
+async def _odo_reading(employee_id: str, date_str: str, kind: str):
+    return await db.odometer_readings.find_one(
+        {"employee_id": employee_id, "date": date_str, "kind": kind}, {"_id": 0, "photo": 0})
+
+
+async def _odo_day(employee_id: str, date_str: str):
+    """Return (start_doc, end_doc, distance_km_or_None)."""
+    start = await _odo_reading(employee_id, date_str, "start")
+    end = await _odo_reading(employee_id, date_str, "end")
+    dist = None
+    if start and end and start.get("reading_km") is not None and end.get("reading_km") is not None:
+        d = end["reading_km"] - start["reading_km"]
+        dist = round(d, 1) if d >= 0 else None
+    return start, end, dist
+
+
+async def _scope_ids(current_user: dict):
+    """None => sees everyone; else the list of employee_ids a manager may see."""
+    role = current_user.get("role")
+    if role in ("hr_admin", "management"):
+        return None
+    if role == "managers":
+        from services.hierarchy import get_descendant_employee_ids
+        me = current_user.get("employee_id")
+        return list(await get_descendant_employee_ids(me)) if me else []
+    raise HTTPException(status_code=403, detail="Access denied")
+
+
+# ── Feature A: GPS distance report ────────────────────────────────
+
+@router.get("/distance")
+async def distance_report(date_str: str = None, current_user: dict = Depends(get_current_user)):
+    """Per-employee distance for one day: GPS estimate + odometer (if tracked)."""
+    scope = await _scope_ids(current_user)
+    date_str = date_str or _today()
+
+    ping_q = {"date": date_str}
+    if scope is not None:
+        ping_q["employee_id"] = {"$in": scope}
+    gps_ids = await db.location_logs.distinct("employee_id", ping_q)
+
+    odo_q = {"odometer_required": True}
+    if scope is not None:
+        odo_q["employee_id"] = {"$in": scope}
+    odo_ids = await db.employees.distinct("employee_id", odo_q)
+
+    emp_ids = sorted(set(gps_ids) | set(odo_ids))
+    if not emp_ids:
+        return {"date": date_str, "total_gps_km": 0, "rows": []}
+
+    emps = await db.employees.find(
+        {"employee_id": {"$in": emp_ids}},
+        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "designation": 1, "odometer_required": 1},
+    ).to_list(4000)
+    emap = {e["employee_id"]: e for e in emps}
+
+    rows, total = [], 0.0
+    for eid in emp_ids:
+        gps = await _gps_distance_km(eid, date_str)
+        total += gps
+        e = emap.get(eid, {})
+        required = bool(e.get("odometer_required"))
+        start, end, odo = await _odo_day(eid, date_str)
+        has_in, _ = await _att_punch_state(eid, date_str)
+        if not required:
+            status = "n/a"
+        elif start and end:
+            status = "complete"
+        elif not has_in:
+            status = "not_on_duty"
+        else:
+            status = "missing"
+        rows.append({
+            "employee_id": eid,
+            "name": f"{e.get('first_name','')} {e.get('last_name','')}".strip() or eid,
+            "designation": e.get("designation", ""),
+            "gps_km": gps,
+            "odometer_required": required,
+            "odo_start_km": start.get("reading_km") if start else None,
+            "odo_end_km": end.get("reading_km") if end else None,
+            "odo_km": odo,
+            "odo_status": status,
+        })
+    rows.sort(key=lambda r: r["gps_km"], reverse=True)
+    return {"date": date_str, "total_gps_km": round(total, 2), "rows": rows}
+
+
+@router.get("/distance/export")
+async def distance_export(from_date: str, to_date: str, current_user: dict = Depends(get_current_user)):
+    """Excel export of daily GPS + odometer distance over a date range."""
+    scope = await _scope_ids(current_user)
+    try:
+        d0 = datetime.strptime(from_date, "%Y-%m-%d").date()
+        d1 = datetime.strptime(to_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Dates must be YYYY-MM-DD")
+    if d1 < d0:
+        d0, d1 = d1, d0
+    if (d1 - d0).days > 92:
+        raise HTTPException(status_code=400, detail="Range too large (max 92 days)")
+
+    dates = [(d0 + timedelta(days=i)).strftime("%Y-%m-%d") for i in range((d1 - d0).days + 1)]
+
+    # Which employees to include: anyone with pings in range, or odometer-required.
+    ping_q = {"date": {"$in": dates}}
+    if scope is not None:
+        ping_q["employee_id"] = {"$in": scope}
+    gps_ids = await db.location_logs.distinct("employee_id", ping_q)
+    odo_q = {"odometer_required": True}
+    if scope is not None:
+        odo_q["employee_id"] = {"$in": scope}
+    odo_ids = await db.employees.distinct("employee_id", odo_q)
+    emp_ids = sorted(set(gps_ids) | set(odo_ids))
+
+    emps = await db.employees.find(
+        {"employee_id": {"$in": emp_ids}},
+        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "odometer_required": 1},
+    ).to_list(4000)
+    emap = {e["employee_id"]: e for e in emps}
+
+    from openpyxl import Workbook
+    wb = Workbook()
+    daily = wb.active
+    daily.title = "Daily"
+    daily.append(["Employee ID", "Name", "Date", "GPS km (est.)", "Odometer km", "Odometer status"])
+    summary_rows = {}  # eid -> [gps_total, odo_total]
+    for eid in emp_ids:
+        e = emap.get(eid, {})
+        name = f"{e.get('first_name','')} {e.get('last_name','')}".strip() or eid
+        required = bool(e.get("odometer_required"))
+        summary_rows[eid] = [0.0, 0.0, name]
+        for ds in dates:
+            gps = await _gps_distance_km(eid, ds)
+            start, end, odo = await _odo_day(eid, ds)
+            has_in, _ = await _att_punch_state(eid, ds)
+            if not required:
+                status = ""
+            elif start and end:
+                status = "complete"
+            elif not has_in:
+                status = ""
+            else:
+                status = "MISSING"
+            if gps == 0 and odo is None and not has_in:
+                continue  # skip empty non-working days
+            daily.append([eid, name, ds, gps, odo if odo is not None else "", status])
+            summary_rows[eid][0] += gps
+            summary_rows[eid][1] += (odo or 0.0)
+
+    summ = wb.create_sheet("Summary")
+    summ.append(["Employee ID", "Name", "Total GPS km", "Total Odometer km"])
+    for eid in emp_ids:
+        g, o, name = summary_rows[eid]
+        summ.append([eid, name, round(g, 2), round(o, 1)])
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    fname = f"distance_{from_date}_to_{to_date}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+    )
+
+
+# ── Feature B: odometer capture + reminders ───────────────────────
+
+class OdometerReadingIn(BaseModel):
+    kind: str                      # "start" | "end"
+    reading_km: float
+    ocr_text: Optional[str] = None
+    photo: Optional[str] = None    # base64 (audit proof)
+
+
+@router.post("/odometer/reading")
+async def submit_odometer_reading(body: OdometerReadingIn, current_user: dict = Depends(get_current_user)):
+    """Field employee submits a confirmed odometer reading (start/end of day)."""
+    emp_id = current_user.get("employee_id")
+    if not emp_id:
+        raise HTTPException(status_code=400, detail="No employee linked to this account")
+    if body.kind not in ("start", "end"):
+        raise HTTPException(status_code=400, detail="kind must be 'start' or 'end'")
+    date_str = _today()
+    await db.odometer_readings.update_one(
+        {"employee_id": emp_id, "date": date_str, "kind": body.kind},
+        {"$set": {
+            "employee_id": emp_id,
+            "date": date_str,
+            "kind": body.kind,
+            "reading_km": float(body.reading_km),
+            "ocr_text": body.ocr_text,
+            "photo": body.photo,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    _, _, dist = await _odo_day(emp_id, date_str)
+    return {"ok": True, "distance_km": dist}
+
+
+@router.get("/odometer/my-status")
+async def my_odometer_status(current_user: dict = Depends(get_current_user)):
+    """Tells the app whether the employee owes a start/end odometer photo today."""
+    emp_id = current_user.get("employee_id")
+    if not emp_id:
+        return {"required": False}
+    emp = await db.employees.find_one({"employee_id": emp_id}, {"_id": 0, "odometer_required": 1})
+    if not (emp and emp.get("odometer_required")):
+        return {"required": False}
+    date_str = _today()
+    has_in, has_out = await _att_punch_state(emp_id, date_str)
+    start, end, dist = await _odo_day(emp_id, date_str)
+    return {
+        "required": True,
+        "date": date_str,
+        "punched_in": has_in,
+        "punched_out": has_out,
+        "start_done": bool(start),
+        "end_done": bool(end),
+        "start_km": start.get("reading_km") if start else None,
+        "end_km": end.get("reading_km") if end else None,
+        "distance_km": dist,
+    }
+
+
+@router.get("/odometer/employees")
+async def odometer_employees(current_user: dict = Depends(get_current_user)):
+    """Admin list of employees with their odometer-tracking flag (for Settings)."""
+    if current_user.get("role") not in ("hr_admin", "management"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    emps = await db.employees.find(
+        {"status": {"$ne": "exited"}},
+        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "designation": 1, "odometer_required": 1},
+    ).sort("employee_id", 1).to_list(4000)
+    return [{
+        "employee_id": e["employee_id"],
+        "name": f"{e.get('first_name','')} {e.get('last_name','')}".strip() or e["employee_id"],
+        "designation": e.get("designation", ""),
+        "odometer_required": bool(e.get("odometer_required")),
+    } for e in emps]
+
+
+@router.post("/odometer/toggle/{employee_id}")
+async def toggle_odometer(employee_id: str, current_user: dict = Depends(get_current_user)):
+    if current_user.get("role") not in ("hr_admin", "management"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    emp = await db.employees.find_one({"employee_id": employee_id}, {"_id": 0, "odometer_required": 1})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    new_state = not bool(emp.get("odometer_required"))
+    await db.employees.update_one({"employee_id": employee_id}, {"$set": {"odometer_required": new_state}})
+    return {"employee_id": employee_id, "odometer_required": new_state}
+
+
+@router.get("/odometer/day/{employee_id}")
+async def odometer_day(employee_id: str, date_str: str = None, current_user: dict = Depends(get_current_user)):
+    """Full odometer detail incl. photos for a day (manager audit view)."""
+    if current_user.get("role") not in ("hr_admin", "management", "managers"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    date_str = date_str or _today()
+    start = await db.odometer_readings.find_one(
+        {"employee_id": employee_id, "date": date_str, "kind": "start"}, {"_id": 0})
+    end = await db.odometer_readings.find_one(
+        {"employee_id": employee_id, "date": date_str, "kind": "end"}, {"_id": 0})
+    dist = None
+    if start and end and start.get("reading_km") is not None and end.get("reading_km") is not None:
+        d = end["reading_km"] - start["reading_km"]
+        dist = round(d, 1) if d >= 0 else None
+    return {"employee_id": employee_id, "date": date_str, "start": start, "end": end, "distance_km": dist}
+
+
+async def _notify_hr_admins(emp_id: str, date_str: str, has_start: bool, has_end: bool):
+    from routes.notifications import create_notification
+    emp = await db.employees.find_one({"employee_id": emp_id}, {"_id": 0, "first_name": 1, "last_name": 1})
+    name = (f"{emp.get('first_name','')} {emp.get('last_name','')}".strip() if emp else emp_id) or emp_id
+    missing = "start & end" if (not has_start and not has_end) else ("start" if not has_start else "end")
+    admins = await db.employees.find(
+        {"role": {"$in": ["hr_admin", "management"]}, "status": {"$ne": "exited"}},
+        {"_id": 0, "employee_id": 1},
+    ).to_list(200)
+    for a in admins:
+        await create_notification(
+            a["employee_id"], "Odometer missing",
+            f"{name} ({emp_id}) has not submitted odometer ({missing}) for {date_str}.",
+            type="warning", link="/field-tracking",
+        )
+
+
+async def run_odometer_reminders():
+    """Hourly during work hours: remind employees, escalate to HR after 19:00 IST.
+    Invoked by the scheduler loop in server.py."""
+    from routes.notifications import create_notification
+    now_ist = datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+    if now_ist.hour < 8 or now_ist.hour >= 22:
+        return
+    date_str = _today()
+    escalate = now_ist.hour >= 19
+    emps = await db.employees.find(
+        {"odometer_required": True, "status": {"$ne": "exited"}},
+        {"_id": 0, "employee_id": 1},
+    ).to_list(4000)
+    for e in emps:
+        eid = e["employee_id"]
+        has_in, has_out = await _att_punch_state(eid, date_str)
+        if not has_in:
+            continue  # not on duty today — nothing owed
+        start = await _odo_reading(eid, date_str, "start")
+        end = await _odo_reading(eid, date_str, "end")
+        if not start:
+            await create_notification(
+                eid, "Odometer photo needed",
+                "Please capture your START-of-day odometer photo in the Radhya HR app.",
+                type="warning", link="/dashboard")
+        if has_out and not end:
+            await create_notification(
+                eid, "Odometer photo needed",
+                "Please capture your END-of-day odometer photo in the Radhya HR app.",
+                type="warning", link="/dashboard")
+        if escalate and (not start or (has_out and not end)):
+            flagged = await db.odometer_readings.find_one(
+                {"employee_id": eid, "date": date_str, "kind": "_hr_flag"})
+            if not flagged:
+                await db.odometer_readings.insert_one(
+                    {"employee_id": eid, "date": date_str, "kind": "_hr_flag",
+                     "created_at": datetime.now(timezone.utc).isoformat()})
+                await _notify_hr_admins(eid, date_str, bool(start), bool(end))

@@ -1,10 +1,9 @@
 import React, { useState } from "react";
-import { Eye, Edit3, FileText, MapPin } from "lucide-react";
+import { Eye, Edit3, FileText } from "lucide-react";
 import { Modal } from "../shared/Modal";
 import { EmployeeDetailView } from "./EmployeeDetailView";
 import { EmployeeEditForm } from "./EmployeeEditForm";
 import { EmployeeDocumentsTab } from "./EmployeeDocumentsTab";
-import { EmployeeTrackerTab } from "./EmployeeTrackerTab";
 import { useAuth } from "../../contexts/AuthContext";
 
 export function EmployeeModal({ emp, onClose, onUpdated, onDocsChanged }) {
@@ -15,7 +14,7 @@ export function EmployeeModal({ emp, onClose, onUpdated, onDocsChanged }) {
 
   const tabs = [["view", "View", Eye]];
   if (canEdit) tabs.push(["edit", "Edit", Edit3]);
-  if (canEdit) tabs.push(["docs", "Documents", FileText], ["tracker", "Tracker", MapPin]);
+  if (canEdit) tabs.push(["docs", "Documents", FileText]);
 
   return (
     <Modal title={`${current.first_name} ${current.last_name} (${current.employee_id})`} onClose={onClose} wide>
@@ -40,7 +39,6 @@ export function EmployeeModal({ emp, onClose, onUpdated, onDocsChanged }) {
         />
       )}
       {tab === "docs" && <EmployeeDocumentsTab employeeId={current.employee_id} onDocsChanged={onDocsChanged} />}
-      {tab === "tracker" && <EmployeeTrackerTab employeeId={current.employee_id} />}
     </Modal>
   );
 }
