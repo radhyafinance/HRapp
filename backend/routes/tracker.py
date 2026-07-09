@@ -357,6 +357,57 @@ async def regenerate_secret(employee_id: str, current_user: dict = Depends(get_c
     }
 
 
+def _has_open_session(att: dict) -> bool:
+    """True if the employee is currently punched in (a session with no punch-out)."""
+    if not att:
+        return False
+    sessions = att.get("sessions") or []
+    if not sessions and att.get("punch_in_time"):
+        # legacy single-session record (no sessions[] array)
+        return not att.get("punch_out_time")
+    for s in sessions:
+        if s.get("punch_in_time") and not s.get("punch_out_time"):
+            return True
+    return False
+
+
+@router.get("/my-config")
+async def get_my_tracker_config(current_user: dict = Depends(get_current_user)):
+    """Self-service tracker config for the logged-in field employee.
+
+    Used by the Android app to (a) obtain its own OsmAnd identifier and
+    (b) learn whether it should currently be tracking — tracking runs only
+    between punch-in and punch-out. Lazily provisions a tracker on first call.
+    """
+    emp_id = current_user.get("employee_id")
+    if not emp_id:
+        # Admin / management accounts aren't field-tracked
+        raise HTTPException(status_code=400, detail="No employee linked to this account")
+
+    tracker = await db.employee_trackers.find_one({"employee_id": emp_id}, {"_id": 0})
+    if not tracker:
+        tracker = {
+            "employee_id": emp_id,
+            "secret": _new_secret(),
+            "interval_seconds": 60,
+            "active": True,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "last_ping_at": None,
+        }
+        await db.employee_trackers.insert_one(dict(tracker))
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    att = await db.attendance_records.find_one({"employee_id": emp_id, "date": today})
+
+    return {
+        "employee_id": emp_id,
+        "identifier": f"{emp_id}:{tracker['secret']}",
+        "interval_seconds": tracker.get("interval_seconds", 60),
+        "active": tracker.get("active", True),
+        "should_track": _has_open_session(att),
+    }
+
+
 @router.post("/toggle/{employee_id}")
 async def toggle_active(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Enable or disable a tracker device without rotating the secret."""

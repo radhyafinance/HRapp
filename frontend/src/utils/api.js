@@ -19,7 +19,15 @@ API.interceptors.request.use((config) => {
 });
 
 API.interceptors.response.use(
-  (res) => res,
+  (res) => {
+    // After a successful punch-in/out, reconcile GPS tracking (native app only).
+    // Dynamic import avoids a circular dependency with fieldTracking.js.
+    const url = res.config?.url || "";
+    if (url.includes("/attendance/punch-in") || url.includes("/attendance/punch-out")) {
+      import("./fieldTracking").then((m) => m.syncFieldTracking()).catch(() => {});
+    }
+    return res;
+  },
   (err) => {
     // Only force-logout on 401 if it's NOT the login endpoint itself.
     // A failed login returns 401 too — we must let the login page handle that

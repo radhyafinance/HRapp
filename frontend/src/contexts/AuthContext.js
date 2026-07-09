@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useMemo } from "react";
 import API from "../utils/api";
+import { initFieldTracking, stopFieldTracking } from "../utils/fieldTracking";
 
 const AuthContext = createContext(null);
 
@@ -15,6 +16,12 @@ export function AuthProvider({ children }) {
     }
     setLoading(false);
   }, []);
+
+  // Start GPS field tracking once a user is signed in (native app only; no-op
+  // in the browser). Idempotent — safe to run on every auth change.
+  useEffect(() => {
+    if (user) initFieldTracking();
+  }, [user]);
 
   const login = async (username, password) => {
     const res = await API.post("/auth/login", { username, password });
@@ -37,6 +44,7 @@ export function AuthProvider({ children }) {
   };
 
   const logout = () => {
+    stopFieldTracking();
     localStorage.removeItem("auth_token");
     localStorage.removeItem("auth_user");
     setUser(null);
