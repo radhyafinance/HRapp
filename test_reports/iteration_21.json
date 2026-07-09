@@ -1,0 +1,70 @@
+{
+  "summary": "Iteration 21 — Odometer toggle bug fix verification. Tested backend endpoint and full frontend flow for Field Tracking > Odometer tab. All 12 backend tests and 3 frontend toggle tests passed. Bug fix confirmed: projection `{_id:0, employee_id:1, odometer_required:1}` + `if emp is None` check correctly handles employees without the odometer_required field set.",
+
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+
+  "test_results": {
+    "backend_odometer_employees_list": "PASS (5/5) — GET /api/tracker/odometer/employees returns 200, list of employees with correct fields, booleans, no exited employees, 401/403 for unauth",
+    "backend_toggle_returns_200": "PASS — POST /api/tracker/odometer/toggle/{id} returns 200 with odometer_required bool",
+    "backend_toggle_false_to_true": "PASS — toggling an employee with odometer_required=False correctly flips to True and persists (verified via GET)",
+    "backend_toggle_true_to_false": "PASS — full round-trip: False→True→False, both states persisted",
+    "backend_toggle_404_nonexistent": "PASS — returns 404 for NONEXISTENT999",
+    "backend_toggle_forbidden_unauth": "PASS — returns 401/403 for unauthenticated request",
+    "backend_bug_fix_missing_field": "PASS — core regression test: employee without odometer_required field returns 200 (not 404). Fix confirmed.",
+    "frontend_tab_loads": "PASS — Odometer tab loads 46 employees with toggle switches visible",
+    "frontend_toggle_enable": "PASS — clicking grey toggle turns it green (bg-[#12855a] class added), API call successful",
+    "frontend_toggle_disable": "PASS — clicking green toggle turns it grey (bg-slate-300 class returned), API call successful",
+    "frontend_toggle_persistence": "PASS — navigating away and back re-fetches list and preserves enabled state"
+  },
+
+  "test_report_links": [
+    "/app/backend/tests/test_iter21_odometer_toggle.py",
+    "/app/test_reports/pytest/pytest_iter21.xml"
+  ],
+
+  "action_items": [],
+
+  "critical_code_review_comments": [
+    "Bug fix is correct: tracker.py line 757 projection now includes `employee_id: 1` alongside `odometer_required: 1`, and line 759 uses `if emp is None` instead of `if not emp`. This correctly handles the case where find_one returns `{}` (dict with no extra fields) vs None (employee not found).",
+    "The /odometer/employees endpoint also correctly uses `bool(e.get('odometer_required'))` to handle missing field gracefully."
+  ],
+
+  "updated_files": [
+    "/app/backend/tests/test_iter21_odometer_toggle.py"
+  ],
+
+  "success_rate": {
+    "backend": "100% (12/12 passed)",
+    "frontend": "100% (3/3 toggle tests passed)"
+  },
+
+  "test_credentials": {
+    "admin": "admin / Admin@12345"
+  },
+
+  "seed_data_creation": "No persistent seed data. Toggle states were reverted to original during test cleanup.",
+
+  "retest_needed": false,
+
+  "main_agent_can_self_test": false,
+
+  "context_for_next_testing_agent": "Odometer toggle bug fix fully verified (iteration 21). Fix was a MongoDB projection issue in toggle_odometer endpoint: projection {_id:0, odometer_required:1} returned {} for employees without the field (falsy), causing false 404. Fixed by adding employee_id to projection and using `if emp is None`. Both backend (12/12 tests) and frontend (3/3 toggle flows) are working. DB state clean after tests.",
+
+  "rca_of_issues": {
+    "odometer_toggle_404_false_positive": {
+      "location": "/app/backend/routes/tracker.py, toggle_odometer() around line 755-760",
+      "root_cause": "MongoDB projection `{_id:0, odometer_required:1}` returns `{}` (empty dict) when employee exists but doesn't have `odometer_required` field set. Empty dict is falsy in Python. The original code `if not emp: raise 404` was incorrectly treating existing employees (without the field) as not found.",
+      "fix_applied": "1. Added `employee_id: 1` to projection so returned doc is never empty for a real employee. 2. Changed guard to `if emp is None` which correctly distinguishes 'employee not found' (None) from 'employee found but field missing' ({}).",
+      "test_verification": "test_toggle_bug_fix_employee_without_odometer_field passes — employee with odometer_required=False (field not set in DB) now toggles successfully to True without 404."
+    }
+  }
+}
