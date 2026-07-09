@@ -1,5 +1,4 @@
 """Lightweight in-app notifications.
-
 Each notification targets a specific employee (`employee_id`). The frontend
 bell widget polls `/api/notifications` periodically. No push infra — the
 optional browser Notification popup is fired client-side only when the tab
@@ -52,7 +51,57 @@ async def create_notification(
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     await db.notifications.insert_one(doc)
+    # Best-effort push to the employee's registered devices. Never break the caller.
+    try:
+        await _push_to_employee(employee_id, title, message, link, type)
+    except Exception:
+        pass
     return doc
+
+
+async def _push_to_employee(employee_id: str, title: str, message: str,
+                            link: Optional[str], ntype: Optional[str]):
+    """Send an FCM push to every device registered to this employee."""
+    from services.fcm import send_push
+    docs = await db.device_tokens.find({"employee_id": employee_id}).to_list(20)
+    tokens = [d["token"] for d in docs if d.get("token")]
+    if not tokens:
+        return
+    dead = await send_push(tokens, title, message, {"link": link or "", "type": ntype or "info"})
+    if dead:
+        await db.device_tokens.delete_many({"token": {"$in": dead}})
+
+
+class DeviceTokenIn(BaseModel):
+    token: str
+    platform: Optional[str] = "android"
+
+
+@router.post("/register-device")
+async def register_device(body: DeviceTokenIn, current_user: dict = Depends(get_current_user)):
+    """Store/refresh an FCM device token for the current user (Android app)."""
+    me = current_user.get("employee_id") or current_user.get("username")
+    if not me or not body.token:
+        raise HTTPException(status_code=400, detail="employee and token required")
+    # Key by token so a device that logs in as a different user reassigns cleanly.
+    await db.device_tokens.update_one(
+        {"token": body.token},
+        {"$set": {
+            "token": body.token,
+            "employee_id": me,
+            "platform": body.platform or "android",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+@router.post("/unregister-device")
+async def unregister_device(body: DeviceTokenIn, current_user: dict = Depends(get_current_user)):
+    """Drop a device token (e.g. on logout)."""
+    await db.device_tokens.delete_one({"token": body.token})
+    return {"ok": True}
 
 
 @router.get("")

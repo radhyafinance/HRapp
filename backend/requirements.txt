@@ -179,3 +179,4 @@ zipp==3.23.0
 cbor2==6.0.1
 pyOpenSSL==26.2.0
 webauthn==2.7.1
+firebase-admin==6.5.0
