@@ -23,25 +23,24 @@ function minsAgoLabel(m) {
 
 export default function FieldTracking() {
   const { user } = useAuth();
-  const [tab, setTab] = useState("live");          // live | devices | history
+  const [tab, setTab] = useState("live");
   const [activeStaff, setActiveStaff] = useState([]);
   const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState(null);   // { employee_id, name, ... }
+  const [selected, setSelected] = useState(null);
   const [trackData, setTrackData] = useState(null);
   const [trackLoading, setTrackLoading] = useState(false);
   const [date, setDate] = useState(toLocalDateStr());
   const [devFilter, setDevFilter] = useState("");
 
-  // Distance report + odometer management
   const [distDate, setDistDate] = useState(toLocalDateStr());
   const [distData, setDistData] = useState(null);
   const [distLoading, setDistLoading] = useState(false);
   const [odoList, setOdoList] = useState([]);
   const [odoSearch, setOdoSearch] = useState("");
   const [odoLoading, setOdoLoading] = useState(false);
+  const [odoView, setOdoView] = useState(null);
 
-  // History mode
   const [histEmpSearch, setHistEmpSearch] = useState("");
   const [histDate, setHistDate] = useState(toLocalDateStr());
   const [histEmployees, setHistEmployees] = useState([]);
@@ -50,6 +49,7 @@ export default function FieldTracking() {
   const [histLoading, setHistLoading] = useState(false);
 
   const isManager = ["hr_admin", "management", "managers"].includes(user?.role);
+  const canViewOdoPhotos = ["hr_admin", "management"].includes(user?.role);
 
   const fetchActive = async () => {
     setLoading(true);
@@ -97,8 +97,11 @@ export default function FieldTracking() {
   };
 
   const exportDistance = async () => {
-    const to = distDate;
-    const from = new Date(new Date(distDate).getTime() - 29 * 86400000).toISOString().slice(0, 10);
+    const d = new Date(distDate + "T00:00:00");
+    const pad = (n) => String(n).padStart(2, "0");
+    const from = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-01`;
+    const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    const to = `${last.getFullYear()}-${pad(last.getMonth() + 1)}-${pad(last.getDate())}`;
     try {
       const res = await API.get("/tracker/distance/export",
         { params: { from_date: from, to_date: to }, responseType: "blob" });
@@ -107,6 +110,14 @@ export default function FieldTracking() {
       a.href = url; a.download = `distance_${from}_to_${to}.xlsx`; a.click();
       URL.revokeObjectURL(url);
     } catch (e) { console.error(e); }
+  };
+
+  const openOdoPhotos = async (employee_id, name) => {
+    setOdoView({ employee_id, name, date: distDate, loading: true, data: null });
+    try {
+      const res = await API.get(`/tracker/odometer/day/${employee_id}`, { params: { date_str: distDate } });
+      setOdoView(v => (v && v.employee_id === employee_id) ? { ...v, loading: false, data: res.data } : v);
+    } catch (e) { setOdoView(v => v ? { ...v, loading: false, data: null } : v); }
   };
 
   const fetchTrack = async (empId, d) => {
@@ -139,7 +150,6 @@ export default function FieldTracking() {
     if (isManager && tab === "distance") fetchDistance(distDate);
   }, [distDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Auto-refresh every 30s on live / devices tab when not drilled in
   useEffect(() => {
     if (!isManager || selected) return;
     const t = setInterval(() => {
@@ -197,6 +207,51 @@ export default function FieldTracking() {
         </div>
       </div>
 
+      {/* Odometer photo viewer (admin) */}
+      {odoView && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
+          onClick={() => setOdoView(null)}>
+          <div className="bg-white rounded-xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5"
+            onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>
+                Odometer — {odoView.name} · {odoView.date}
+              </h3>
+              <button onClick={() => setOdoView(null)} className="text-slate-400 hover:text-slate-600 text-lg">✕</button>
+            </div>
+            {odoView.loading ? <p className="text-center text-slate-400 py-8">Loading…</p>
+              : !odoView.data ? <p className="text-center text-slate-400 py-8">No data.</p>
+              : (
+                <div className="space-y-4">
+                  {["start", "end"].map(k => {
+                    const rd = odoView.data[k];
+                    return (
+                      <div key={k} className="border border-slate-200 rounded-lg p-3">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm font-semibold text-[#1E2A47] capitalize">{k} of day</span>
+                          <span className="text-sm font-bold text-[#1E2A47]">
+                            {rd?.reading_km != null ? `${Number(rd.reading_km).toLocaleString("en-IN")} km` : "—"}
+                          </span>
+                        </div>
+                        {rd?.photo
+                          ? <img src={`data:image/jpeg;base64,${rd.photo}`} alt={`${k} odometer`}
+                              className="w-full rounded-lg border border-slate-100" />
+                          : <p className="text-xs text-slate-400">No photo submitted.</p>}
+                        {rd?.created_at && <p className="text-[11px] text-slate-400 mt-1">
+                          {new Date(rd.created_at).toLocaleString("en-IN")}</p>}
+                      </div>
+                    );
+                  })}
+                  <div className="text-center text-sm text-slate-600">
+                    Distance: <strong className="text-[#12855a]">
+                      {odoView.data.distance_km != null ? `${odoView.data.distance_km} km` : "—"}</strong>
+                  </div>
+                </div>
+              )}
+          </div>
+        </div>
+      )}
+
       {/* Tabs */}
       {!selected && !histSelected && (
         <div className="flex gap-1 mb-4 border-b border-slate-200">
@@ -229,7 +284,7 @@ export default function FieldTracking() {
             )}
             <button onClick={exportDistance} data-testid="distance-export"
               className="ml-auto flex items-center gap-1.5 px-3 py-2 bg-[#12855a] text-white rounded-lg text-xs font-semibold hover:bg-[#0f6f4c]">
-              Export 30 days (Excel)
+              Export month (Excel)
             </button>
           </div>
           <p className="text-xs text-slate-400 -mt-2 px-1">GPS distance is a filtered straight-line estimate from 3-min pings. Odometer km (for tracked staff) is the reimbursement figure.</p>
@@ -262,9 +317,15 @@ export default function FieldTracking() {
                             <span className="block text-[11px] text-slate-400">{r.odo_start_km} → {r.odo_end_km}</span>}
                         </td>
                         <td className="px-4 py-3">
-                          {r.odometer_required
-                            ? <span className={`px-2 py-1 rounded-full text-xs font-medium ${st[1]}`}>{st[0]}</span>
-                            : <span className="text-xs text-slate-300">—</span>}
+                          {r.odometer_required ? (
+                            <div className="flex items-center gap-2">
+                              <span className={`px-2 py-1 rounded-full text-xs font-medium ${st[1]}`}>{st[0]}</span>
+                              {canViewOdoPhotos && (r.odo_start_km != null || r.odo_end_km != null) && (
+                                <button onClick={() => openOdoPhotos(r.employee_id, r.name)}
+                                  className="text-xs text-[#E85B1E] font-medium hover:underline">Photos</button>
+                              )}
+                            </div>
+                          ) : <span className="text-xs text-slate-300">—</span>}
                         </td>
                       </tr>
                     );
@@ -368,7 +429,7 @@ export default function FieldTracking() {
         </div>
       )}
 
-      {/* TAB 2: Tracker Devices — all configured, with freshness */}
+      {/* TAB 2: Tracker Devices */}
       {!selected && !histSelected && tab === "devices" && (
         <div className="space-y-4">
           <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex flex-wrap gap-2 items-center">
@@ -392,7 +453,6 @@ export default function FieldTracking() {
               <RefreshCw size={12} /> Refresh
             </button>
           </div>
-
           <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full" data-testid="devices-table">
@@ -452,7 +512,6 @@ export default function FieldTracking() {
               </table>
             </div>
           </div>
-
           <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-700">
             <strong>Freshness key:</strong> Live ≤ 5 min · Recent ≤ 30 min · Stale ≤ 24 h · Silent &gt; 24 h · Never = never pinged.
             Silent / Never devices are likely off or mis-configured on the employee's phone.
@@ -460,7 +519,7 @@ export default function FieldTracking() {
         </div>
       )}
 
-      {/* TAB 3: History — search any employee, any date */}
+      {/* TAB 3: History */}
       {!selected && !histSelected && tab === "history" && (
         <div className="space-y-4">
           <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
@@ -477,7 +536,6 @@ export default function FieldTracking() {
                 className="border border-slate-300 rounded-lg px-3 py-2.5 text-sm bg-white"
                 data-testid="hist-date-input" />
             </div>
-
             {histEmpSearch && (
               <div className="mt-3 max-h-60 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-lg" data-testid="hist-emp-results">
                 {filteredEmployees.length === 0 ? (
@@ -497,7 +555,6 @@ export default function FieldTracking() {
               </div>
             )}
           </div>
-
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
             <AlertCircle size={13} className="inline mr-1" />
             View any employee's route on any past date from their app GPS pings. No attendance record required.

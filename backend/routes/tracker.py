@@ -1,15 +1,11 @@
 """Location ingestion endpoint (OsmAnd protocol).
-
 The Radhya HR Android app's built-in background GPS tracker posts location
 fixes here every few minutes while an employee is punched in — even when the
 phone is locked or the app is closed. It uses the simple OsmAnd query format so
 the endpoint stays generic (any OsmAnd-compatible client works too).
-
 Each employee has a unique device identifier of the form
 `<employee_id>:<secret>` (e.g. `RMF0001:a4f2...`). The app pings:
-
   GET /api/tracker/osmand?id=<identifier>&lat=..&lon=..&timestamp=..&accuracy=..
-
 The endpoint is intentionally public (no JWT) because these background pings
 can't carry bearer tokens. Authentication is via the secret embedded in the
 identifier. Pings with unknown/invalid identifiers are silently ignored (still
@@ -27,7 +23,6 @@ import math
 import io
 
 router = APIRouter()
-
 
 # ──────────────────────────────────────────────────────────────
 #  Public endpoint — accepts background location pings
@@ -380,7 +375,6 @@ def _has_open_session(att: dict) -> bool:
 @router.get("/my-config")
 async def get_my_tracker_config(current_user: dict = Depends(get_current_user)):
     """Self-service tracker config for the logged-in field employee.
-
     Used by the Android app to (a) obtain its own OsmAnd identifier and
     (b) learn whether it should currently be tracking — tracking runs only
     between punch-in and punch-out. Lazily provisions a tracker on first call.
@@ -752,6 +746,8 @@ async def odometer_employees(current_user: dict = Depends(get_current_user)):
 async def toggle_odometer(employee_id: str, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ("hr_admin", "management"):
         raise HTTPException(status_code=403, detail="Access denied")
+    # Use employee_id in projection so result is never an empty {} for existing employees.
+    # Use `is None` (not falsy) so employees without the field are correctly found.
     emp = await db.employees.find_one(
         {"employee_id": employee_id},
         {"_id": 0, "employee_id": 1, "odometer_required": 1},
@@ -765,8 +761,8 @@ async def toggle_odometer(employee_id: str, current_user: dict = Depends(get_cur
 
 @router.get("/odometer/day/{employee_id}")
 async def odometer_day(employee_id: str, date_str: str = None, current_user: dict = Depends(get_current_user)):
-    """Full odometer detail incl. photos for a day (manager audit view)."""
-    if current_user.get("role") not in ("hr_admin", "management", "managers"):
+    """Full odometer detail incl. photos for a day (HR/management audit view)."""
+    if current_user.get("role") not in ("hr_admin", "management"):
         raise HTTPException(status_code=403, detail="Access denied")
     date_str = date_str or _today()
     start = await db.odometer_readings.find_one(

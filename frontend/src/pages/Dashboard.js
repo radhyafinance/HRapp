@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import API from "../utils/api";
 import { Users, CalendarCheck, FileText, CreditCard, TrendingUp, UserPlus, Clock, Video, Mail, Phone, CalendarX, FileEdit, AlertCircle, DoorOpen, ChevronRight, Shield, Check, X, Loader2 } from "lucide-react";
 import { QuickPunchCard } from "../components/dashboard/QuickPunchCard";
+import OdometerCard from "../components/dashboard/OdometerCard";
 import { toLocalDateStr } from "../utils/shiftRules";
 
 // Drilldown modal for present/absent/on-leave
@@ -96,6 +97,7 @@ function PersonalDashboard({ user }) {
   return (
     <>
       <QuickPunchCard user={user} todayStatus={data?.today_status} onPunched={fetchData} />
+      <OdometerCard />
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
         <StatCard label="Absent This Month" value={data?.absent_this_month ?? 0}
