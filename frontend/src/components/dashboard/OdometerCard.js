@@ -1,8 +1,6 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { Capacitor } from "@capacitor/core";
 import { Gauge, Camera } from "lucide-react";
 import { getOdoStatus, captureOdometer } from "../../utils/odometer";
-
 /**
  * Odometer prompt on the personal dashboard — shown only inside the Android app
  * for employees with odometer tracking enabled. Mirrors the punch card style.
@@ -10,24 +8,17 @@ import { getOdoStatus, captureOdometer } from "../../utils/odometer";
 export default function OdometerCard() {
   const [st, setSt] = useState(null);
   const refresh = useCallback(async () => { setSt(await getOdoStatus()); }, []);
-
   useEffect(() => {
-    let native = false;
-    try { native = Capacitor.isNativePlatform(); } catch (e) {}
-    if (!native) return;
     refresh();
     const onVis = () => { if (document.visibilityState === "visible") refresh(); };
     document.addEventListener("visibilitychange", onVis);
     const t = setInterval(refresh, 3 * 60 * 1000);
     return () => { document.removeEventListener("visibilitychange", onVis); clearInterval(t); };
   }, [refresh]);
-
   if (!st || !st.required) return null;
-
   const pendingStart = st.punched_in && !st.start_done;
   const pendingEnd = st.punched_out && !st.end_done;
   const kind = pendingStart ? "start" : pendingEnd ? "end" : null;
-
   if (kind) {
     const label = kind === "start" ? "Start-of-day" : "End-of-day";
     return (
@@ -48,7 +39,6 @@ export default function OdometerCard() {
       </div>
     );
   }
-
   if (st.start_done || st.end_done) {
     const fmt = (n) => (n == null ? "—" : Number(n).toLocaleString("en-IN"));
     return (
@@ -68,6 +58,5 @@ export default function OdometerCard() {
       </div>
     );
   }
-
   return null;
 }

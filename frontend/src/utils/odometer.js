@@ -14,32 +14,26 @@
  */
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import API from "./api";
-
 const Camera = registerPlugin("Camera");
 const TextOCR = registerPlugin("CapacitorPluginMlKitTextRecognition");
-
 // Small enough to keep storage/upload tiny, big enough for ML Kit to read digits.
 const PHOTO_WIDTH = 800;
 const PHOTO_QUALITY = 45;
-
 let inited = false;
 let busy = false;                      // a capture flow is in progress
 const dismissedUntil = { start: 0, end: 0 };
-
 function isNative() {
   try { return Capacitor.isNativePlatform(); } catch { return false; }
 }
-
-/** Returns the odometer status object, or null. Never throws. */
+/** Returns the odometer status object, or null. Never throws.
+ *  Works on web too (for the dashboard card preview); capture is still app-only. */
 export async function getOdoStatus() {
-  if (!isNative()) return null;
   if (!localStorage.getItem("auth_token")) return null;
   try {
     const { data } = await API.get("/tracker/odometer/my-status");
     return data;
   } catch { return null; }
 }
-
 /** Pull plausible odometer numbers (4–7 digits) out of OCR text. */
 function ocrCandidates(text) {
   const groups = (String(text || "").match(/\d[\d,]*/g) || [])
@@ -49,39 +43,90 @@ function ocrCandidates(text) {
   const fallback = groups.sort((a, b) => b.length - a.length)[0] || "";
   return { plausible, best: plausible[0] || fallback };
 }
-
 async function submitReading(kind, reading, ocrText, photo) {
   await API.post("/tracker/odometer/reading", {
     kind, reading_km: parseFloat(reading), ocr_text: ocrText, photo,
   });
 }
-
+/** Downscale + recompress a data URL to a small JPEG; returns raw base64. */
+function downscaleDataUrl(dataUrl, maxW, quality) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxW / (img.width || maxW));
+      const w = Math.round((img.width || maxW) * scale);
+      const h = Math.round((img.height || maxW) * scale);
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      c.getContext("2d").drawImage(img, 0, 0, w, h);
+      resolve(c.toDataURL("image/jpeg", quality).split(",")[1] || "");
+    };
+    img.onerror = () => resolve((String(dataUrl).split(",")[1]) || "");
+    img.src = dataUrl;
+  });
+}
+/** Web/PWA (incl. iOS Safari) photo capture via a camera file input. */
+function webCapturePhoto() {
+  return new Promise((resolve, reject) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.setAttribute("capture", "environment"); // rear camera on phones
+    input.style.display = "none";
+    input.onchange = () => {
+      const file = input.files && input.files[0];
+      try { document.body.removeChild(input); } catch (e) {}
+      if (!file) { reject(new Error("cancelled")); return; }
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try { resolve(await downscaleDataUrl(reader.result, PHOTO_WIDTH, 0.5)); }
+        catch (e) { reject(e); }
+      };
+      reader.onerror = () => reject(new Error("read failed"));
+      reader.readAsDataURL(file);
+    };
+    document.body.appendChild(input);
+    input.click();
+  });
+}
+/** Get a photo (native camera on the app, file-input camera on the PWA). */
+async function getPhotoBase64() {
+  if (isNative()) {
+    const p = await Camera.getPhoto({
+      quality: PHOTO_QUALITY, width: PHOTO_WIDTH, allowEditing: false,
+      resultType: "base64", source: "CAMERA", correctOrientation: true,
+    });
+    return { b64: p.base64String, native: true };
+  }
+  return { b64: await webCapturePhoto(), native: false };
+}
 /**
  * Full capture flow for one reading. `onDone` runs after a successful submit.
  * Opens the camera immediately, so call it from a user gesture.
  */
 export async function captureOdometer(kind, onDone) {
-  if (!isNative() || busy) return;
+  if (busy) return;
   busy = true;
-  let photo;
+  let b64, native;
   try {
-    photo = await Camera.getPhoto({
-      quality: PHOTO_QUALITY, width: PHOTO_WIDTH, allowEditing: false,
-      resultType: "base64", source: "CAMERA", correctOrientation: true,
-    });
-  } catch {
+    const r = await getPhotoBase64();
+    b64 = r.b64; native = r.native;
+  } catch (e) {
     busy = false;
-    return; // user cancelled the camera
+    return; // user cancelled / no photo
   }
-  const b64 = photo.base64String;
+  if (!b64) { busy = false; return; }
+  // On-device OCR only exists on the app; on the PWA the employee types it.
   let ocrText = "";
-  try {
-    const res = await TextOCR.detectText({ base64Image: b64 });
-    ocrText = res && res.text;
-  } catch { /* OCR failed — fall through to manual confirm */ }
+  if (native) {
+    try {
+      const res = await TextOCR.detectText({ base64Image: b64 });
+      ocrText = res && res.text;
+    } catch { /* OCR failed — fall through to manual confirm */ }
+  }
   const { plausible, best } = ocrCandidates(ocrText);
-  if (plausible.length === 1) {
-    // Confident: submit automatically, then offer a quick correction.
+  if (native && plausible.length === 1) {
+    // Confident (app + one clean read): submit automatically, offer a correction.
     try {
       await submitReading(kind, plausible[0], ocrText, b64);
       busy = false;
@@ -89,16 +134,15 @@ export async function captureOdometer(kind, onDone) {
       showRecordedToast(kind, plausible[0], b64, ocrText, onDone);
     } catch {
       busy = false;
-      openConfirmModal(kind, b64, best, ocrText, onDone); // submit failed → let them retry
+      openConfirmModal(kind, b64, best, ocrText, onDone);
     }
   } else {
+    // PWA, or empty/ambiguous read → confirm/enter the number.
     busy = false;
-    openConfirmModal(kind, b64, best, ocrText, onDone); // empty/ambiguous → confirm
+    openConfirmModal(kind, b64, best, ocrText, onDone);
   }
 }
-
 // ── modal plumbing ────────────────────────────────────────────────
-
 function makeModal() {
   const wrap = document.createElement("div");
   wrap.setAttribute("style", [
@@ -116,12 +160,10 @@ function makeModal() {
   const close = () => { try { document.body.removeChild(wrap); } catch (e) {} };
   return { card, close };
 }
-
 function btn(bg, color) {
   return `padding:13px 14px;border-radius:11px;border:none;font-size:14.5px;font-weight:650;
     cursor:pointer;background:${bg};color:${color};width:100%`;
 }
-
 function header(kind) {
   const label = kind === "start" ? "Start of day" : "End of day";
   return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
@@ -130,7 +172,6 @@ function header(kind) {
     <div><div style="font-weight:750;font-size:16px;color:#1e2a47">${label} odometer</div>
     <div style="font-size:12.5px;color:#64748b">For your travel records</div></div></div>`;
 }
-
 /** Auto-submitted: brief confirmation with an Edit escape hatch. */
 function showRecordedToast(kind, reading, b64, ocrText, onDone) {
   const { card, close } = makeModal();
@@ -150,7 +191,6 @@ function showRecordedToast(kind, reading, b64, ocrText, onDone) {
     openConfirmModal(kind, b64, String(reading), ocrText, onDone);
   };
 }
-
 /** Empty/ambiguous read (or Edit): confirm/correct before submitting. */
 function openConfirmModal(kind, b64, prefill, ocrText, onDone) {
   const { card, close } = makeModal();
@@ -184,9 +224,7 @@ function openConfirmModal(kind, b64, prefill, ocrText, onDone) {
     }
   };
 }
-
 // ── auto-popup (in addition to the dashboard card) ────────────────
-
 async function autoPrompt() {
   if (busy) return;
   const s = await getOdoStatus();
@@ -200,7 +238,6 @@ async function autoPrompt() {
     captureOdometer("end");
   }
 }
-
 /** Call once after auth. Idempotent; no-op outside the app. */
 export function initOdometer() {
   if (!isNative() || inited) return;
