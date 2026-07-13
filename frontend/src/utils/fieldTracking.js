@@ -11,22 +11,17 @@
  * the battery. This module only decides WHEN to run it (punch-in → start,
  * punch-out → stop) and hands it the employee's identifier.
  */
-import { Capacitor, registerPlugin } from "@capacitor/core";
+import { registerPlugin } from "@capacitor/core";
 import API from "./api";
-
+import { isNativeApp } from "./clientPlatform";
 const RadhyaTracker = registerPlugin("RadhyaTracker");
 const BACKEND = process.env.REACT_APP_BACKEND_URL || "";
 const PING_URL = `${BACKEND}/api/tracker/osmand`;
 const INTERVAL_MS = 3 * 60 * 1000; // ping every 3 minutes
-
 let identifier = null;      // "RMF0001:secret"
 let syncing = false;        // guard against overlapping syncs
 let inited = false;
-
-function isNative() {
-  try { return Capacitor.isNativePlatform(); } catch { return false; }
-}
-
+function isNative() { return isNativeApp(); }
 async function startTracking(id) {
   try {
     await RadhyaTracker.start({ identifier: id, url: PING_URL, intervalMs: INTERVAL_MS });
@@ -34,11 +29,9 @@ async function startTracking(id) {
     // e.g. location permission denied — the native side surfaces the prompt.
   }
 }
-
 async function stopTracking() {
   try { await RadhyaTracker.stop(); } catch { /* ignore */ }
 }
-
 /**
  * Reconcile tracking with backend state: track iff the employee is punched in.
  * Safe to call often (login, punch, app-resume, periodic). Re-calling start()
@@ -63,12 +56,10 @@ export async function syncFieldTracking() {
     syncing = false;
   }
 }
-
 export async function stopFieldTracking() {
   identifier = null;
   await stopTracking();
 }
-
 /** Call once after auth is established. Idempotent; no-op outside the app. */
 export function initFieldTracking() {
   if (!isNative() || inited) return;

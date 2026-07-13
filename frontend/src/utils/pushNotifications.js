@@ -7,18 +7,13 @@
  * that token whenever create_notification() fires — so every existing in-app
  * notification also arrives as a phone notification, even when the app is closed.
  */
-import { Capacitor, registerPlugin } from "@capacitor/core";
+import { registerPlugin } from "@capacitor/core";
 import API from "./api";
-
+import { isNativeApp } from "./clientPlatform";
 const PushNotifications = registerPlugin("PushNotifications");
-
 let inited = false;
 let lastToken = null;
-
-function isNative() {
-  try { return Capacitor.isNativePlatform(); } catch { return false; }
-}
-
+function isNative() { return isNativeApp(); }
 /** Call once after auth. Idempotent; no-op outside the app. */
 export async function initPush() {
   if (!isNative() || inited) return;

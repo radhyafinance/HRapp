@@ -12,8 +12,9 @@
  * Exposes captureOdometer()/getOdoStatus() so both the dashboard card and the
  * auto-popup share one code path.
  */
-import { Capacitor, registerPlugin } from "@capacitor/core";
+import { registerPlugin } from "@capacitor/core";
 import API from "./api";
+import { isNativeApp } from "./clientPlatform";
 const Camera = registerPlugin("Camera");
 const TextOCR = registerPlugin("CapacitorPluginMlKitTextRecognition");
 // Small enough to keep storage/upload tiny, big enough for ML Kit to read digits.
@@ -22,9 +23,7 @@ const PHOTO_QUALITY = 45;
 let inited = false;
 let busy = false;                      // a capture flow is in progress
 const dismissedUntil = { start: 0, end: 0 };
-function isNative() {
-  try { return Capacitor.isNativePlatform(); } catch { return false; }
-}
+function isNative() { return isNativeApp(); }
 /** Returns the odometer status object, or null. Never throws.
  *  Works on web too (for the dashboard card preview); capture is still app-only. */
 export async function getOdoStatus() {
