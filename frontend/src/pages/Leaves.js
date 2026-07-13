@@ -248,6 +248,16 @@ export default function Leaves() {
   // Balance management
   const [editBalance, setEditBalance] = useState(null); // employee row being edited
 
+  // Date-based comp-off management inside the Edit Balance modal
+  const [coGrants, setCoGrants] = useState([]);        // available (approved, unused) comp-offs
+  const [coGrantsLoading, setCoGrantsLoading] = useState(false);
+  const [coAddForm, setCoAddForm] = useState({ earn_date: "", earn_reason: "" });
+  const [coActionBusy, setCoActionBusy] = useState(false);
+  const [coActionError, setCoActionError] = useState("");
+  // Non-dated (legacy numeric) component of the balance, captured once at open
+  // so the "available" badge = live dated grants + this fixed remainder.
+  const [coLegacyAdj, setCoLegacyAdj] = useState(0);
+
   // Upload certificate
   const handleCertUpload = async () => {
     if (!certFile.file) { setCertError("Please select a file."); return; }
@@ -375,6 +385,62 @@ export default function Leaves() {
     }
   };
 
+  // Load the employee's available (approved, unused) comp-offs for the modal.
+  // Pass initialRemaining only on the first load to derive the legacy remainder.
+  const loadCoGrants = async (employee_id, initialRemaining) => {
+    setCoGrantsLoading(true);
+    try {
+      const res = await API.get(`/comp-offs/balance/${employee_id}`);
+      const grants = res.data || [];
+      setCoGrants(grants);
+      if (initialRemaining !== undefined) {
+        setCoLegacyAdj(initialRemaining - grants.length);
+      }
+    } catch (e) {
+      setCoGrants([]);
+      setCoActionError(e.response?.data?.detail || "Failed to load comp-offs");
+    } finally {
+      setCoGrantsLoading(false);
+    }
+  };
+
+  const addCompOff = async () => {
+    setCoActionError("");
+    if (!coAddForm.earn_date) { setCoActionError("Earn date is required."); return; }
+    if (!coAddForm.earn_reason.trim()) { setCoActionError("Reason is required."); return; }
+    setCoActionBusy(true);
+    try {
+      await API.post("/comp-offs/manual", {
+        employee_id: editBalance.employee_id,
+        earn_date: coAddForm.earn_date,
+        earn_reason: coAddForm.earn_reason.trim(),
+      });
+      setCoAddForm({ earn_date: "", earn_reason: "" });
+      await loadCoGrants(editBalance.employee_id);
+      fetchData();
+    } catch (e) {
+      setCoActionError(e.response?.data?.detail || "Failed to add comp-off");
+    } finally {
+      setCoActionBusy(false);
+    }
+  };
+
+  const removeCompOff = async (grant) => {
+    const dateLabel = grant.earn_date ? new Date(grant.earn_date).toLocaleDateString("en-IN") : grant.id;
+    if (!window.confirm(`Remove the comp-off earned on ${dateLabel}? This reduces the employee's available balance by 1.`)) return;
+    setCoActionError("");
+    setCoActionBusy(true);
+    try {
+      await API.delete(`/comp-offs/${grant.id}`);
+      await loadCoGrants(editBalance.employee_id);
+      fetchData();
+    } catch (e) {
+      setCoActionError(e.response?.data?.detail || "Failed to remove comp-off");
+    } finally {
+      setCoActionBusy(false);
+    }
+  };
+
   // Open Edit Balance modal with current values pre-filled
   const openEditBalance = (emp) => {
     setEditBalance(emp);
@@ -383,10 +449,15 @@ export default function Leaves() {
       SL_total: emp.SL?.total ?? 15,  SL_used: emp.SL?.used ?? 0,
       EL_total: emp.EL?.total ?? 0,   EL_used: emp.EL?.used ?? 0,
       Marriage_total: emp.Marriage?.total ?? 5, Marriage_used: emp.Marriage?.used ?? 0,
-      CompOff_total: emp["Comp-Off"]?.total ?? 0, CompOff_used: emp["Comp-Off"]?.used ?? 0,
       reason: "",
     });
     setBalError("");
+    // Comp-Off is managed by date (add/remove real grants), not numeric fields
+    setCoGrants([]);
+    setCoAddForm({ earn_date: "", earn_reason: "" });
+    setCoActionError("");
+    setCoLegacyAdj(0);
+    loadCoGrants(emp.employee_id, emp["Comp-Off"]?.remaining ?? 0);
   };
 
   const submitBalance = async () => {
@@ -397,10 +468,6 @@ export default function Leaves() {
       if (total < 0 || used < 0) { setBalError(`${k}: values cannot be negative.`); return; }
       if (used > total) { setBalError(`${k}: used (${used}) cannot exceed total (${total}).`); return; }
     }
-    const coTotal = Number(balForm.CompOff_total);
-    const coUsed = Number(balForm.CompOff_used);
-    if (coTotal < 0 || coUsed < 0) { setBalError("Comp-Off: values cannot be negative."); return; }
-    if (coUsed > coTotal) { setBalError(`Comp-Off: used (${coUsed}) cannot exceed total (${coTotal}).`); return; }
     setBalSaving(true);
     setBalError("");
     try {
@@ -409,8 +476,6 @@ export default function Leaves() {
         payload[`${k}_total`] = Number(balForm[`${k}_total`]);
         payload[`${k}_used`] = Number(balForm[`${k}_used`]);
       }
-      payload.CompOff_total = coTotal;
-      payload.CompOff_used = coUsed;
       payload.reason = balForm.reason.trim();
       await API.put(`/leaves/admin/balance/${editBalance.employee_id}`, payload);
       setEditBalance(null);
@@ -1285,35 +1350,78 @@ export default function Leaves() {
                 </div>
               </div>
             ))}
-            {/* Comp-Off row */}
-            <div className="border-t border-slate-100 pt-3">
-              <div className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-2">
+            {/* Comp-Off — managed by date (add/remove real dated grants) */}
+            <div className="border-t border-slate-100 pt-3 space-y-2">
+              <div className="flex items-center justify-between">
                 <label className="text-xs font-semibold text-slate-700">
                   Comp-Off
-                  <span className="block text-[10px] font-normal text-slate-400">Manual override</span>
+                  <span className="block text-[10px] font-normal text-slate-400">Managed by date — add or remove individual earned days</span>
                 </label>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] uppercase tracking-wider text-slate-400">Total</span>
-                  <input type="number" min="0" step="1"
-                    value={balForm.CompOff_total}
-                    onChange={e => setBalForm(f => ({ ...f, CompOff_total: e.target.value }))}
-                    data-testid="bal-CompOff-total"
-                    className="w-20 border border-slate-300 rounded-md px-2 py-1.5 text-sm text-center focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                <span className="text-sm font-bold text-[#E85B1E]">
+                  {coGrants.length + coLegacyAdj} available
+                </span>
+              </div>
+              {coActionError && (
+                <div className="bg-red-50 border border-red-200 text-red-700 text-xs p-2 rounded-lg">{coActionError}</div>
+              )}
+              {coGrantsLoading ? (
+                <p className="text-xs text-slate-400 py-2">Loading comp-offs…</p>
+              ) : coGrants.length === 0 ? (
+                <p className="text-xs text-slate-400 py-2">No available (unused) comp-offs to remove.</p>
+              ) : (
+                <div className="space-y-1.5 max-h-44 overflow-y-auto">
+                  {coGrants.map((g) => (
+                    <div key={g.id} className="flex items-center justify-between gap-2 border border-slate-200 rounded-md px-2.5 py-1.5" data-testid={`edit-co-grant-${g.id}`}>
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-[#1E2A47]">
+                          Earned {g.earn_date ? new Date(g.earn_date).toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" }) : "—"}
+                          {g.source === "manual" && <span className="ml-1.5 text-[9px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-700 align-middle">manual</span>}
+                        </p>
+                        <p className="text-[10px] text-slate-400 truncate">
+                          {g.earn_reason || "—"}{g.expiry_date ? ` · expires ${new Date(g.expiry_date).toLocaleDateString("en-IN", { day: "2-digit", month: "short" })}` : ""}
+                        </p>
+                      </div>
+                      <button type="button" onClick={() => removeCompOff(g)} disabled={coActionBusy}
+                        data-testid={`remove-co-${g.id}`}
+                        className="shrink-0 px-2.5 py-1 border border-red-300 text-red-600 rounded-md text-[11px] font-medium hover:bg-red-50 disabled:opacity-50">
+                        Remove
+                      </button>
+                    </div>
+                  ))}
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px] uppercase tracking-wider text-slate-400">Used</span>
-                  <input type="number" min="0" step="1"
-                    value={balForm.CompOff_used}
-                    onChange={e => setBalForm(f => ({ ...f, CompOff_used: e.target.value }))}
-                    data-testid="bal-CompOff-used"
-                    className="w-20 border border-slate-300 rounded-md px-2 py-1.5 text-sm text-center focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+              )}
+              {coLegacyAdj !== 0 && (
+                <p className="text-[10px] text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-2 py-1">
+                  {coLegacyAdj > 0
+                    ? `Includes ${coLegacyAdj} comp-off from an older manual adjustment with no earn date (not individually removable here).`
+                    : `A manual adjustment has reduced the available balance below the listed grants by ${-coLegacyAdj}.`}
+                </p>
+              )}
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 space-y-2">
+                <p className="text-[11px] font-semibold text-slate-600">Add a comp-off</p>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="block text-[10px] uppercase tracking-wider text-slate-400 mb-0.5">Earned on*</label>
+                    <input type="date" max={new Date().toISOString().slice(0, 10)}
+                      value={coAddForm.earn_date}
+                      onChange={e => setCoAddForm(f => ({ ...f, earn_date: e.target.value }))}
+                      data-testid="co-add-date"
+                      className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                  </div>
+                  <div className="flex-[2]">
+                    <label className="block text-[10px] uppercase tracking-wider text-slate-400 mb-0.5">Reason*</label>
+                    <input type="text" value={coAddForm.earn_reason}
+                      onChange={e => setCoAddForm(f => ({ ...f, earn_reason: e.target.value }))}
+                      placeholder="e.g. Worked on Republic Day"
+                      data-testid="co-add-reason"
+                      className="w-full border border-slate-300 rounded-md px-2 py-1.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                  </div>
                 </div>
-                <div className="w-16 text-right">
-                  <span className="text-[10px] uppercase tracking-wider text-slate-400 block">Remain</span>
-                  <span className="text-sm font-bold text-[#E85B1E]">
-                    {Math.max(0, (Number(balForm.CompOff_total) || 0) - (Number(balForm.CompOff_used) || 0))}
-                  </span>
-                </div>
+                <button type="button" onClick={addCompOff} disabled={coActionBusy}
+                  data-testid="co-add-btn"
+                  className="w-full px-3 py-1.5 bg-[#1E2A47] text-white rounded-md text-xs font-semibold disabled:opacity-60 hover:bg-[#2a3a5f]">
+                  {coActionBusy ? "Working…" : "Add Comp-Off"}
+                </button>
               </div>
             </div>
             <div>

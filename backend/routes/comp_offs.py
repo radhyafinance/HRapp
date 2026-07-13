@@ -56,6 +56,13 @@ class CompOffRejectBody(BaseModel):
     remarks: str
 
 
+class CompOffManualAddBody(BaseModel):
+    employee_id: str
+    earn_date: str            # ISO YYYY-MM-DD — the day the comp-off was earned
+    earn_reason: str          # required justification
+    hours_worked: Optional[float] = None
+
+
 def _to_dict(g: dict) -> dict:
     return {
         "id": str(g["_id"]),
@@ -328,6 +335,62 @@ async def reject_grant(
     g = await db.comp_off_grants.find_one({"_id": ObjectId(grant_id)})
     await _notify_compoff_decision(g, "rejected", body.remarks)
     return _to_dict(g)
+
+
+@router.post("/manual")
+async def add_manual_grant(body: CompOffManualAddBody, current_user: dict = Depends(get_current_user)):
+    """Admin adds a comp-off directly, entering the date it was earned. Created
+    as already-approved (source 'manual'); expires EXPIRY_DAYS after earned date."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not body.earn_reason or not body.earn_reason.strip():
+        raise HTTPException(status_code=400, detail="Reason is required.")
+    try:
+        earn = DateType.fromisoformat(body.earn_date)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="earn_date must be a valid date (YYYY-MM-DD).")
+    if earn > DateType.today():
+        raise HTTPException(status_code=400, detail="earn_date cannot be in the future.")
+    emp = await db.employees.find_one({"employee_id": body.employee_id}, {"_id": 0, "employee_id": 1})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found.")
+    dup = await db.comp_off_grants.find_one({
+        "employee_id": body.employee_id, "earn_date": body.earn_date,
+        "status": {"$in": ["pending", "approved", "used"]}})
+    if dup:
+        raise HTTPException(status_code=400, detail=f"A comp-off for {body.earn_date} already exists (status: {dup.get('status')}).")
+    now = datetime.now(timezone.utc).isoformat()
+    actor = current_user.get("employee_id") or current_user.get("username")
+    doc = {"employee_id": body.employee_id, "earn_date": body.earn_date,
+           "earn_reason": body.earn_reason.strip(), "hours_worked": body.hours_worked,
+           "status": "approved", "source": "manual",
+           "expiry_date": (earn + timedelta(days=EXPIRY_DAYS)).isoformat(),
+           "approved_at": now, "approved_by": actor, "created_at": now, "created_by": actor}
+    res = await db.comp_off_grants.insert_one(doc)
+    doc["_id"] = res.inserted_id
+    return _to_dict(doc)
+
+
+@router.delete("/{grant_id}")
+async def remove_grant(grant_id: str, current_user: dict = Depends(get_current_user)):
+    """Admin removes an AVAILABLE (approved, unused) comp-off. Soft-deleted
+    (status 'cancelled') for audit; used/expired/rejected cannot be removed."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    try:
+        oid = ObjectId(grant_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid grant id.")
+    g = await db.comp_off_grants.find_one({"_id": oid})
+    if not g:
+        raise HTTPException(status_code=404, detail="Comp-off grant not found")
+    if g.get("status") != "approved":
+        raise HTTPException(status_code=400, detail=f"Only available (approved, unused) comp-offs can be removed. This one is '{g.get('status')}'.")
+    await db.comp_off_grants.update_one({"_id": oid}, {"$set": {
+        "status": "cancelled",
+        "cancelled_at": datetime.now(timezone.utc).isoformat(),
+        "cancelled_by": current_user.get("employee_id") or current_user.get("username")}})
+    return {"success": True, "removed": grant_id, "earn_date": g.get("earn_date")}
 
 
 @router.post("/expire")

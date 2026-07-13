@@ -937,26 +937,8 @@ async def _deduct_leave_balance_for_regularisation(employee_id: str, leave_type:
                 {"$inc": {f"{leave_type}.used": 1.0, f"{leave_type}.remaining": -1.0}},
             )
         elif leave_type == "Comp-Off":
-            # Try manual balance first, else mark the oldest approved grant as used
-            bal = await db.leave_balances.find_one(
-                {"employee_id": employee_id, "year": fy}, {"_id": 0, "Comp-Off": 1}
-            ) or {}
-            stored_co = bal.get("Comp-Off")
-            if stored_co and isinstance(stored_co, dict) and stored_co.get("remaining", 0) > 0:
-                await db.leave_balances.update_one(
-                    {"employee_id": employee_id, "year": fy},
-                    {"$inc": {"Comp-Off.used": 1.0, "Comp-Off.remaining": -1.0}},
-                )
-            else:
-                grant = await db.comp_off_grants.find_one(
-                    {"employee_id": employee_id, "status": "approved"},
-                    sort=[("earn_date", 1)],
-                )
-                if grant:
-                    await db.comp_off_grants.update_one(
-                        {"_id": grant["_id"]},
-                        {"$set": {"status": "used", "used_at": datetime.now(timezone.utc).isoformat()}},
-                    )
+            from routes.leaves import _deduct_comp_off
+            await _deduct_comp_off(employee_id, fy, 1.0)
     except Exception as exc:
         logger.warning(f"_deduct_leave_balance_for_regularisation failed for {employee_id}/{leave_type}: {exc}")
 

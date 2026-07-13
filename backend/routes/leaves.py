@@ -123,6 +123,74 @@ def get_financial_year(dt: datetime = None) -> int:
     return d.year if d.month >= 4 else d.year - 1
 
 
+async def _comp_off_grant_counts(employee_id: str):
+    """(approved_remaining, used) comp-off grant counts for one employee."""
+    approved = await db.comp_off_grants.count_documents(
+        {"employee_id": employee_id, "status": "approved"})
+    used = await db.comp_off_grants.count_documents(
+        {"employee_id": employee_id, "status": "used"})
+    return approved, used
+
+
+def _comp_off_from_parts(grant_remaining: int, grant_used: int, adj: dict) -> dict:
+    """Effective {total, used, remaining} = live grant counts + manual delta."""
+    a = adj or {}
+    adj_total = a.get("adj_total", 0) or 0
+    adj_used = a.get("adj_used", 0) or 0
+    total = grant_remaining + grant_used + adj_total
+    used = grant_used + adj_used
+    if used < 0:
+        used = 0
+    if total < used:
+        total = used
+    return {"total": total, "used": used, "remaining": total - used}
+
+
+async def _comp_off_adj(employee_id: str, fy: int, bal_doc: dict) -> dict:
+    """Return the manual comp-off delta, auto-migrating a legacy absolute
+    override to a fixed delta on first access (persists the conversion)."""
+    co = (bal_doc or {}).get("Comp-Off")
+    if not isinstance(co, dict):
+        return {}
+    if "adj_total" in co or "adj_used" in co:
+        return co
+    gr, gu = await _comp_off_grant_counts(employee_id)
+    adj = {"adj_total": (co.get("total", 0) or 0) - (gr + gu),
+           "adj_used": (co.get("used", 0) or 0) - gu}
+    await db.leave_balances.update_one(
+        {"employee_id": employee_id, "year": fy}, {"$set": {"Comp-Off": adj}})
+    return adj
+
+
+async def _comp_off_balance(employee_id: str, fy: int, bal_doc: dict) -> dict:
+    gr, gu = await _comp_off_grant_counts(employee_id)
+    adj = await _comp_off_adj(employee_id, fy, bal_doc)
+    return _comp_off_from_parts(gr, gu, adj)
+
+
+async def _deduct_comp_off(employee_id: str, fy: int, days) -> None:
+    """Consume `days`: burn whole approved grants oldest-first, then push any
+    remainder (fractional day, or a manually-granted balance with no backing
+    grant) onto the manual delta as extra 'used'."""
+    to_deduct = float(days or 0)
+    while to_deduct >= 1.0:
+        grant = await db.comp_off_grants.find_one(
+            {"employee_id": employee_id, "status": "approved"}, sort=[("earn_date", 1)])
+        if not grant:
+            break
+        await db.comp_off_grants.update_one(
+            {"_id": grant["_id"]},
+            {"$set": {"status": "used", "used_at": datetime.now(timezone.utc).isoformat()}})
+        to_deduct -= 1.0
+    if to_deduct > 0:
+        bal_doc = await db.leave_balances.find_one(
+            {"employee_id": employee_id, "year": fy}, {"_id": 0, "Comp-Off": 1})
+        await _comp_off_adj(employee_id, fy, bal_doc)
+        await db.leave_balances.update_one(
+            {"employee_id": employee_id, "year": fy},
+            {"$inc": {"Comp-Off.adj_used": to_deduct}}, upsert=True)
+
+
 async def validate_leave_application(data, employee: dict):
     """Enforce all 10 company leave policy rules."""
     days = calc_days(data.start_date, data.end_date, getattr(data, "day_type", "full_day"), getattr(data, "start_half", False), getattr(data, "end_half", False))
@@ -370,28 +438,7 @@ async def apply_leave(data: LeaveApplyRequest, current_user: dict = Depends(get_
                 }},
             )
         elif data.leave_type == "Comp-Off":
-            # Deduct from manual balance first, then oldest approved grant
-            fy = get_financial_year()
-            bal = await db.leave_balances.find_one(
-                {"employee_id": emp_id, "year": fy}, {"_id": 0, "Comp-Off": 1}
-            ) or {}
-            stored_co = bal.get("Comp-Off")
-            if stored_co and isinstance(stored_co, dict) and stored_co.get("remaining", 0) > 0:
-                await db.leave_balances.update_one(
-                    {"employee_id": emp_id, "year": fy},
-                    {"$inc": {"Comp-Off.used": days, "Comp-Off.remaining": -days}},
-                )
-            else:
-                for _ in range(int(days)):
-                    grant = await db.comp_off_grants.find_one(
-                        {"employee_id": emp_id, "status": "approved"},
-                        sort=[("earn_date", 1)],
-                    )
-                    if grant:
-                        await db.comp_off_grants.update_one(
-                            {"_id": grant["_id"]},
-                            {"$set": {"status": "used", "used_at": datetime.now(timezone.utc).isoformat()}},
-                        )
+            await _deduct_comp_off(emp_id, get_financial_year(), days)
     else:
         await _notify_leave_applied({**doc, "_id": result.inserted_id}, employee)
     return doc
@@ -559,16 +606,22 @@ async def pending_leaves(current_user: dict = Depends(get_current_user)):
     ).to_list(500)
     bal_map = {b["employee_id"]: b for b in balances}
 
-    # Comp-Off balances live in a separate collection — batch-fetch for any Comp-Off leaves
-    co_emp_ids = [l["employee_id"] for l in enriched if l.get("leave_type") == "Comp-Off"]
+    # Comp-Off balances — batch-fetch for any Comp-Off leaves using grant ledger + adj
+    co_emp_ids = list({l["employee_id"] for l in enriched if l.get("leave_type") == "Comp-Off"})
     co_remaining_map = {}
     if co_emp_ids:
         co_pipeline = [
-            {"$match": {"employee_id": {"$in": co_emp_ids}, "status": "approved"}},
-            {"$group": {"_id": "$employee_id", "count": {"$sum": 1}}},
+            {"$match": {"employee_id": {"$in": co_emp_ids}, "status": {"$in": ["approved", "used"]}}},
+            {"$group": {"_id": {"emp": "$employee_id", "st": "$status"}, "count": {"$sum": 1}}},
         ]
-        co_rows = await db.comp_off_grants.aggregate(co_pipeline).to_list(1000)
-        co_remaining_map = {r["_id"]: r["count"] for r in co_rows}
+        approved_map, used_map = {}, {}
+        for r in await db.comp_off_grants.aggregate(co_pipeline).to_list(5000):
+            emp = r["_id"]["emp"]
+            (approved_map if r["_id"]["st"] == "approved" else used_map)[emp] = r["count"]
+        for emp in co_emp_ids:
+            adj = await _comp_off_adj(emp, fy, bal_map.get(emp))
+            co_remaining_map[emp] = _comp_off_from_parts(
+                approved_map.get(emp, 0), used_map.get(emp, 0), adj)["remaining"]
 
     for l in enriched:
         lt = l.get("leave_type", "")
@@ -613,29 +666,23 @@ async def all_leave_balances(current_user: dict = Depends(get_current_user)):
     ).to_list(1000)
     bal_map = {b["employee_id"]: b for b in balances}
 
-    # Live Comp-Off counts (approved, not used, not expired) — one aggregation, not N queries
+    # Live Comp-Off counts (approved + used) — need both for grant-ledger math
     comp_off_pipeline = [
-        {"$match": {"employee_id": {"$in": emp_ids}, "status": "approved"}},
-        {"$group": {"_id": "$employee_id", "count": {"$sum": 1}}},
+        {"$match": {"employee_id": {"$in": emp_ids}, "status": {"$in": ["approved", "used"]}}},
+        {"$group": {"_id": {"emp": "$employee_id", "st": "$status"}, "count": {"$sum": 1}}},
     ]
-    co_rows = await db.comp_off_grants.aggregate(comp_off_pipeline).to_list(1000)
-    co_map = {r["_id"]: r["count"] for r in co_rows}
+    approved_map, used_map = {}, {}
+    for r in await db.comp_off_grants.aggregate(comp_off_pipeline).to_list(5000):
+        emp = r["_id"]["emp"]
+        (approved_map if r["_id"]["st"] == "approved" else used_map)[emp] = r["count"]
 
     result = []
     for emp_id in emp_ids:
         emp = emp_map[emp_id]
         bal = bal_map.get(emp_id, LEAVE_BALANCE_TEMPLATE)
-        # Prefer manually stored Comp-Off balance; fall back to counting live grants
-        stored_co = bal.get("Comp-Off")
-        if stored_co and isinstance(stored_co, dict):
-            comp_off_bal = {
-                "total": stored_co.get("total", 0),
-                "used": stored_co.get("used", 0),
-                "remaining": stored_co.get("remaining", 0),
-            }
-        else:
-            co_remaining = co_map.get(emp_id, 0)
-            comp_off_bal = {"total": co_remaining, "used": 0, "remaining": co_remaining}
+        adj = await _comp_off_adj(emp_id, fy, bal)
+        comp_off_bal = _comp_off_from_parts(
+            approved_map.get(emp_id, 0), used_map.get(emp_id, 0), adj)
         result.append({
             "employee_id": emp_id,
             "name": f"{emp.get('first_name','')} {emp.get('last_name','')}".strip(),
@@ -656,24 +703,14 @@ async def my_leave_balance(current_user: dict = Depends(get_current_user)):
     emp_id = current_user.get("employee_id")
     if not emp_id:
         return {**LEAVE_BALANCE_TEMPLATE, "Comp-Off": {"total": 0, "used": 0, "remaining": 0}}
-    balance = await db.leave_balances.find_one(
-        {"employee_id": emp_id, "year": get_financial_year()}
-    )
+    fy = get_financial_year()
+    balance = await db.leave_balances.find_one({"employee_id": emp_id, "year": fy})
     if not balance:
         bal = dict(LEAVE_BALANCE_TEMPLATE)
     else:
         balance.pop("_id", None)
         bal = balance
-    # Prefer manually stored Comp-Off balance; fall back to counting live grants
-    stored_co = bal.get("Comp-Off")
-    if stored_co and isinstance(stored_co, dict):
-        # Manual override already set in leave_balances
-        pass
-    else:
-        comp_off_remaining = await db.comp_off_grants.count_documents(
-            {"employee_id": emp_id, "status": "approved"}
-        )
-        bal["Comp-Off"] = {"total": comp_off_remaining, "used": 0, "remaining": comp_off_remaining}
+    bal["Comp-Off"] = await _comp_off_balance(emp_id, fy, bal)
     return bal
 
 
@@ -685,21 +722,14 @@ async def get_leave_balance(employee_id: str, current_user: dict = Depends(get_c
     me_id = current_user.get("employee_id")
     if role not in ["hr_admin", "management"] and me_id != employee_id:
         raise HTTPException(status_code=403, detail="Access denied")
-    balance = await db.leave_balances.find_one(
-        {"employee_id": employee_id, "year": get_financial_year()}
-    )
+    fy = get_financial_year()
+    balance = await db.leave_balances.find_one({"employee_id": employee_id, "year": fy})
     if not balance:
         bal = {"employee_id": employee_id, **LEAVE_BALANCE_TEMPLATE}
     else:
         balance.pop("_id", None)
         bal = balance
-    # Prefer manually stored Comp-Off balance; fall back to counting live grants
-    stored_co = bal.get("Comp-Off")
-    if not (stored_co and isinstance(stored_co, dict)):
-        comp_off_remaining = await db.comp_off_grants.count_documents(
-            {"employee_id": employee_id, "status": "approved"}
-        )
-        bal["Comp-Off"] = {"total": comp_off_remaining, "used": 0, "remaining": comp_off_remaining}
+    bal["Comp-Off"] = await _comp_off_balance(employee_id, fy, bal)
     return bal
 
 
@@ -846,32 +876,9 @@ async def approve_leave(leave_id: str, data: LeaveApproveRequest, current_user: 
             }},
         )
 
-    # Comp-Off deduction — deduct from manual balance first, then oldest approved grant
+    # Comp-Off deduction — use new ledger-authoritative helper
     if new_status == "approved" and deduct_type == "Comp-Off":
-        fy = get_financial_year()
-        bal = await db.leave_balances.find_one(
-            {"employee_id": leave["employee_id"], "year": fy}, {"_id": 0, "Comp-Off": 1}
-        ) or {}
-        stored_co = bal.get("Comp-Off")
-        if stored_co and isinstance(stored_co, dict) and stored_co.get("remaining", 0) > 0:
-            # Deduct from manually managed balance
-            await db.leave_balances.update_one(
-                {"employee_id": leave["employee_id"], "year": fy},
-                {"$inc": {"Comp-Off.used": leave["days"], "Comp-Off.remaining": -leave["days"]}},
-            )
-        else:
-            # Deduct from oldest approved comp-off grant(s)
-            days_to_deduct = int(leave.get("days", 1))
-            for _ in range(days_to_deduct):
-                grant = await db.comp_off_grants.find_one(
-                    {"employee_id": leave["employee_id"], "status": "approved"},
-                    sort=[("earn_date", 1)],
-                )
-                if grant:
-                    await db.comp_off_grants.update_one(
-                        {"_id": grant["_id"]},
-                        {"$set": {"status": "used", "used_at": datetime.now(timezone.utc).isoformat()}},
-                    )
+        await _deduct_comp_off(leave["employee_id"], get_financial_year(), leave.get("days", 1))
 
     # Sync attendance for half-day leaves
     if new_status == "approved":
@@ -1379,11 +1386,14 @@ async def update_employee_balance(
         used = getattr(data, f"{k}_used")
         new_payload[k] = {"total": total, "used": used, "remaining": total - used}
 
-    # Optionally store manual Comp-Off balance override in leave_balances
+    # Store Comp-Off as a delta on top of grant ledger (not absolute)
+    co_gr = co_gu = None
     if data.CompOff_total is not None and data.CompOff_used is not None:
-        co_total = data.CompOff_total
-        co_used = data.CompOff_used
-        new_payload["Comp-Off"] = {"total": co_total, "used": co_used, "remaining": co_total - co_used}
+        co_gr, co_gu = await _comp_off_grant_counts(employee_id)
+        new_payload["Comp-Off"] = {
+            "adj_total": data.CompOff_total - (co_gr + co_gu),
+            "adj_used": data.CompOff_used - co_gu,
+        }
 
     await db.leave_balances.update_one(
         {"employee_id": employee_id, "year": fy},
@@ -1393,10 +1403,21 @@ async def update_employee_balance(
 
     after_snap = _build_balance_snapshot(new_payload)
     if data.CompOff_total is not None and data.CompOff_used is not None:
-        after_snap["Comp-Off"] = new_payload["Comp-Off"]
-    before_co = (existing or {}).get("Comp-Off")
-    if before_co:
-        before_snap["Comp-Off"] = before_co
+        after_snap["Comp-Off"] = {
+            "total": data.CompOff_total,
+            "used": data.CompOff_used,
+            "remaining": data.CompOff_total - data.CompOff_used,
+        }
+        before_co = (existing or {}).get("Comp-Off")
+        if isinstance(before_co, dict):
+            if "adj_total" in before_co or "adj_used" in before_co:
+                before_snap["Comp-Off"] = _comp_off_from_parts(co_gr, co_gu, before_co)
+            else:
+                before_snap["Comp-Off"] = {
+                    "total": before_co.get("total", 0),
+                    "used": before_co.get("used", 0),
+                    "remaining": before_co.get("remaining", 0),
+                }
 
     await _write_audit(
         employee_id=employee_id,
