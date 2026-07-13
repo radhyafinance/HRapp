@@ -2,13 +2,13 @@
 
 **User's preferred language**: English (INSTRUCT NEXT AGENT: You MUST respond in English only)
 
-**what currently exists?**: A robust PWA HR application with role-based access control. Features include geofenced attendance, advanced leave management, EPF UAN verification, hierarchical exit workflow, branch-wise dashboard drill-downs, filtered visibility, and payroll management (bulk publish functionality, comp-off deduction). WebAuthn/Biometric login has been completely removed per user request.
+**what currently exists?**: A robust HR application with full PWA and Native Android Capacitor capabilities. Features include geofenced attendance, advanced leave management, payroll, EPF UAN verification, FCM Push Notifications, and Background GPS Field Tracking. It has a custom Odometer tracking system utilizing on-device OCR (ML Kit) for the native app with a web file-input fallback for the PWA. A comprehensive Field Tracking admin dashboard is present to monitor live routes, device status, calculate distances, and track native app adoption.
 
 **Last working item**:
-    - Last item agent was working: Fixing a bug where Comp-Off leaves were not getting auto-deducted from employee balances upon leave approval. The agent added Comp-Off to the  array and applied deduction logic in both  and  backend routes.
-    - Status: USER VERIFICATION PENDING
+    - Last item agent was working: Fixing a bug in  where DigiLocker marksheets (education documents) were being downloaded but dropped at storage because the doctype map only covered CBSE. Implemented a heuristic string matching function () to map board-agnostic strings (like B.TECH, 12TH, MBA) to existing KYC schema keys (, , etc.). Verified fix with testing agent and deployed to production.
+    - Status: COMPLETED
     - Agent Testing Done: Y
-    - Which testing method agent to use?: NA (Already thoroughly tested via  Iteration 20).
+    - Which testing method agent to use?: NA (Already thoroughly tested via  Iteration 24 with 98% pass rate).
     - User Testing Done: N
 
 **All Pending/In progress Issue list**:
@@ -48,9 +48,12 @@
     - Task 6: Document Completeness Scope Refinement (P3) - Scope  to manager's sub-tree instead of whole company.
 
 **Completed work in this session**
-- Fixed Payslip Visibility Issue: Added a Publish Payslips bulk action for HR, made the period dropdown filter dynamic, and restricted non-admin visibility strictly to payslips with a paid status. (DONE)
-- Implemented HR Draft Payslip Reminder: Added a banner on the Payroll page indicating the number of draft/unpaid payslips to proactively remind HR to publish them. (DONE)
-- Fixed Comp-off leaves auto-deduction bug in both  and  backend pathways. (DONE)
+- Added web file-input camera fallback for PWA/browser odometer capture (, ) (DONE)
+- Enabled end-of-day odometer recording *before* punching out () (DONE)
+- Implemented comprehensive App vs PWA adoption tracking (, ) (DONE)
+- Overhauled  dashboard to include Live tracking, Device Status, Distance export, Odometer management, App Adoption, and Route History (DONE)
+- Refined and standardized native app detection logic across all Capacitor utilities via  (DONE)
+- Fixed DigiLocker bug dropping non-CBSE marksheets by adding  fallback in  (DONE)
 
 **Earlier issues found/mentioned but not fixed**
   None
@@ -64,53 +67,54 @@
 
 
 **Key Technical Concepts**
-Frontend: React, Tailwind, Axios.
-Backend: FastAPI, MongoDB, Pydantic, Background asyncio schedulers.
+Frontend: React, Tailwind, Axios, Capacitor Core & Plugins (Camera, PushNotifications, ML Kit Text Recognition, App).
+Backend: FastAPI, MongoDB, Pydantic, Background asyncio schedulers, Firebase Admin SDK.
 
 **key DB schema**
-  - : Contains  fields (draft, processed, paid) and .
-  - : Houses the comp-off balances.
-  - : Now includes  and historical action arrays.
-  - : Holds  which handles exited/absconding/terminated, and holds reporting structures.
-  - : Contains punch logs and session arrays.
+  - : Config for GPS pinging (, , , ).
+  - : Raw background GPS pings.
+  - : Daily start/end km readings and photos.
+  - : Holds platform usage metrics (, , , , ).
 
 **changes in tech stack**
-  None
+  - None this session, but heavy reliance on detecting native environment () to branch logic between PWA and Android APK.
 
 **All files of reference**
-  -  (Updated payslip visibility logic and  bulk API)
-  -  (Added Publish UI, dynamic dropdown, draft banner)
-  -  (Fixed Comp-Off deduction logic)
-  -  (Updated with bug fixes)
-  -  (Payroll testing report)
-  -  (Comp-Off testing report)
+  -  (NEW: Detects if running in App vs PWA and reports to backend)
+  -  (Overhauled with massive multi-tab dashboard for admins)
+  -  (Added endpoints for adoption metrics and distance export)
+  -  (Updated for PWA fallback and early end-of-day capture)
+  - , ,  (Updated to use central  logic)
+  -  (Bug fix for education documents)
 
 **Areas that need refactoring**:
 -  (>1500 lines),  (>1300 lines), and  (>1600 lines) are very large and should ideally be modularised into smaller components/services.
 
 **key api endpoints**
-  - 
-  - 
-  - 
+  -  (Reports app vs pwa usage)
+  -  (Admin view of app adoption)
+  -  (Excel export of travel)
 
 **Critical Info for New Agent**
-  - **Two Environments Config**: Code changes only reflect in the PREVIEW environment. The user has deployed the app to PRODUCTION. If the user reports an issue, clarify if it's occurring in preview or production. You can only fix code in the preview environment, and the user must redeploy to push to production. DO NOT proactively mention this, just keep it in mind for debugging context.
-  - Biometric/WebAuthn functionality was completely purged previously. Do not try to re-introduce it.
+  - **Two Environments Config**: The user has a separate PRODUCTION environment. You only code in PREVIEW. The user frequently provides exact block replacements of code. Implement them exactly as provided using  or , verify build, and then deploy using the  when requested.
+  - **Capacitor Native Exclusivity**: Logic in , , and  relies strictly on  from . Be very careful if modifying platform detection logic.
 
 **documents and test reports created in this job**
-  - 
-  - 
+  -  (DigiLocker Backend tests)
   - 
 
 **Last 10 User Messages and any pending HUMAN messages**
- 1. *User*: Please use ask_human tool and confirm your plan now.
- 2. *User*: In deployment, salary slip from June not visible to employees. Do they have to be marked as paid?
- 3. *Agent*: Investigated and added a Publish Payslips button, made period dynamic, and ran  to verify.
- 4. *User*: Enhancement idea: Display payslips to employees only when marked as paid. Add a banner on the Payroll page showing X draft payslips not yet published for [month]...
- 5. *Agent*: Implemented enhancement, adjusted backend logic to enforce paid status only for visibility, updated UI, and finished.
- 6. *User*: Comp off leaves not getting auto deducted.
- 7. *Agent*: Investigated , added Comp-Off to the deduction loops in approve and apply paths, ran  (iteration 20), and finished.
- *(No pending human messages).*
+ 1. *User*: Requested exact code replacements for  and  to support PWA camera fallback.
+ 2. *Agent*: Implemented, verified build, deployed.
+ 3. *User*: Requested exact code replacement for  to allow early end-of-day recording.
+ 4. *Agent*: Implemented, verified build, deployed.
+ 5. *User*: Provided 4 massive file replacements (, , , ) to add App Adoption metrics and a full admin dashboard.
+ 6. *Agent*: Implemented all, verified build, deployed.
+ 7. *User*: Provided successive tweaks to  and related utils to perfect the  Capacitor detection logic.
+ 8. *Agent*: Handled multiple iterations of code replacement and deployment.
+ 9. *User*: Reported a bug in  where marksheets were dropped. Provided 3 specific code edits to add .
+ 10. *Agent*: Implemented fix, verified with  (98% pass), and deployed.
+ *(No pending human messages. Wait for user instruction to pick up the next backlog item: P2 Payroll Recalculate Button or P0 Letter Generation).*
 
 **Project Health Check:**
 Healthy. No Mocked endpoints.
@@ -119,16 +123,17 @@ Healthy. No Mocked endpoints.
 	 •	Perfios (Bank Account, DigiLocker, EPF UAN Verification API) — requires User API Key.
 	 •	Google Gemini 2.5 Flash (Aadhaar & PAN OCR) — uses Emergent LLM Key.
 	 •	Resend (Email OTP and Notifications) — requires User API Key.
-	 •	Transistorsoft Background Geolocation — Direct API hook.
+	 •	Firebase Cloud Messaging (FCM) — requires User JSON Secret ( in .env).
+     •	Capacitor Plugins (ML Kit Text Recognition, PushNotifications, Camera, App) — built-in native integration.
 
 **Testing status**
-  - Testing agent used after significant changes: YES (iterations 19 and 20)
+  - Testing agent used after significant changes: YES (Iteration 24 for backend digilocker logic)
   - Troubleshoot agent used after agent stuck in loop: NO
-  - Test files created: None
+  - Test files created: 
   - Known regressions: None
 
 **Credentials to test flow:**
   - HR Admin:  / 
 
 **What agent forgot to execute**
-- The agent successfully executed all bug fixes and enhancements reported by the user in this session. Nothing was overlooked.</analysis>
+- Nothing. The agent successfully applied all user-provided code drops, ran tests, and successfully deployed to production multiple times.</analysis>
