@@ -56,6 +56,37 @@ def _extract_perfios_list(raw) -> list:
     return []
 
 
+def _map_education_type(text: str) -> Optional[str]:
+    """Board-agnostic best-effort mapping of a marksheet/certificate string to
+    an existing edu_* storage key. Order matters — higher levels first because
+    tokens overlap (e.g. "HSSC" contains "SSC"). Unknown-level educational docs
+    fall back to edu_other rather than being dropped."""
+    # Guard: short education tokens collide with unrelated govt docs —
+    # "PUC" (Pre-University) vs vehicle Pollution Under Control cert,
+    # "SSC" (Secondary School Certificate) vs Staff Selection Commission.
+    if any(k in text for k in ("POLLUTION", "PUCC", "STAFF SELECTION",
+                               "SELECTION COMMISSION", "VEHICLE")):
+        return None
+    if any(k in text for k in ("PHD", "PH.D", "DOCTORATE", "DOCTORAL")):
+        return "edu_phd"
+    if any(k in text for k in ("POST GRAD", "POSTGRAD", "MASTER", "M.SC", "M.TECH",
+                               "M.COM", "MBA", "MCA", "PG DIPLOMA")):
+        return "edu_post_graduation"
+    if any(k in text for k in ("BACHELOR", "GRADUATION", "GRADUATE", "DEGREE", "B.SC",
+                               "B.TECH", "B.COM", "BBA", "BCA", "UNDERGRAD")):
+        return "edu_graduation"
+    if any(k in text for k in ("12TH", "CLASS XII", "SENIOR SECONDARY", "HIGHER SECONDARY",
+                               "INTERMEDIATE", "HSSC", "HSC", "PUC", "10+2")):
+        return "edu_12th"
+    if any(k in text for k in ("10TH", "CLASS X", "MATRIC", "SSLC", "SSC")):
+        return "edu_10th"
+    if any(k in text for k in ("MARKSHEET", "MARK SHEET", "MARKS CARD", "MARKS MEMO",
+                               "MEMORANDUM OF MARKS", "TRANSCRIPT", "PROVISIONAL",
+                               "MIGRATION", "CONVOCATION", "DIPLOMA")):
+        return "edu_other"
+    return None
+
+
 def _map_doc_type(uri: str, name: str) -> Optional[str]:
     """Guess our storage key from a DigiLocker URI / name string."""
     upper = ((uri or "") + " " + (name or "")).upper()
@@ -71,6 +102,10 @@ def _map_doc_type(uri: str, name: str) -> Optional[str]:
         return "driving_license_front"
     if "VOTER" in upper:
         return "voter_id_front"
+    # Loose fallbacks — education / marksheets (board-agnostic)
+    edu_key = _map_education_type(upper)
+    if edu_key:
+        return edu_key
     return None
 
 
@@ -359,7 +394,7 @@ async def _do_fetch_and_store(
         # Use explicit doctype from Perfios first, then fall back to URI/name scanning
         doc_key = _DL_TYPE_MAP.get(doctype.upper()) if doctype else None
         if not doc_key:
-            doc_key = _map_doc_type(uri, name)
+            doc_key = _map_doc_type(f"{uri} {doctype}", name)
         if not doc_key:
             failed.append({"uri": uri, "name": name, "reason": "unrecognised document type"})
             continue
