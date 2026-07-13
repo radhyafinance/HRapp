@@ -3,6 +3,7 @@ import API from "../utils/api";
 import { initFieldTracking, stopFieldTracking } from "../utils/fieldTracking";
 import { initPush } from "../utils/pushNotifications";
 import { initOdometer } from "../utils/odometer";
+import { reportClientPlatform } from "../utils/clientPlatform";
 
 const AuthContext = createContext(null);
 
@@ -26,6 +27,7 @@ export function AuthProvider({ children }) {
       initFieldTracking();
       initPush();
       initOdometer();
+      reportClientPlatform();
     }
   }, [user]);
 

@@ -21,13 +21,10 @@ from datetime import datetime, timezone, timedelta
 import secrets
 import math
 import io
-
 router = APIRouter()
-
 # ──────────────────────────────────────────────────────────────
 #  Public endpoint — accepts background location pings
 # ──────────────────────────────────────────────────────────────
-
 @router.api_route("/osmand", methods=["GET", "POST"])
 async def ingest_ping(request: Request):
     """OsmAnd-protocol location ping from the app's background tracker.
@@ -42,7 +39,6 @@ async def ingest_ping(request: Request):
     """
     # Start with URL query params
     qp = {k.lower(): v for k, v in request.query_params.items()}
-
     # Try form-encoded body
     if request.method == "POST":
         try:
@@ -51,7 +47,6 @@ async def ingest_ping(request: Request):
                 qp.setdefault(k.lower(), str(v))
         except Exception:
             pass
-
         # Try JSON body (some OsmAnd-style clients send JSON)
         try:
             body = await request.json()
@@ -67,11 +62,8 @@ async def ingest_ping(request: Request):
                 return Response(status_code=200)
         except Exception:
             pass
-
     await _process_ping(qp, request)
     return Response(status_code=200)
-
-
 def _flatten_json(obj: dict, out: dict, prefix: str = ""):
     """Flatten nested JSON into flat lowercase keys.
     Also maps common nested GPS field names to our flat keys.
@@ -84,7 +76,6 @@ def _flatten_json(obj: dict, out: dict, prefix: str = ""):
             continue  # skip arrays inside fields
         else:
             out.setdefault(key, v)
-
     # Map nested coord paths to our expected flat keys
     mappings = {
         "coords.latitude": "lat",
@@ -107,12 +98,9 @@ def _flatten_json(obj: dict, out: dict, prefix: str = ""):
             if src == "battery.level" and isinstance(val, (int, float)) and 0 <= val <= 1:
                 val = round(val * 100, 1)
             out[dst] = val
-
-
 async def _process_ping(qp: dict, request: Request):
     """Persist a single ping given flattened params."""
     raw_id = str(qp.get("id") or qp.get("deviceid") or qp.get("device_id") or "").strip()
-
     # Diagnostic log — stored in `tracker_ping_log` (capped to last 500).
     try:
         await db.tracker_ping_log.insert_one({
@@ -130,20 +118,16 @@ async def _process_ping(qp: dict, request: Request):
                 await db.tracker_ping_log.delete_many({"_id": {"$in": [d["_id"] for d in old]}})
     except Exception:
         pass
-
     if not raw_id or ":" not in raw_id:
         return
-
     emp_id, _, secret = raw_id.partition(":")
     emp_id = emp_id.strip().upper()
     secret = secret.strip()
     if not emp_id or not secret:
         return
-
     tracker = await db.employee_trackers.find_one({"employee_id": emp_id, "secret": secret})
     if not tracker or not tracker.get("active", True):
         return
-
     try:
         lat = float(qp.get("lat", 0))
         lon = float(qp.get("lon", 0))
@@ -151,9 +135,7 @@ async def _process_ping(qp: dict, request: Request):
         return
     if lat == 0 and lon == 0:
         return
-
     accuracy = _safe_float(qp.get("accuracy")) or _safe_float(qp.get("hdop"))
-
     ts = datetime.now(timezone.utc)
     try:
         raw_ts = qp.get("timestamp") or qp.get("time")
@@ -166,9 +148,7 @@ async def _process_ping(qp: dict, request: Request):
                 ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
     except (ValueError, TypeError):
         pass
-
     date_str = ts.strftime("%Y-%m-%d")
-
     log = {
         "employee_id": emp_id,
         "date": date_str,
@@ -183,7 +163,6 @@ async def _process_ping(qp: dict, request: Request):
         "source": "app",
     }
     await db.location_logs.insert_one(log)
-
     await db.employee_trackers.update_one(
         {"employee_id": emp_id},
         {"$set": {
@@ -194,8 +173,6 @@ async def _process_ping(qp: dict, request: Request):
             "last_battery": _safe_float(qp.get("batt")),
         }},
     )
-
-
 def _safe_float(v):
     if v is None:
         return None
@@ -203,23 +180,17 @@ def _safe_float(v):
         return float(v)
     except (ValueError, TypeError):
         return None
-
-
 # ──────────────────────────────────────────────────────────────
 #  Admin endpoints — manage employee tracker config
 # ──────────────────────────────────────────────────────────────
-
 def _new_secret() -> str:
     return secrets.token_urlsafe(12)
-
-
 @router.get("/devices")
 async def list_devices(current_user: dict = Depends(get_current_user)):
     """List all configured tracker devices with freshness status.
     Works independent of attendance so admins can diagnose silent devices."""
     if current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
-
     tracker_q = {}
     if current_user.get("role") == "managers":
         from services.hierarchy import get_descendant_employee_ids
@@ -228,11 +199,9 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
         if not scope:
             return []
         tracker_q["employee_id"] = {"$in": scope}
-
     trackers = await db.employee_trackers.find(tracker_q, {"_id": 0}).to_list(2000)
     if not trackers:
         return []
-
     emp_ids = [t["employee_id"] for t in trackers]
     employees = await db.employees.find(
         {"employee_id": {"$in": emp_ids}},
@@ -240,7 +209,6 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
          "designation": 1, "department": 1, "role": 1, "status": 1, "phone": 1},
     ).to_list(2000)
     emp_map = {e["employee_id"]: e for e in employees}
-
     now = datetime.now(timezone.utc)
     out = []
     for t in trackers:
@@ -283,22 +251,18 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
     order = {"live": 0, "recent": 1, "stale": 2, "silent": 3, "never": 4}
     out.sort(key=lambda x: (order.get(x["freshness"], 5), x["name"]))
     return out
-
-
 @router.get("/config/{employee_id}")
 async def get_tracker_config(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Return the tracking setup details (identifier) for an employee.
     Creates a tracker config lazily on first fetch."""
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
-
     emp = await db.employees.find_one(
         {"employee_id": employee_id},
         {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "phone": 1}
     )
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
-
     tracker = await db.employee_trackers.find_one({"employee_id": employee_id}, {"_id": 0})
     if not tracker:
         tracker = {
@@ -311,7 +275,6 @@ async def get_tracker_config(employee_id: str, current_user: dict = Depends(get_
         }
         await db.employee_trackers.insert_one(tracker)
         tracker.pop("_id", None)
-
     identifier = f"{employee_id}:{tracker['secret']}"
     return {
         "employee_id": employee_id,
@@ -326,8 +289,6 @@ async def get_tracker_config(employee_id: str, current_user: dict = Depends(get_
         "last_accuracy": tracker.get("last_accuracy"),
         "last_battery": tracker.get("last_battery"),
     }
-
-
 @router.post("/regenerate/{employee_id}")
 async def regenerate_secret(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Rotate the tracker secret — old device stops working."""
@@ -356,8 +317,6 @@ async def regenerate_secret(employee_id: str, current_user: dict = Depends(get_c
         "identifier": f"{employee_id}:{new_secret}",
         "message": "Tracker secret rotated. Old device will stop sending pings.",
     }
-
-
 def _has_open_session(att: dict) -> bool:
     """True if the employee is currently punched in (a session with no punch-out)."""
     if not att:
@@ -370,8 +329,6 @@ def _has_open_session(att: dict) -> bool:
         if s.get("punch_in_time") and not s.get("punch_out_time"):
             return True
     return False
-
-
 @router.get("/my-config")
 async def get_my_tracker_config(current_user: dict = Depends(get_current_user)):
     """Self-service tracker config for the logged-in field employee.
@@ -383,7 +340,6 @@ async def get_my_tracker_config(current_user: dict = Depends(get_current_user)):
     if not emp_id:
         # Admin / management accounts aren't field-tracked
         raise HTTPException(status_code=400, detail="No employee linked to this account")
-
     tracker = await db.employee_trackers.find_one({"employee_id": emp_id}, {"_id": 0})
     if not tracker:
         tracker = {
@@ -395,10 +351,8 @@ async def get_my_tracker_config(current_user: dict = Depends(get_current_user)):
             "last_ping_at": None,
         }
         await db.employee_trackers.insert_one(dict(tracker))
-
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     att = await db.attendance_records.find_one({"employee_id": emp_id, "date": today})
-
     return {
         "employee_id": emp_id,
         "identifier": f"{emp_id}:{tracker['secret']}",
@@ -406,8 +360,6 @@ async def get_my_tracker_config(current_user: dict = Depends(get_current_user)):
         "active": tracker.get("active", True),
         "should_track": _has_open_session(att),
     }
-
-
 @router.post("/toggle/{employee_id}")
 async def toggle_active(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Enable or disable a tracker device without rotating the secret."""
@@ -422,23 +374,16 @@ async def toggle_active(employee_id: str, current_user: dict = Depends(get_curre
         {"$set": {"active": new_state}},
     )
     return {"employee_id": employee_id, "active": new_state}
-
-
 # ══════════════════════════════════════════════════════════════════
 #  Distance travelled + odometer (reimbursement)
 # ══════════════════════════════════════════════════════════════════
-
 # GPS straight-line distance thresholds (jitter filtering)
 _MIN_MOVE_M = 30        # sub-30 m hops = GPS jitter while stationary → ignore
 _MAX_ACCURACY_M = 100   # drop fixes worse than 100 m
 _MAX_SPEED_MS = 42.0    # ~150 km/h; faster-implied segments are bad fixes
-
-
 def _today() -> str:
     # Matches the date basis used by /my-config and the ping log (UTC).
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-
 def _haversine_m(lat1, lon1, lat2, lon2):
     R = 6371000.0
     p1, p2 = math.radians(lat1), math.radians(lat2)
@@ -446,8 +391,6 @@ def _haversine_m(lat1, lon1, lat2, lon2):
     dlmb = math.radians(lon2 - lon1)
     a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
     return 2 * R * math.asin(math.sqrt(a))
-
-
 def _ts_seconds(ts):
     if not ts:
         return None
@@ -455,8 +398,6 @@ def _ts_seconds(ts):
         return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
     except Exception:
         return None
-
-
 async def _gps_distance_km(employee_id: str, date_str: str) -> float:
     """Filtered straight-line distance (km) from the day's location pings."""
     cur = db.location_logs.find(
@@ -484,8 +425,6 @@ async def _gps_distance_km(employee_id: str, date_str: str) -> float:
             total += seg
         prev = (lat, lon, secs)
     return round(total / 1000.0, 2)
-
-
 async def _att_punch_state(employee_id: str, date_str: str):
     """(punched_in_today, punched_out_today) from the attendance record."""
     att = await db.attendance_records.find_one({"employee_id": employee_id, "date": date_str})
@@ -497,13 +436,9 @@ async def _att_punch_state(employee_id: str, date_str: str):
     has_in = any(s.get("punch_in_time") for s in sessions)
     has_out = any(s.get("punch_out_time") for s in sessions)
     return (has_in, has_out)
-
-
 async def _odo_reading(employee_id: str, date_str: str, kind: str):
     return await db.odometer_readings.find_one(
         {"employee_id": employee_id, "date": date_str, "kind": kind}, {"_id": 0, "photo": 0})
-
-
 async def _odo_day(employee_id: str, date_str: str):
     """Return (start_doc, end_doc, distance_km_or_None)."""
     start = await _odo_reading(employee_id, date_str, "start")
@@ -513,8 +448,6 @@ async def _odo_day(employee_id: str, date_str: str):
         d = end["reading_km"] - start["reading_km"]
         dist = round(d, 1) if d >= 0 else None
     return start, end, dist
-
-
 async def _scope_ids(current_user: dict):
     """None => sees everyone; else the list of employee_ids a manager may see."""
     role = current_user.get("role")
@@ -525,36 +458,28 @@ async def _scope_ids(current_user: dict):
         me = current_user.get("employee_id")
         return list(await get_descendant_employee_ids(me)) if me else []
     raise HTTPException(status_code=403, detail="Access denied")
-
-
 # ── Feature A: GPS distance report ────────────────────────────────
-
 @router.get("/distance")
 async def distance_report(date_str: str = None, current_user: dict = Depends(get_current_user)):
     """Per-employee distance for one day: GPS estimate + odometer (if tracked)."""
     scope = await _scope_ids(current_user)
     date_str = date_str or _today()
-
     ping_q = {"date": date_str}
     if scope is not None:
         ping_q["employee_id"] = {"$in": scope}
     gps_ids = await db.location_logs.distinct("employee_id", ping_q)
-
     odo_q = {"odometer_required": True}
     if scope is not None:
         odo_q["employee_id"] = {"$in": scope}
     odo_ids = await db.employees.distinct("employee_id", odo_q)
-
     emp_ids = sorted(set(gps_ids) | set(odo_ids))
     if not emp_ids:
         return {"date": date_str, "total_gps_km": 0, "rows": []}
-
     emps = await db.employees.find(
         {"employee_id": {"$in": emp_ids}},
         {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "designation": 1, "odometer_required": 1},
     ).to_list(4000)
     emap = {e["employee_id"]: e for e in emps}
-
     rows, total = [], 0.0
     for eid in emp_ids:
         gps = await _gps_distance_km(eid, date_str)
@@ -584,8 +509,6 @@ async def distance_report(date_str: str = None, current_user: dict = Depends(get
         })
     rows.sort(key=lambda r: r["gps_km"], reverse=True)
     return {"date": date_str, "total_gps_km": round(total, 2), "rows": rows}
-
-
 @router.get("/distance/export")
 async def distance_export(from_date: str, to_date: str, current_user: dict = Depends(get_current_user)):
     """Excel export of daily GPS + odometer distance over a date range."""
@@ -599,9 +522,7 @@ async def distance_export(from_date: str, to_date: str, current_user: dict = Dep
         d0, d1 = d1, d0
     if (d1 - d0).days > 92:
         raise HTTPException(status_code=400, detail="Range too large (max 92 days)")
-
     dates = [(d0 + timedelta(days=i)).strftime("%Y-%m-%d") for i in range((d1 - d0).days + 1)]
-
     # Which employees to include: anyone with pings in range, or odometer-required.
     ping_q = {"date": {"$in": dates}}
     if scope is not None:
@@ -612,13 +533,11 @@ async def distance_export(from_date: str, to_date: str, current_user: dict = Dep
         odo_q["employee_id"] = {"$in": scope}
     odo_ids = await db.employees.distinct("employee_id", odo_q)
     emp_ids = sorted(set(gps_ids) | set(odo_ids))
-
     emps = await db.employees.find(
         {"employee_id": {"$in": emp_ids}},
         {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "odometer_required": 1},
     ).to_list(4000)
     emap = {e["employee_id"]: e for e in emps}
-
     from openpyxl import Workbook
     wb = Workbook()
     daily = wb.active
@@ -647,13 +566,11 @@ async def distance_export(from_date: str, to_date: str, current_user: dict = Dep
             daily.append([eid, name, ds, gps, odo if odo is not None else "", status])
             summary_rows[eid][0] += gps
             summary_rows[eid][1] += (odo or 0.0)
-
     summ = wb.create_sheet("Summary")
     summ.append(["Employee ID", "Name", "Total GPS km", "Total Odometer km"])
     for eid in emp_ids:
         g, o, name = summary_rows[eid]
         summ.append([eid, name, round(g, 2), round(o, 1)])
-
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
@@ -663,17 +580,12 @@ async def distance_export(from_date: str, to_date: str, current_user: dict = Dep
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
-
-
 # ── Feature B: odometer capture + reminders ───────────────────────
-
 class OdometerReadingIn(BaseModel):
     kind: str                      # "start" | "end"
     reading_km: float
     ocr_text: Optional[str] = None
     photo: Optional[str] = None    # base64 (audit proof)
-
-
 @router.post("/odometer/reading")
 async def submit_odometer_reading(body: OdometerReadingIn, current_user: dict = Depends(get_current_user)):
     """Field employee submits a confirmed odometer reading (start/end of day)."""
@@ -698,8 +610,6 @@ async def submit_odometer_reading(body: OdometerReadingIn, current_user: dict = 
     )
     _, _, dist = await _odo_day(emp_id, date_str)
     return {"ok": True, "distance_km": dist}
-
-
 @router.get("/odometer/my-status")
 async def my_odometer_status(current_user: dict = Depends(get_current_user)):
     """Tells the app whether the employee owes a start/end odometer photo today."""
@@ -723,8 +633,6 @@ async def my_odometer_status(current_user: dict = Depends(get_current_user)):
         "end_km": end.get("reading_km") if end else None,
         "distance_km": dist,
     }
-
-
 @router.get("/odometer/employees")
 async def odometer_employees(current_user: dict = Depends(get_current_user)):
     """Admin list of employees with their odometer-tracking flag (for Settings)."""
@@ -740,25 +648,16 @@ async def odometer_employees(current_user: dict = Depends(get_current_user)):
         "designation": e.get("designation", ""),
         "odometer_required": bool(e.get("odometer_required")),
     } for e in emps]
-
-
 @router.post("/odometer/toggle/{employee_id}")
 async def toggle_odometer(employee_id: str, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ("hr_admin", "management"):
         raise HTTPException(status_code=403, detail="Access denied")
-    # Use employee_id in projection so result is never an empty {} for existing employees.
-    # Use `is None` (not falsy) so employees without the field are correctly found.
-    emp = await db.employees.find_one(
-        {"employee_id": employee_id},
-        {"_id": 0, "employee_id": 1, "odometer_required": 1},
-    )
-    if emp is None:
+    emp = await db.employees.find_one({"employee_id": employee_id}, {"_id": 0, "odometer_required": 1})
+    if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
     new_state = not bool(emp.get("odometer_required"))
     await db.employees.update_one({"employee_id": employee_id}, {"$set": {"odometer_required": new_state}})
     return {"employee_id": employee_id, "odometer_required": new_state}
-
-
 @router.get("/odometer/day/{employee_id}")
 async def odometer_day(employee_id: str, date_str: str = None, current_user: dict = Depends(get_current_user)):
     """Full odometer detail incl. photos for a day (HR/management audit view)."""
@@ -774,8 +673,6 @@ async def odometer_day(employee_id: str, date_str: str = None, current_user: dic
         d = end["reading_km"] - start["reading_km"]
         dist = round(d, 1) if d >= 0 else None
     return {"employee_id": employee_id, "date": date_str, "start": start, "end": end, "distance_km": dist}
-
-
 async def _notify_hr_admins(emp_id: str, date_str: str, has_start: bool, has_end: bool):
     from routes.notifications import create_notification
     emp = await db.employees.find_one({"employee_id": emp_id}, {"_id": 0, "first_name": 1, "last_name": 1})
@@ -791,8 +688,6 @@ async def _notify_hr_admins(emp_id: str, date_str: str, has_start: bool, has_end
             f"{name} ({emp_id}) has not submitted odometer ({missing}) for {date_str}.",
             type="warning", link="/field-tracking",
         )
-
-
 async def run_odometer_reminders():
     """Hourly during work hours: remind employees, escalate to HR after 19:00 IST.
     Invoked by the scheduler loop in server.py."""
@@ -831,3 +726,63 @@ async def run_odometer_reminders():
                     {"employee_id": eid, "date": date_str, "kind": "_hr_flag",
                      "created_at": datetime.now(timezone.utc).isoformat()})
                 await _notify_hr_admins(eid, date_str, bool(start), bool(end))
+# ══════════════════════════════════════════════════════════════════
+#  App vs PWA adoption tracking
+# ══════════════════════════════════════════════════════════════════
+class ClientInfoIn(BaseModel):
+    platform: str                 # "app" | "pwa"
+    os: Optional[str] = None
+    standalone: Optional[bool] = None
+    version: Optional[str] = None  # APK version — reported once a future APK provides it
+@router.post("/client-info")
+async def record_client_info(body: ClientInfoIn, current_user: dict = Depends(get_current_user)):
+    """Called by the frontend on login to record whether the employee is on the
+    Android app or the PWA (and the APK version, once the app reports one).
+    No-op for accounts without a linked employee."""
+    emp_id = current_user.get("employee_id")
+    if not emp_id:
+        return {"ok": True}
+    platform = "app" if body.platform == "app" else "pwa"
+    now = datetime.now(timezone.utc).isoformat()
+    update = {
+        "last_platform": platform,
+        "last_platform_os": (body.os or "")[:40],
+        "last_platform_at": now,
+        "last_platform_standalone": bool(body.standalone),
+        ("app_seen_at" if platform == "app" else "pwa_seen_at"): now,
+    }
+    if platform == "app" and body.version:
+        update["last_app_version"] = str(body.version)[:20]
+    await db.employees.update_one({"employee_id": emp_id}, {"$set": update})
+    return {"ok": True}
+@router.get("/adoption")
+async def adoption_report(current_user: dict = Depends(get_current_user)):
+    """Per-employee App/PWA status + summary counts. HR/management only."""
+    if current_user.get("role") not in ("hr_admin", "management"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    emps = await db.employees.find(
+        {"status": {"$ne": "exited"}},
+        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "designation": 1,
+         "last_platform": 1, "last_platform_os": 1, "last_platform_at": 1,
+         "app_seen_at": 1, "pwa_seen_at": 1, "last_app_version": 1},
+    ).sort("employee_id", 1).to_list(4000)
+    counts = {"app": 0, "pwa": 0, "never": 0}
+    rows = []
+    for e in emps:
+        lp = e.get("last_platform")
+        status = "app" if lp == "app" else "pwa" if lp == "pwa" else "never"
+        counts[status] += 1
+        rows.append({
+            "employee_id": e["employee_id"],
+            "name": f"{e.get('first_name','')} {e.get('last_name','')}".strip() or e["employee_id"],
+            "designation": e.get("designation", ""),
+            "status": status,
+            "os": e.get("last_platform_os", ""),
+            "last_seen": e.get("last_platform_at"),
+            "ever_app": bool(e.get("app_seen_at")),
+            "version": e.get("last_app_version") or "",
+        })
+    # Chase list first: PWA, then never, then app; by name within each group.
+    order = {"pwa": 0, "never": 1, "app": 2}
+    rows.sort(key=lambda r: (order.get(r["status"], 3), r["name"]))
+    return {"counts": counts, "rows": rows}

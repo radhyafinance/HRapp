@@ -4,7 +4,6 @@ import { useAuth } from "../contexts/AuthContext";
 import { MapPin, Activity, Clock, AlertCircle, ArrowLeft, RefreshCw, Battery, Smartphone, Search } from "lucide-react";
 import RouteMap from "../components/RouteMap";
 import { toLocalDateStr } from "../utils/shiftRules";
-
 const FRESHNESS_STYLES = {
   live:    { label: "Live",    dot: "bg-green-500",    bg: "bg-green-50",    text: "text-green-700",  border: "border-green-200" },
   recent:  { label: "Recent",  dot: "bg-emerald-400",  bg: "bg-emerald-50",  text: "text-emerald-700",border: "border-emerald-200" },
@@ -12,7 +11,6 @@ const FRESHNESS_STYLES = {
   silent:  { label: "Silent",  dot: "bg-red-500",      bg: "bg-red-50",      text: "text-red-700",    border: "border-red-200" },
   never:   { label: "Never",   dot: "bg-slate-400",    bg: "bg-slate-50",    text: "text-slate-600",  border: "border-slate-200" },
 };
-
 function minsAgoLabel(m) {
   if (m == null) return "Never";
   if (m < 1) return "Just now";
@@ -20,7 +18,6 @@ function minsAgoLabel(m) {
   if (m < 1440) return `${Math.floor(m / 60)} h ago`;
   return `${Math.floor(m / 1440)} d ago`;
 }
-
 export default function FieldTracking() {
   const { user } = useAuth();
   const [tab, setTab] = useState("live");
@@ -32,7 +29,6 @@ export default function FieldTracking() {
   const [trackLoading, setTrackLoading] = useState(false);
   const [date, setDate] = useState(toLocalDateStr());
   const [devFilter, setDevFilter] = useState("");
-
   const [distDate, setDistDate] = useState(toLocalDateStr());
   const [distData, setDistData] = useState(null);
   const [distLoading, setDistLoading] = useState(false);
@@ -40,62 +36,47 @@ export default function FieldTracking() {
   const [odoSearch, setOdoSearch] = useState("");
   const [odoLoading, setOdoLoading] = useState(false);
   const [odoView, setOdoView] = useState(null);
-
+  const [adoption, setAdoption] = useState(null);
+  const [adoptionLoading, setAdoptionLoading] = useState(false);
+  const [adoptionFilter, setAdoptionFilter] = useState("");
   const [histEmpSearch, setHistEmpSearch] = useState("");
   const [histDate, setHistDate] = useState(toLocalDateStr());
   const [histEmployees, setHistEmployees] = useState([]);
   const [histSelected, setHistSelected] = useState(null);
   const [histTrack, setHistTrack] = useState(null);
   const [histLoading, setHistLoading] = useState(false);
-
   const isManager = ["hr_admin", "management", "managers"].includes(user?.role);
   const canViewOdoPhotos = ["hr_admin", "management"].includes(user?.role);
-
   const fetchActive = async () => {
     setLoading(true);
-    try {
-      const res = await API.get("/attendance/field-staff/active");
-      setActiveStaff(res.data);
-    } catch (e) { console.error(e); }
-    finally { setLoading(false); }
+    try { const res = await API.get("/attendance/field-staff/active"); setActiveStaff(res.data); }
+    catch (e) { console.error(e); } finally { setLoading(false); }
   };
-
   const fetchDevices = async () => {
     setLoading(true);
-    try {
-      const res = await API.get("/tracker/devices");
-      setDevices(res.data);
-    } catch (e) { console.error(e); }
-    finally { setLoading(false); }
+    try { const res = await API.get("/tracker/devices"); setDevices(res.data); }
+    catch (e) { console.error(e); } finally { setLoading(false); }
   };
-
   const fetchEmployees = async () => {
-    try {
-      const res = await API.get("/employees?status=all");
-      setHistEmployees(res.data);
-    } catch (e) { console.error(e); }
+    try { const res = await API.get("/employees?status=all"); setHistEmployees(res.data); }
+    catch (e) { console.error(e); }
   };
-
   const fetchDistance = async (d) => {
     setDistLoading(true);
     try { const res = await API.get("/tracker/distance", { params: { date_str: d } }); setDistData(res.data); }
     catch (e) { console.error(e); } finally { setDistLoading(false); }
   };
-
   const fetchOdoList = async () => {
     setOdoLoading(true);
     try { const res = await API.get("/tracker/odometer/employees"); setOdoList(res.data); }
     catch (e) { console.error(e); } finally { setOdoLoading(false); }
   };
-
   const toggleOdo = async (id) => {
     try {
       const res = await API.post(`/tracker/odometer/toggle/${id}`);
-      setOdoList(list => list.map(x => x.employee_id === id
-        ? { ...x, odometer_required: res.data.odometer_required } : x));
+      setOdoList(list => list.map(x => x.employee_id === id ? { ...x, odometer_required: res.data.odometer_required } : x));
     } catch (e) { console.error(e); }
   };
-
   const exportDistance = async () => {
     const d = new Date(distDate + "T00:00:00");
     const pad = (n) => String(n).padStart(2, "0");
@@ -103,15 +84,18 @@ export default function FieldTracking() {
     const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
     const to = `${last.getFullYear()}-${pad(last.getMonth() + 1)}-${pad(last.getDate())}`;
     try {
-      const res = await API.get("/tracker/distance/export",
-        { params: { from_date: from, to_date: to }, responseType: "blob" });
+      const res = await API.get("/tracker/distance/export", { params: { from_date: from, to_date: to }, responseType: "blob" });
       const url = URL.createObjectURL(res.data);
       const a = document.createElement("a");
       a.href = url; a.download = `distance_${from}_to_${to}.xlsx`; a.click();
       URL.revokeObjectURL(url);
     } catch (e) { console.error(e); }
   };
-
+  const fetchAdoption = async () => {
+    setAdoptionLoading(true);
+    try { const res = await API.get("/tracker/adoption"); setAdoption(res.data); }
+    catch (e) { console.error(e); } finally { setAdoptionLoading(false); }
+  };
   const openOdoPhotos = async (employee_id, name) => {
     setOdoView({ employee_id, name, date: distDate, loading: true, data: null });
     try {
@@ -119,37 +103,28 @@ export default function FieldTracking() {
       setOdoView(v => (v && v.employee_id === employee_id) ? { ...v, loading: false, data: res.data } : v);
     } catch (e) { setOdoView(v => v ? { ...v, loading: false, data: null } : v); }
   };
-
   const fetchTrack = async (empId, d) => {
     setTrackLoading(true);
-    try {
-      const res = await API.get(`/attendance/location-track/${empId}`, { params: { date_str: d } });
-      setTrackData(res.data);
-    } catch (e) { console.error(e); }
-    finally { setTrackLoading(false); }
+    try { const res = await API.get(`/attendance/location-track/${empId}`, { params: { date_str: d } }); setTrackData(res.data); }
+    catch (e) { console.error(e); } finally { setTrackLoading(false); }
   };
-
   const fetchHistTrack = async (empId, d) => {
     setHistLoading(true);
-    try {
-      const res = await API.get(`/attendance/location-track/${empId}`, { params: { date_str: d } });
-      setHistTrack(res.data);
-    } catch (e) { console.error(e); }
-    finally { setHistLoading(false); }
+    try { const res = await API.get(`/attendance/location-track/${empId}`, { params: { date_str: d } }); setHistTrack(res.data); }
+    catch (e) { console.error(e); } finally { setHistLoading(false); }
   };
-
-  useEffect(() => { if (!isManager) return;
+  useEffect(() => {
+    if (!isManager) return;
     if (tab === "live") fetchActive();
     else if (tab === "devices") fetchDevices();
     else if (tab === "history" && histEmployees.length === 0) fetchEmployees();
     else if (tab === "distance") fetchDistance(distDate);
     else if (tab === "odometer") fetchOdoList();
+    else if (tab === "adoption") fetchAdoption();
   }, [isManager, tab]); // eslint-disable-line react-hooks/exhaustive-deps
-
   useEffect(() => {
     if (isManager && tab === "distance") fetchDistance(distDate);
   }, [distDate]); // eslint-disable-line react-hooks/exhaustive-deps
-
   useEffect(() => {
     if (!isManager || selected) return;
     const t = setInterval(() => {
@@ -158,15 +133,8 @@ export default function FieldTracking() {
     }, 30000);
     return () => clearInterval(t);
   }, [isManager, selected, tab]);
-
-  useEffect(() => {
-    if (selected) fetchTrack(selected.employee_id, date);
-  }, [selected, date]);
-
-  useEffect(() => {
-    if (histSelected) fetchHistTrack(histSelected.employee_id, histDate);
-  }, [histSelected, histDate]);
-
+  useEffect(() => { if (selected) fetchTrack(selected.employee_id, date); }, [selected, date]);
+  useEffect(() => { if (histSelected) fetchHistTrack(histSelected.employee_id, histDate); }, [histSelected, histDate]);
   if (!isManager) {
     return (
       <div style={{ fontFamily: "'Work Sans', sans-serif" }} className="text-center py-12">
@@ -174,49 +142,34 @@ export default function FieldTracking() {
       </div>
     );
   }
-
   const stops = trackData?.stops || [];
   const locations = trackData?.locations || [];
   const histStops = histTrack?.stops || [];
   const histLocations = histTrack?.locations || [];
-
   const filteredDevices = devices.filter(d => {
     if (!devFilter) return true;
     const q = devFilter.toLowerCase();
-    return d.employee_id.toLowerCase().includes(q)
-        || (d.name || "").toLowerCase().includes(q)
-        || (d.designation || "").toLowerCase().includes(q)
-        || d.freshness === devFilter;
+    return d.employee_id.toLowerCase().includes(q) || (d.name || "").toLowerCase().includes(q) || (d.designation || "").toLowerCase().includes(q) || d.freshness === devFilter;
   });
-
   const filteredEmployees = histEmployees.filter(e => {
     if (!histEmpSearch) return true;
     const q = histEmpSearch.toLowerCase();
-    return e.employee_id.toLowerCase().includes(q)
-        || `${e.first_name || ""} ${e.last_name || ""}`.toLowerCase().includes(q);
+    return e.employee_id.toLowerCase().includes(q) || `${e.first_name || ""} ${e.last_name || ""}`.toLowerCase().includes(q);
   }).slice(0, 12);
-
   return (
     <div style={{ fontFamily: "'Work Sans', sans-serif" }}>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <div>
-          <h1 className="text-2xl font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>
-            Field Tracking
-          </h1>
+          <h1 className="text-2xl font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Field Tracking</h1>
           <p className="text-slate-500 text-sm">Live GPS routes with stops &gt; 15 minutes</p>
         </div>
       </div>
-
-      {/* Odometer photo viewer (admin) */}
+      {/* Odometer photo viewer */}
       {odoView && (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4"
-          onClick={() => setOdoView(null)}>
-          <div className="bg-white rounded-xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5"
-            onClick={e => e.stopPropagation()}>
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => setOdoView(null)}>
+          <div className="bg-white rounded-xl max-w-lg w-full max-h-[90vh] overflow-y-auto p-5" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-3">
-              <h3 className="font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>
-                Odometer — {odoView.name} · {odoView.date}
-              </h3>
+              <h3 className="font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Odometer — {odoView.name} · {odoView.date}</h3>
               <button onClick={() => setOdoView(null)} className="text-slate-400 hover:text-slate-600 text-lg">✕</button>
             </div>
             {odoView.loading ? <p className="text-center text-slate-400 py-8">Loading…</p>
@@ -229,59 +182,47 @@ export default function FieldTracking() {
                       <div key={k} className="border border-slate-200 rounded-lg p-3">
                         <div className="flex items-center justify-between mb-2">
                           <span className="text-sm font-semibold text-[#1E2A47] capitalize">{k} of day</span>
-                          <span className="text-sm font-bold text-[#1E2A47]">
-                            {rd?.reading_km != null ? `${Number(rd.reading_km).toLocaleString("en-IN")} km` : "—"}
-                          </span>
+                          <span className="text-sm font-bold text-[#1E2A47]">{rd?.reading_km != null ? `${Number(rd.reading_km).toLocaleString("en-IN")} km` : "—"}</span>
                         </div>
-                        {rd?.photo
-                          ? <img src={`data:image/jpeg;base64,${rd.photo}`} alt={`${k} odometer`}
-                              className="w-full rounded-lg border border-slate-100" />
+                        {rd?.photo ? <img src={`data:image/jpeg;base64,${rd.photo}`} alt={`${k} odometer`} className="w-full rounded-lg border border-slate-100" />
                           : <p className="text-xs text-slate-400">No photo submitted.</p>}
-                        {rd?.created_at && <p className="text-[11px] text-slate-400 mt-1">
-                          {new Date(rd.created_at).toLocaleString("en-IN")}</p>}
+                        {rd?.created_at && <p className="text-[11px] text-slate-400 mt-1">{new Date(rd.created_at).toLocaleString("en-IN")}</p>}
                       </div>
                     );
                   })}
                   <div className="text-center text-sm text-slate-600">
-                    Distance: <strong className="text-[#12855a]">
-                      {odoView.data.distance_km != null ? `${odoView.data.distance_km} km` : "—"}</strong>
+                    Distance: <strong className="text-[#12855a]">{odoView.data.distance_km != null ? `${odoView.data.distance_km} km` : "—"}</strong>
                   </div>
                 </div>
               )}
           </div>
         </div>
       )}
-
       {/* Tabs */}
       {!selected && !histSelected && (
-        <div className="flex gap-1 mb-4 border-b border-slate-200">
+        <div className="flex gap-1 mb-4 border-b border-slate-200 overflow-x-auto">
           {[
             ["live", `Active Today (${activeStaff.length})`],
             ["devices", `Tracker Devices (${devices.length})`],
             ["distance", "Distance"],
             ["odometer", "Odometer"],
+            ...(canViewOdoPhotos ? [["adoption", "App adoption"]] : []),
             ["history", "History"],
           ].map(([val, label]) => (
             <button key={val} onClick={() => setTab(val)} data-testid={`ft-tab-${val}`}
-              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${tab === val ? "border-[#E85B1E] text-[#E85B1E]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
+              className={`px-4 py-2.5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${tab === val ? "border-[#E85B1E] text-[#E85B1E]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
               {label}
             </button>
           ))}
         </div>
       )}
-
-      {/* TAB: Distance travelled */}
+      {/* TAB: Distance */}
       {!selected && !histSelected && tab === "distance" && (
         <div className="space-y-4">
           <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex flex-wrap gap-3 items-center">
             <input type="date" value={distDate} onChange={e => setDistDate(e.target.value)}
-              className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
-              data-testid="distance-date" />
-            {distData && (
-              <span className="text-sm text-slate-600">
-                Team total (GPS): <strong className="text-[#1E2A47]">{distData.total_gps_km} km</strong>
-              </span>
-            )}
+              className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="distance-date" />
+            {distData && <span className="text-sm text-slate-600">Team total (GPS): <strong className="text-[#1E2A47]">{distData.total_gps_km} km</strong></span>}
             <button onClick={exportDistance} data-testid="distance-export"
               className="ml-auto flex items-center gap-1.5 px-3 py-2 bg-[#12855a] text-white rounded-lg text-xs font-semibold hover:bg-[#0f6f4c]">
               Export month (Excel)
@@ -304,25 +245,18 @@ export default function FieldTracking() {
                       : ["—", "bg-slate-100 text-slate-400"];
                     return (
                       <tr key={r.employee_id} className="border-b border-slate-100 hover:bg-slate-50">
-                        <td className="px-4 py-3">
-                          <p className="text-sm font-medium text-[#0F172A]">{r.name}</p>
-                          <p className="text-xs text-[#E85B1E] font-mono">{r.employee_id}</p>
-                        </td>
+                        <td className="px-4 py-3"><p className="text-sm font-medium text-[#0F172A]">{r.name}</p><p className="text-xs text-[#E85B1E] font-mono">{r.employee_id}</p></td>
                         <td className="px-4 py-3 text-sm font-semibold text-[#1E2A47]">{r.gps_km} km</td>
                         <td className="px-4 py-3 text-sm text-slate-700">
-                          {r.odo_km != null ? <strong>{r.odo_km} km</strong>
-                            : r.odometer_required ? <span className="text-slate-400">—</span>
-                            : <span className="text-slate-300">not tracked</span>}
-                          {r.odo_start_km != null && r.odo_end_km != null &&
-                            <span className="block text-[11px] text-slate-400">{r.odo_start_km} → {r.odo_end_km}</span>}
+                          {r.odo_km != null ? <strong>{r.odo_km} km</strong> : r.odometer_required ? <span className="text-slate-400">—</span> : <span className="text-slate-300">not tracked</span>}
+                          {r.odo_start_km != null && r.odo_end_km != null && <span className="block text-[11px] text-slate-400">{r.odo_start_km} → {r.odo_end_km}</span>}
                         </td>
                         <td className="px-4 py-3">
                           {r.odometer_required ? (
                             <div className="flex items-center gap-2">
                               <span className={`px-2 py-1 rounded-full text-xs font-medium ${st[1]}`}>{st[0]}</span>
                               {canViewOdoPhotos && (r.odo_start_km != null || r.odo_end_km != null) && (
-                                <button onClick={() => openOdoPhotos(r.employee_id, r.name)}
-                                  className="text-xs text-[#E85B1E] font-medium hover:underline">Photos</button>
+                                <button onClick={() => openOdoPhotos(r.employee_id, r.name)} className="text-xs text-[#E85B1E] font-medium hover:underline">Photos</button>
                               )}
                             </div>
                           ) : <span className="text-xs text-slate-300">—</span>}
@@ -336,8 +270,7 @@ export default function FieldTracking() {
           </div>
         </div>
       )}
-
-      {/* TAB: Odometer tracking management */}
+      {/* TAB: Odometer management */}
       {!selected && !histSelected && tab === "odometer" && (
         <div className="space-y-4">
           <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
@@ -345,8 +278,7 @@ export default function FieldTracking() {
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input value={odoSearch} onChange={e => setOdoSearch(e.target.value)}
                 placeholder="Search employees to enable odometer tracking..."
-                className="w-full border border-slate-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
-                data-testid="odo-search" />
+                className="w-full border border-slate-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="odo-search" />
             </div>
             <p className="text-xs text-slate-400 mt-2">Enabled staff must photograph their odometer at start &amp; end of day. Missing readings are flagged here and to the employee.</p>
           </div>
@@ -365,10 +297,7 @@ export default function FieldTracking() {
                       return e.employee_id.toLowerCase().includes(q) || (e.name || "").toLowerCase().includes(q);
                     }).map(e => (
                     <tr key={e.employee_id} className="border-b border-slate-100 hover:bg-slate-50">
-                      <td className="px-4 py-3">
-                        <p className="text-sm font-medium text-[#0F172A]">{e.name}</p>
-                        <p className="text-xs text-[#E85B1E] font-mono">{e.employee_id}</p>
-                      </td>
+                      <td className="px-4 py-3"><p className="text-sm font-medium text-[#0F172A]">{e.name}</p><p className="text-xs text-[#E85B1E] font-mono">{e.employee_id}</p></td>
                       <td className="px-4 py-3 text-sm text-slate-600">{e.designation || "-"}</td>
                       <td className="px-4 py-3">
                         <button onClick={() => toggleOdo(e.employee_id)} data-testid={`odo-toggle-${e.employee_id}`}
@@ -384,8 +313,69 @@ export default function FieldTracking() {
           </div>
         </div>
       )}
-
-      {/* TAB 1: Live — Active Today */}
+      {/* TAB: App adoption */}
+      {!selected && !histSelected && tab === "adoption" && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap gap-3 items-center">
+            {adoption && [
+              ["On app", adoption.counts.app, "bg-emerald-50 text-emerald-700 border-emerald-200"],
+              ["Still on PWA", adoption.counts.pwa, "bg-amber-50 text-amber-700 border-amber-200"],
+              ["Never seen", adoption.counts.never, "bg-slate-50 text-slate-500 border-slate-200"],
+            ].map(([label, n, cls]) => (
+              <div key={label} className={`px-4 py-2.5 rounded-xl border ${cls}`}>
+                <span className="text-xl font-bold">{n}</span>
+                <span className="text-xs font-medium ml-2">{label}</span>
+              </div>
+            ))}
+            <button onClick={fetchAdoption} className="ml-auto flex items-center gap-1.5 px-3 py-2 bg-[#1E2A47] text-white rounded-lg text-xs font-semibold hover:bg-[#2A3A5E]">
+              <RefreshCw size={12} /> Refresh
+            </button>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input value={adoptionFilter} onChange={e => setAdoptionFilter(e.target.value)}
+                placeholder="Search by name or ID..."
+                className="w-full border border-slate-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+            </div>
+            <p className="text-xs text-slate-400 mt-2">Data fills in as employees log in. The <strong>PWA</strong> rows are who still needs to install the app.</p>
+          </div>
+          <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead><tr className="bg-slate-50 border-b">
+                  {["Employee", "Now on", "Version", "OS", "Last seen", "Used app?"].map(h =>
+                    <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>)}
+                </tr></thead>
+                <tbody>
+                  {adoptionLoading ? <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                  : !adoption || adoption.rows.length === 0 ? <tr><td colSpan={6} className="px-4 py-12 text-center text-slate-400">No data yet.</td></tr>
+                  : adoption.rows.filter(r => {
+                      if (!adoptionFilter) return true;
+                      const q = adoptionFilter.toLowerCase();
+                      return r.employee_id.toLowerCase().includes(q) || (r.name || "").toLowerCase().includes(q);
+                    }).map(r => {
+                      const st = r.status === "app" ? ["App", "bg-emerald-100 text-emerald-700"]
+                        : r.status === "pwa" ? ["PWA", "bg-amber-100 text-amber-700"]
+                        : ["Never", "bg-slate-100 text-slate-500"];
+                      return (
+                        <tr key={r.employee_id} className="border-b border-slate-100 hover:bg-slate-50">
+                          <td className="px-4 py-3"><p className="text-sm font-medium text-[#0F172A]">{r.name}</p><p className="text-xs text-[#E85B1E] font-mono">{r.employee_id}</p></td>
+                          <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${st[1]}`}>{st[0]}</span></td>
+                          <td className="px-4 py-3 text-sm text-slate-600 font-mono">{r.version || "—"}</td>
+                          <td className="px-4 py-3 text-sm text-slate-600 capitalize">{r.os || "-"}</td>
+                          <td className="px-4 py-3 text-xs text-slate-500">{r.last_seen ? new Date(r.last_seen).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }) : "-"}</td>
+                          <td className="px-4 py-3">{r.ever_app ? <span className="text-emerald-600 text-sm">✓</span> : <span className="text-slate-300 text-sm">—</span>}</td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* TAB: Live — Active Today */}
       {!selected && !histSelected && tab === "live" && (
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
@@ -406,10 +396,7 @@ export default function FieldTracking() {
                 : activeStaff.length === 0 ? <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-400">No active staff today. Check the <strong>Tracker Devices</strong> tab to diagnose.</td></tr>
                 : activeStaff.map(s => (
                   <tr key={s.employee_id} className="border-b border-slate-100 hover:bg-slate-50">
-                    <td className="px-4 py-3">
-                      <p className="text-sm font-medium text-[#0F172A]">{s.name}</p>
-                      <p className="text-xs text-[#E85B1E] font-mono">{s.employee_id}</p>
-                    </td>
+                    <td className="px-4 py-3"><p className="text-sm font-medium text-[#0F172A]">{s.name}</p><p className="text-xs text-[#E85B1E] font-mono">{s.employee_id}</p></td>
                     <td className="px-4 py-3 text-sm text-slate-600">{s.designation || "-"}</td>
                     <td className="px-4 py-3 text-sm text-slate-600">{s.punch_in_time ? new Date(s.punch_in_time).toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" }) : "-"}</td>
                     <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${s.punch_out_time ? "bg-blue-100 text-blue-700" : "bg-green-100 text-green-700"}`}>{s.punch_out_time ? "Punched Out" : "Active"}</span></td>
@@ -428,8 +415,7 @@ export default function FieldTracking() {
           </div>
         </div>
       )}
-
-      {/* TAB 2: Tracker Devices */}
+      {/* TAB: Tracker Devices */}
       {!selected && !histSelected && tab === "devices" && (
         <div className="space-y-4">
           <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex flex-wrap gap-2 items-center">
@@ -437,8 +423,7 @@ export default function FieldTracking() {
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input value={devFilter} onChange={e => setDevFilter(e.target.value)}
                 placeholder="Filter by ID, name, or freshness (live/stale/silent)..."
-                className="w-full border border-slate-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
-                data-testid="device-filter-input" />
+                className="w-full border border-slate-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="device-filter-input" />
             </div>
             {["live","recent","stale","silent","never"].map(k => (
               <button key={k} onClick={() => setDevFilter(devFilter === k ? "" : k)}
@@ -462,7 +447,7 @@ export default function FieldTracking() {
                 </tr></thead>
                 <tbody>
                   {loading ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
-                  : filteredDevices.length === 0 ? <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-400">No tracker devices yet. A device is created automatically when a field employee logs into the Radhya HR app and punches in.</td></tr>
+                  : filteredDevices.length === 0 ? <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-400">No tracker devices yet.</td></tr>
                   : filteredDevices.map(d => {
                     const style = FRESHNESS_STYLES[d.freshness] || FRESHNESS_STYLES.never;
                     return (
@@ -473,19 +458,11 @@ export default function FieldTracking() {
                             {style.label}
                           </span>
                         </td>
-                        <td className="px-4 py-3">
-                          <p className="text-sm font-medium text-[#0F172A]">{d.name}</p>
-                          <p className="text-xs text-[#E85B1E] font-mono">{d.employee_id}</p>
-                        </td>
+                        <td className="px-4 py-3"><p className="text-sm font-medium text-[#0F172A]">{d.name}</p><p className="text-xs text-[#E85B1E] font-mono">{d.employee_id}</p></td>
                         <td className="px-4 py-3 text-sm text-slate-600">{d.designation || "-"}</td>
                         <td className="px-4 py-3">
-                          <div className="flex items-center gap-1.5">
-                            <Clock size={12} className="text-slate-400" />
-                            <span className="text-sm text-slate-700">{minsAgoLabel(d.minutes_ago)}</span>
-                          </div>
-                          {d.last_ping_at && (
-                            <p className="text-[11px] text-slate-400">{new Date(d.last_ping_at).toLocaleString("en-IN", { dateStyle:"short", timeStyle:"short" })}</p>
-                          )}
+                          <div className="flex items-center gap-1.5"><Clock size={12} className="text-slate-400" /><span className="text-sm text-slate-700">{minsAgoLabel(d.minutes_ago)}</span></div>
+                          {d.last_ping_at && <p className="text-[11px] text-slate-400">{new Date(d.last_ping_at).toLocaleString("en-IN", { dateStyle:"short", timeStyle:"short" })}</p>}
                         </td>
                         <td className="px-4 py-3">
                           {d.last_battery != null ? (
@@ -514,12 +491,10 @@ export default function FieldTracking() {
           </div>
           <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-700">
             <strong>Freshness key:</strong> Live ≤ 5 min · Recent ≤ 30 min · Stale ≤ 24 h · Silent &gt; 24 h · Never = never pinged.
-            Silent / Never devices are likely off or mis-configured on the employee's phone.
           </div>
         </div>
       )}
-
-      {/* TAB 3: History */}
+      {/* TAB: History */}
       {!selected && !histSelected && tab === "history" && (
         <div className="space-y-4">
           <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
@@ -528,13 +503,10 @@ export default function FieldTracking() {
                 <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
                 <input value={histEmpSearch} onChange={e => setHistEmpSearch(e.target.value)}
                   placeholder="Search employee by ID or name..."
-                  className="w-full border border-slate-300 rounded-lg pl-9 pr-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
-                  data-testid="hist-emp-search" />
+                  className="w-full border border-slate-300 rounded-lg pl-9 pr-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="hist-emp-search" />
               </div>
-              <input type="date" value={histDate} onChange={e => setHistDate(e.target.value)}
-                max={toLocalDateStr()}
-                className="border border-slate-300 rounded-lg px-3 py-2.5 text-sm bg-white"
-                data-testid="hist-date-input" />
+              <input type="date" value={histDate} onChange={e => setHistDate(e.target.value)} max={toLocalDateStr()}
+                className="border border-slate-300 rounded-lg px-3 py-2.5 text-sm bg-white" data-testid="hist-date-input" />
             </div>
             {histEmpSearch && (
               <div className="mt-3 max-h-60 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-lg" data-testid="hist-emp-results">
@@ -542,7 +514,7 @@ export default function FieldTracking() {
                   <p className="p-3 text-xs text-slate-400">No employees match.</p>
                 ) : filteredEmployees.map(e => (
                   <button key={e.employee_id}
-                    onClick={() => { setHistSelected({ employee_id: e.employee_id, name: `${e.first_name||""} ${e.last_name||""}`.trim(), designation: e.designation }); }}
+                    onClick={() => setHistSelected({ employee_id: e.employee_id, name: `${e.first_name||""} ${e.last_name||""}`.trim(), designation: e.designation })}
                     data-testid={`hist-pick-${e.employee_id}`}
                     className="w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-slate-50">
                     <div>
@@ -557,12 +529,11 @@ export default function FieldTracking() {
           </div>
           <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
             <AlertCircle size={13} className="inline mr-1" />
-            View any employee's route on any past date from their app GPS pings. No attendance record required.
+            View any employee's route on any past date from their app GPS pings.
           </div>
         </div>
       )}
-
-      {/* Drill-down view: shared between Live and History */}
+      {/* Drill-down: shared between Live and History */}
       {(selected || histSelected) && (
         <>
           <div className="flex items-center justify-between mb-4">
@@ -575,16 +546,13 @@ export default function FieldTracking() {
               <input type="date"
                 value={selected ? date : histDate}
                 onChange={e => selected ? setDate(e.target.value) : setHistDate(e.target.value)}
-                max={toLocalDateStr()}
-                className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white"
-                data-testid="track-date-input" />
+                max={toLocalDateStr()} className="border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white" data-testid="track-date-input" />
               <button onClick={() => selected ? fetchTrack(selected.employee_id, date) : fetchHistTrack(histSelected.employee_id, histDate)}
                 className="p-2 rounded-lg bg-slate-100 hover:bg-slate-200" data-testid="refresh-track-btn">
                 <RefreshCw size={14} />
               </button>
             </div>
           </div>
-
           <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm mb-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
               <div>
@@ -608,7 +576,6 @@ export default function FieldTracking() {
                 </div>
               </div>
             </div>
-
             {(selected ? trackLoading : histLoading) ? (
               <div className="text-center py-12 text-slate-400">Loading map...</div>
             ) : (selected ? locations : histLocations).length === 0 ? (
@@ -618,14 +585,9 @@ export default function FieldTracking() {
                 <p className="text-xs text-slate-400">Tracker may have been off or the employee didn't punch in.</p>
               </div>
             ) : (
-              <RouteMap
-                locations={selected ? locations : histLocations}
-                stops={selected ? stops : histStops}
-                attendance={(selected ? trackData : histTrack)?.attendance}
-              />
+              <RouteMap locations={selected ? locations : histLocations} stops={selected ? stops : histStops} attendance={(selected ? trackData : histTrack)?.attendance} />
             )}
           </div>
-
           {(selected ? stops : histStops).length > 0 && (
             <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
               <div className="px-5 py-4 border-b border-slate-100 bg-amber-50/50">
@@ -647,9 +609,7 @@ export default function FieldTracking() {
                       <td className="px-4 py-3 text-sm font-semibold text-[#E85B1E]">{s.duration_minutes} min</td>
                       <td className="px-4 py-3 text-xs font-mono text-slate-500">
                         {s.latitude.toFixed(5)}, {s.longitude.toFixed(5)}{" "}
-                        <a href={`https://www.google.com/maps?q=${s.latitude},${s.longitude}`}
-                          target="_blank" rel="noopener noreferrer"
-                          className="ml-2 text-[#E85B1E] hover:underline">Open in Maps</a>
+                        <a href={`https://www.google.com/maps?q=${s.latitude},${s.longitude}`} target="_blank" rel="noopener noreferrer" className="ml-2 text-[#E85B1E] hover:underline">Open in Maps</a>
                       </td>
                     </tr>
                   ))}
