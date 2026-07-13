@@ -10,16 +10,33 @@
  */
 import { Capacitor } from "@capacitor/core";
 import API from "./api";
-function detectBase() {
-  // "App" = running inside the Capacitor APK. Combine signals for reliability.
-  let native = false;
+/**
+ * Is this the Android APK (not the PWA)? Reads the INJECTED native bridge
+ * (window.Capacitor) directly, which is reliable in a remote-loaded WebView even
+ * when the imported @capacitor/core flag is not. Falls back to our own plugins.
+ */
+export function isNativeApp() {
   try {
-    const cap = window.Capacitor;
-    const byFlag = Capacitor && Capacitor.isNativePlatform && Capacitor.isNativePlatform();
-    const byPlugin = !!(cap && cap.Plugins &&
-      (cap.Plugins.RadhyaTracker || cap.Plugins.CapacitorPluginMlKitTextRecognition));
-    native = !!(byFlag || byPlugin);
+    if (Capacitor && typeof Capacitor.isNativePlatform === "function" && Capacitor.isNativePlatform()) {
+      return true;
+    }
+    const cap = (typeof window !== "undefined") ? window.Capacitor : null;
+    if (cap) {
+      if (typeof cap.isNativePlatform === "function" && cap.isNativePlatform()) return true;
+      if (typeof cap.getPlatform === "function") {
+        const p = cap.getPlatform();
+        if (p === "android" || p === "ios") return true;
+      }
+      if (cap.isNative === true || cap.platform === "android" || cap.platform === "ios") return true;
+      if (cap.Plugins && (cap.Plugins.RadhyaTracker || cap.Plugins.CapacitorPluginMlKitTextRecognition || cap.Plugins.App)) {
+        return true;
+      }
+    }
   } catch (e) { /* ignore */ }
+  return false;
+}
+function detectBase() {
+  const native = isNativeApp();
   const ua = (navigator.userAgent || "");
   let os = "other";
   if (/android/i.test(ua)) os = "android";
