@@ -471,6 +471,17 @@ Full-ISO timestamps (`queued_at`, `verified_at`, audit `created_at`) intentional
 - **Tested**: 29/29 backend tests pass (both grant-based and manual-balance deduction paths; CL/SL regression confirmed)
 
 
+## Comp-Off Grant Ledger Authoritative Fix + Date-Based Management (Jul 2026)
+- **Root Cause**: Comp-off balance had two conflicting stores — `comp_off_grants` collection (real ledger) and an absolute `Comp-Off` field in `leave_balances`. Any admin edit froze the balance as an absolute override, so subsequent grant approvals were silently ignored for edited employees.
+- **Fix**: Grant ledger is now the single source of truth. Manual overrides stored as a delta `{adj_total, adj_used}` instead of absolute. Legacy absolute overrides auto-migrate to delta on first read (lazy migration) + one-time migration script.
+- **New helpers in leaves.py**: `_comp_off_grant_counts`, `_comp_off_from_parts`, `_comp_off_adj`, `_comp_off_balance`, `_deduct_comp_off`
+- **New endpoints in comp_offs.py**: `POST /api/comp-offs/manual` (add dated grant, auto-approved) + `DELETE /api/comp-offs/{grant_id}` (soft-delete available grant)
+- **Frontend**: Edit Balance modal's Comp-Off numeric row replaced with date-based add/remove UI (individual grant list + "Add comp-off" form with earn_date + reason)
+- **Migration**: `/app/backend/scripts/migrate_comp_off_deltas.py` (idempotent, ran 0 conversions on clean data)
+- **Files**: `/app/backend/routes/leaves.py`, `/app/backend/routes/comp_offs.py`, `/app/frontend/src/pages/Leaves.js`, `/app/backend/scripts/migrate_comp_off_deltas.py`
+- **Tested**: 30/31 backend pass (1 skipped — inactive account, not a bug); 100% frontend pass (Iter 25)
+
+
 ## Payslip Visibility Rule Change + Unpublished Banner (Jul 2026)
 - **Change**: Employees now see payslips **only when status = `paid`** (previously `processed` was also sufficient). Draft and processed records are hidden from employees until HR explicitly marks them as paid.
 - **"Mark All Paid" button** (was "Publish Payslips") — now promotes both `draft` AND `processed` records to `paid` for the selected month in one click.
