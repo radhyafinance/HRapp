@@ -652,8 +652,14 @@ async def odometer_employees(current_user: dict = Depends(get_current_user)):
 async def toggle_odometer(employee_id: str, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ("hr_admin", "management"):
         raise HTTPException(status_code=403, detail="Access denied")
-    emp = await db.employees.find_one({"employee_id": employee_id}, {"_id": 0, "odometer_required": 1})
-    if not emp:
+    # Include employee_id in the projection so the result is never an empty {}
+    # for an existing employee who has no odometer_required field yet, and use
+    # `is None` (not a falsy check) so that {} is not mistaken for "not found".
+    emp = await db.employees.find_one(
+        {"employee_id": employee_id},
+        {"_id": 0, "employee_id": 1, "odometer_required": 1},
+    )
+    if emp is None:
         raise HTTPException(status_code=404, detail="Employee not found")
     new_state = not bool(emp.get("odometer_required"))
     await db.employees.update_one({"employee_id": employee_id}, {"$set": {"odometer_required": new_state}})
