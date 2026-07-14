@@ -156,6 +156,7 @@ export default function DigiLockerCallback() {
                 </ul>
               </div>
             )}
+            <SharedDocsList available={available} />
             <p className="text-[11px] text-slate-400">This window will close automatically…</p>
           </div>
         )}
@@ -167,6 +168,7 @@ export default function DigiLockerCallback() {
             </div>
             <p className="text-sm font-semibold text-[#1E2A47]">Something went wrong</p>
             <p className="text-xs text-slate-500">{message}</p>
+            <SharedDocsList available={available} />
             <p className="text-[11px] text-slate-400">This window will close shortly. Please try again.</p>
           </div>
         )}
