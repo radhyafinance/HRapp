@@ -1026,19 +1026,38 @@ def _normalise_time(date_str: str, time_str: Optional[str]) -> Optional[str]:
         raise HTTPException(status_code=400, detail=f"Could not parse time '{time_str}'. Use HH:MM or full ISO.")
 
 
-async def _auto_create_compoff_if_holiday(employee_id: str, date_str: str, status: str):
+async def _auto_create_compoff_if_holiday(employee_id: str, date_str: str, status: str, acted_by: dict = None):
     """After a regularisation, if the date is a non-working day and the employee
-    worked (present/half_day), auto-create a pending comp-off grant — idempotent."""
-    if status not in ("present", "half_day"):
-        return
+    actually WORKED, ensure an APPROVED (credited) comp-off grant exists — the
+    regularisation is itself an HR-vetted action, so it credits immediately.
+    "Worked" is detected by present/half_day status OR a punch-in / hours on the
+    record — so a worked holiday left labelled "Holiday"/"Weekly Off" still earns
+    a comp-off. Idempotent: an existing pending grant (from a scan or the
+    employee's own request) is approved instead of duplicated."""
+    if status in ("absent", "leave"):
+        return  # clearly did not work that day
     try:
-        from routes.holidays import is_non_working_saturday, get_holiday_dates
+        from routes.holidays import is_non_working_saturday
+        from routes.comp_offs import EXPIRY_DAYS
         d = date.fromisoformat(date_str)
+        # Did the employee actually work? present/half_day imply it; a worked
+        # holiday/weekly_off is detected via punch-in / hours on the record.
+        rec = await db.attendance_records.find_one(
+            {"employee_id": employee_id, "date": date_str},
+            {"_id": 0, "punch_in_time": 1, "hours_worked": 1},
+        ) or {}
+        worked = (
+            status in ("present", "half_day")
+            or bool(rec.get("punch_in_time"))
+            or (rec.get("hours_worked") or 0) > 0
+        )
+        if not worked:
+            return
+        # Is the date a non-working day?
         reason = None
         if d.weekday() == 6:
             reason = "Sunday"
         else:
-            # Determine role for Saturday rule
             emp = await db.employees.find_one({"employee_id": employee_id}, {"_id": 0, "role": 1}) or {}
             role = emp.get("role", "employee")
             if is_non_working_saturday(d, role):
@@ -1048,27 +1067,40 @@ async def _auto_create_compoff_if_holiday(employee_id: str, date_str: str, statu
                 if holiday:
                     reason = f"Holiday: {holiday['name']}"
         if not reason:
-            return  # It's a regular working day — no comp-off needed
-        # Idempotent: skip if already tracked for this employee/date
+            return  # regular working day — no comp-off
+        now = datetime.now(timezone.utc).isoformat()
+        actor = (acted_by or {}).get("employee_id") or (acted_by or {}).get("username") or "system"
+        expiry = (d + timedelta(days=EXPIRY_DAYS)).isoformat()
+        # Idempotent: one comp-off per earned day.
         existing = await db.comp_off_grants.find_one({
             "employee_id": employee_id,
             "earn_date": date_str,
             "status": {"$in": ["pending", "approved", "used"]},
         })
         if existing:
-            return
-        # Fetch hours_worked from the attendance record
-        rec = await db.attendance_records.find_one(
-            {"employee_id": employee_id, "date": date_str}, {"_id": 0, "hours_worked": 1}
-        ) or {}
+            # A pending grant (from a scan or the employee's request) → credit it now.
+            if existing.get("status") == "pending":
+                await db.comp_off_grants.update_one(
+                    {"_id": existing["_id"]},
+                    {"$set": {
+                        "status": "approved",
+                        "expiry_date": expiry,
+                        "approved_at": now,
+                        "approved_by": actor,
+                    }},
+                )
+            return  # approved/used already credited
         await db.comp_off_grants.insert_one({
             "employee_id": employee_id,
             "earn_date": date_str,
             "earn_reason": reason,
             "hours_worked": rec.get("hours_worked"),
-            "status": "pending",
+            "status": "approved",
             "source": "regularisation",
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "expiry_date": expiry,
+            "approved_at": now,
+            "approved_by": actor,
+            "created_at": now,
         })
     except Exception as e:
         logger.warning(f"_auto_create_compoff_if_holiday failed for {employee_id}/{date_str}: {e}")
@@ -1160,8 +1192,8 @@ async def _apply_regularisation(
     if result.get("status") == "leave" and leave_type:
         await _deduct_leave_balance_for_regularisation(employee_id, leave_type)
 
-    # Auto-create comp-off if this date is a non-working day and employee worked
-    await _auto_create_compoff_if_holiday(employee_id, date_str, result.get("status", ""))
+    # Auto-create (and credit) comp-off if this date is a non-working day and employee worked
+    await _auto_create_compoff_if_holiday(employee_id, date_str, result.get("status", ""), acted_by)
 
     return att_to_dict(result)
 
