@@ -7,10 +7,36 @@ import React, { useEffect, useState } from "react";
 import { ShieldCheck, AlertCircle, Loader2, CheckCircle2 } from "lucide-react";
 import API from "../utils/api";
 
+// Diagnostic: shows EVERYTHING DigiLocker shared for this pull (name + type),
+// so HR can see whether a marksheet was even returned. A marksheet the employee
+// only uploaded to DigiLocker (not one digitally issued by the board) will not
+// appear in this list at all.
+function SharedDocsList({ available }) {
+  if (!available || available.length === 0) return null;
+  return (
+    <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-left">
+      <p className="text-xs font-semibold text-slate-700 mb-1.5">
+        DigiLocker shared these {available.length} document(s):
+      </p>
+      <ul className="space-y-1">
+        {available.map((d, i) => (
+          <li key={i} className="text-xs text-slate-600">
+            • {d.name || "(unnamed)"}{d.doctype ? ` — ${d.doctype}` : ""}
+          </li>
+        ))}
+      </ul>
+      <p className="text-[10px] text-slate-400 mt-2">
+        If a marksheet is missing here, DigiLocker didn't share it (it may be a self-uploaded file, not an issued document).
+      </p>
+    </div>
+  );
+}
+
 export default function DigiLockerCallback() {
   const [status, setStatus] = useState("loading"); // loading | success | error
   const [message, setMessage] = useState("Fetching documents from DigiLocker...");
   const [stored, setStored] = useState([]);
+  const [available, setAvailable] = useState([]); // everything DigiLocker actually shared (diagnostic)
 
   const DOC_LABELS = {
     pan_card: "PAN Card",
@@ -46,6 +72,7 @@ export default function DigiLockerCallback() {
       try {
         const res = await API.post(`/digilocker/fetch-and-store/${sessionId}`);
         const data = res.data;
+        setAvailable(data.available || []);
 
         if (data.success) {
           setStored(data.stored || []);
@@ -68,10 +95,10 @@ export default function DigiLockerCallback() {
           );
         }
 
-        // Auto-close after 3 seconds
+        // Auto-close after 20 seconds (longer so the shared-documents list can be read)
         setTimeout(() => {
           window.close();
-        }, 3000);
+        }, 20000);
       } catch (err) {
         const detail = err.response?.data?.detail || err.message || "Unknown error";
         setStatus("error");

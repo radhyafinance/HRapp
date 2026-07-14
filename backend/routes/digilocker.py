@@ -270,7 +270,14 @@ async def _do_fetch_and_store(
 
     # Extract document list — handles all Perfios response shapes
     available = _extract_perfios_list(docs_raw)
-
+    # Lightweight summary of what DigiLocker actually shared (names + doctypes),
+    # surfaced in the response for diagnostics. A marksheet the employee only
+    # *uploaded* to DigiLocker (rather than one digitally *issued* by the board)
+    # will NOT appear here at all — that's unfixable in code.
+    available_summary = [
+        {"name": d.get("name", ""), "doctype": d.get("doctype", d.get("docType", ""))}
+        for d in available
+    ]
     if not available:
         await db.digilocker_sessions.update_one(
             {"session_id": session_id},
@@ -439,6 +446,7 @@ async def _do_fetch_and_store(
             "status": "completed" if stored else "failed",
             "stored_docs": stored,
             "failed_docs": failed,
+            "available_docs": available_summary,
             "completed_at": now,
         }},
     )
@@ -447,6 +455,7 @@ async def _do_fetch_and_store(
         "success": bool(stored),
         "stored": stored,
         "failed": failed,
+        "available": available_summary,
         "total_available": len(available),
         "message": (
             f"Downloaded and stored {len(stored)} document(s) from DigiLocker."
