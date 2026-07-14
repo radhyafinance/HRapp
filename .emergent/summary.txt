@@ -1,14 +1,14 @@
-<analysis>**original_problem_statement**: Create a comprehensive HR system for an NBFC-MFI named Radhya Micro Finance (40+ employees). PRODUCT REQUIREMENTS: Full-stack web application (FastAPI backend + React frontend). Role-based access control. Geofenced attendance. Joining Kit PDF/Word generation. Detailed payslip generation. PWA features for field tracking. Hierarchical reporting visibility. Strict Data Privacy/ACLs for salary. EPF UAN Validation using the Perfios API. Employee Exit Management workflow.
+<analysis>**original_problem_statement**: Create a comprehensive HR system for an NBFC-MFI named Radhya Micro Finance (40+ employees). PRODUCT REQUIREMENTS: Full-stack web application (FastAPI backend + React frontend). Role-based access control. Geofenced attendance. Joining Kit PDF/Word generation. Detailed payslip generation. PWA features for field tracking. Hierarchical reporting visibility. Strict Data Privacy/ACLs for salary. EPF UAN Validation using the Perfios API. Employee Exit Management workflow. 
 
 **User's preferred language**: English (INSTRUCT NEXT AGENT: You MUST respond in English only)
 
-**what currently exists?**: A robust HR application with full PWA and Native Android Capacitor capabilities. Features include geofenced attendance, advanced leave management, payroll, EPF UAN verification, FCM Push Notifications, and Background GPS Field Tracking. It has a custom Odometer tracking system utilizing on-device OCR (ML Kit) for the native app with a web file-input fallback for the PWA. A comprehensive Field Tracking admin dashboard is present to monitor live routes, device status, calculate distances, and track native app adoption.
+**what currently exists?**: A robust HR application with full PWA and Native Android Capacitor capabilities. Features include geofenced attendance, advanced leave management, payroll, EPF UAN verification, FCM Push Notifications, and Background GPS Field Tracking. It has a custom Odometer tracking system utilizing on-device OCR (ML Kit). The app now uses a grant ledger authoritative model for comp-off balance tracking, ensuring accurate manual date-based comp-off management.
 
 **Last working item**:
-    - Last item agent was working: Fixing a bug in  where DigiLocker marksheets (education documents) were being downloaded but dropped at storage because the doctype map only covered CBSE. Implemented a heuristic string matching function () to map board-agnostic strings (like B.TECH, 12TH, MBA) to existing KYC schema keys (, , etc.). Verified fix with testing agent and deployed to production.
+    - Last item agent was working: The agent was answering user queries regarding GitHub two-way sync and environment configuration persistence. Before this, the agent completed a massive 4-part refactoring of the Comp-Off tracking system to make the  ledger the single source of truth for balances, updating both backend logic and frontend UI, and running a one-time DB migration.
     - Status: COMPLETED
     - Agent Testing Done: Y
-    - Which testing method agent to use?: NA (Already thoroughly tested via  Iteration 24 with 98% pass rate).
+    - Which testing method agent to use?: NA (Fully tested via  Iteration 25 with 100% frontend pass rate and 96.8% backend).
     - User Testing Done: N
 
 **All Pending/In progress Issue list**:
@@ -48,12 +48,11 @@
     - Task 6: Document Completeness Scope Refinement (P3) - Scope  to manager's sub-tree instead of whole company.
 
 **Completed work in this session**
-- Added web file-input camera fallback for PWA/browser odometer capture (, ) (DONE)
-- Enabled end-of-day odometer recording *before* punching out () (DONE)
-- Implemented comprehensive App vs PWA adoption tracking (, ) (DONE)
-- Overhauled  dashboard to include Live tracking, Device Status, Distance export, Odometer management, App Adoption, and Route History (DONE)
-- Refined and standardized native app detection logic across all Capacitor utilities via  (DONE)
-- Fixed DigiLocker bug dropping non-CBSE marksheets by adding  fallback in  (DONE)
+- Refactored  &  to use  ledger as the source of truth for comp-offs (DONE)
+- Added Date-based manual add/remove endpoints in  (DONE)
+- Updated Edit Balance modal in  for date-based comp-off management (DONE)
+- Executed  to auto-heal legacy comp-off override documents (DONE)
+- Responded to user support queries regarding GitHub integration capabilities (DONE)
 
 **Earlier issues found/mentioned but not fixed**
   None
@@ -71,69 +70,64 @@ Frontend: React, Tailwind, Axios, Capacitor Core & Plugins (Camera, PushNotifica
 Backend: FastAPI, MongoDB, Pydantic, Background asyncio schedulers, Firebase Admin SDK.
 
 **key DB schema**
-  - : Config for GPS pinging (, , , ).
-  - : Raw background GPS pings.
-  - : Daily start/end km readings and photos.
-  - : Holds platform usage metrics (, , , , ).
+  - : Stores comp-offs (, , , , ).
+  - : Stores  delta for comp-offs instead of absolute values.
+  - , , , .
 
 **changes in tech stack**
-  - None this session, but heavy reliance on detecting native environment () to branch logic between PWA and Android APK.
+  - None
 
 **All files of reference**
-  -  (NEW: Detects if running in App vs PWA and reports to backend)
-  -  (Overhauled with massive multi-tab dashboard for admins)
-  -  (Added endpoints for adoption metrics and distance export)
-  -  (Updated for PWA fallback and early end-of-day capture)
-  - , ,  (Updated to use central  logic)
-  -  (Bug fix for education documents)
+  -  &  (Updated to pull dynamic comp-off effective balances)
+  -  (Added  and DELETE routes)
+  -  (Edit Balance Modal overhaul)
+  -  (One-time migration script)
+  -  (Updated)
 
 **Areas that need refactoring**:
--  (>1500 lines),  (>1300 lines), and  (>1600 lines) are very large and should ideally be modularised into smaller components/services.
+- , , and  are very large (1500+ lines) and should ideally be modularised into smaller components/services.
 
 **key api endpoints**
-  -  (Reports app vs pwa usage)
-  -  (Admin view of app adoption)
-  -  (Excel export of travel)
+  - 
+  - 
+  - 
 
 **Critical Info for New Agent**
-  - **Two Environments Config**: The user has a separate PRODUCTION environment. You only code in PREVIEW. The user frequently provides exact block replacements of code. Implement them exactly as provided using  or , verify build, and then deploy using the  when requested.
-  - **Capacitor Native Exclusivity**: Logic in , , and  relies strictly on  from . Be very careful if modifying platform detection logic.
+  - **Environment Awareness**: The user has TWO environments (Preview/Dev vs Production). If the user reports bugs going forward, clarify which environment they are facing it on. You can only fix code in the Preview environment. Do not proactively bring up deployment unless the user mentions it.
+  - **GitHub Sync Support Constraints**: The user was informed that Emergent only supports one-way sync (pushing to GitHub). Pulling new code requires starting a new task, which resets all DB links and environment variables.
+  - **Capacitor Native Exclusivity**: Frontend logic heavily differentiates between PWA and Native. Do not break  checks when making UI changes.
 
 **documents and test reports created in this job**
-  -  (DigiLocker Backend tests)
+  -  (Comp-off Ledger tests)
   - 
 
 **Last 10 User Messages and any pending HUMAN messages**
- 1. *User*: Requested exact code replacements for  and  to support PWA camera fallback.
- 2. *Agent*: Implemented, verified build, deployed.
- 3. *User*: Requested exact code replacement for  to allow early end-of-day recording.
- 4. *Agent*: Implemented, verified build, deployed.
- 5. *User*: Provided 4 massive file replacements (, , , ) to add App Adoption metrics and a full admin dashboard.
- 6. *Agent*: Implemented all, verified build, deployed.
- 7. *User*: Provided successive tweaks to  and related utils to perfect the  Capacitor detection logic.
- 8. *Agent*: Handled multiple iterations of code replacement and deployment.
- 9. *User*: Reported a bug in  where marksheets were dropped. Provided 3 specific code edits to add .
- 10. *Agent*: Implemented fix, verified with  (98% pass), and deployed.
- *(No pending human messages. Wait for user instruction to pick up the next backlog item: P2 Payroll Recalculate Button or P0 Letter Generation).*
+ 1. *User*: Requested execution of 4 exact parts for Comp-off leave fix + date-based management.
+ 2. *Agent*: Systematically applied all 4 parts, executed DB migration script, and passed testing agent with 100% frontend pass rate.
+ 3. *User (System Notif)*: Added information regarding the existence of Preview and Production environments. User asked if GitHub two-way sync is supported.
+ 4. *Agent*: Used support agent and informed the user that Emergent only supports one-way sync.
+ 5. *User*: Asked if they would have to move all secrets and re-link the DB if they manually pull in GitHub updates.
+ 6. *Agent*: Confirmed that starting a new task to pull repo updates requires reconfiguring all environment variables and secrets, advising them to keep working in Emergent instead.
+ *(No pending human messages. Wait for user instruction to pick up the next backlog item, such as P0 Letter Generation).*
 
 **Project Health Check:**
 Healthy. No Mocked endpoints.
 
 **3rd Party Integrations**
-	 •	Perfios (Bank Account, DigiLocker, EPF UAN Verification API) — requires User API Key.
-	 •	Google Gemini 2.5 Flash (Aadhaar & PAN OCR) — uses Emergent LLM Key.
-	 •	Resend (Email OTP and Notifications) — requires User API Key.
-	 •	Firebase Cloud Messaging (FCM) — requires User JSON Secret ( in .env).
-     •	Capacitor Plugins (ML Kit Text Recognition, PushNotifications, Camera, App) — built-in native integration.
+  - Perfios (Bank Account, DigiLocker, EPF UAN Verification API) — requires User API Key.
+  - Google Gemini 2.5 Flash (Aadhaar & PAN OCR) — uses Emergent LLM Key.
+  - Resend (Email OTP and Notifications) — requires User API Key.
+  - Firebase Cloud Messaging (FCM) — requires User JSON Secret.
+  - Capacitor Plugins (ML Kit, PushNotifications, Camera, App) — built-in native integration.
 
 **Testing status**
-  - Testing agent used after significant changes: YES (Iteration 24 for backend digilocker logic)
+  - Testing agent used after significant changes: YES (Iteration 25)
   - Troubleshoot agent used after agent stuck in loop: NO
-  - Test files created: 
+  - Test files created: NA
   - Known regressions: None
 
 **Credentials to test flow:**
   - HR Admin:  / 
 
 **What agent forgot to execute**
-- Nothing. The agent successfully applied all user-provided code drops, ran tests, and successfully deployed to production multiple times.</analysis>
+- Nothing. The agent fulfilled the complex 4-part refactor successfully and accurately answered the user's support queries.</analysis>
