@@ -147,19 +147,16 @@ def _comp_off_from_parts(grant_remaining: int, grant_used: int, adj: dict) -> di
 
 
 async def _comp_off_adj(employee_id: str, fy: int, bal_doc: dict) -> dict:
-    """Return the manual comp-off delta, auto-migrating a legacy absolute
-    override to a fixed delta on first access (persists the conversion)."""
-    co = (bal_doc or {}).get("Comp-Off")
-    if not isinstance(co, dict):
-        return {}
-    if "adj_total" in co or "adj_used" in co:
-        return co
-    gr, gu = await _comp_off_grant_counts(employee_id)
-    adj = {"adj_total": (co.get("total", 0) or 0) - (gr + gu),
-           "adj_used": (co.get("used", 0) or 0) - gu}
-    await db.leave_balances.update_one(
-        {"employee_id": employee_id, "year": fy}, {"$set": {"Comp-Off": adj}})
-    return adj
+    """Comp-off balance is driven ENTIRELY by the dated grant ledger now — admins
+    add/remove individual dated comp-offs, so the balance is exactly the comp-offs
+    in the ledger.
+    The old numeric-override / delta layer is DISABLED because it silently
+    cancelled out earned comp-offs: any employee whose balance was ever edited in
+    the old UI had a stale "Comp-Off" value (often 0) stored, which got converted
+    to a negative delta that subtracted real grants. We now return no adjustment
+    and ignore any leftover Comp-Off delta in leave_balances.
+    """
+    return {}
 
 
 async def _comp_off_balance(employee_id: str, fy: int, bal_doc: dict) -> dict:
