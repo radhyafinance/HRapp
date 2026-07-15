@@ -10,6 +10,7 @@ from auth_utils import get_current_user
 from datetime import datetime, timezone, date, timedelta
 from bson import ObjectId
 import base64
+import re
 
 router = APIRouter()
 
@@ -244,12 +245,19 @@ async def submit_resignation(
         if employee_id_override and current_user.get("role") == "hr_admin"
         else current_user.get("employee_id")
     )
+    target_emp_id = (target_emp_id or "").strip()
     if not target_emp_id:
         raise HTTPException(status_code=400, detail="No employee ID found for current user")
-
+    # Match exactly first; fall back to case-insensitive so "rmf0010" / "RMF0010 " still resolve.
     emp = await db.employees.find_one({"employee_id": target_emp_id})
     if not emp:
+        emp = await db.employees.find_one(
+            {"employee_id": {"$regex": f"^{re.escape(target_emp_id)}$", "$options": "i"}}
+        )
+    if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
+    # Use the canonical stored ID from here on.
+    target_emp_id = emp.get("employee_id", target_emp_id)
     if emp.get("status") == "exited":
         raise HTTPException(status_code=400, detail="Cannot submit resignation for an already-exited employee")
 

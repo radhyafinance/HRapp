@@ -316,16 +316,22 @@ function DirectExitModal({ onClose, onDone }) {
   const [employees, setEmployees] = useState([]);
 
   useEffect(() => {
-    API.get("/employees?status=active").then(r => setEmployees(r.data)).catch(() => {});
+    // Include everyone who can still be exited (active, probation, notice_period) — exclude only already-exited.
+    API.get("/employees?status=all")
+      .then(r => setEmployees((r.data || []).filter(e => e.status !== "exited")))
+      .catch(() => {});
   }, []);
 
+  // Case-insensitive, whitespace-tolerant match of the typed ID against the loaded list.
+  const typedId = employeeId.trim().toLowerCase();
+  const matched = typedId ? employees.find(e => (e.employee_id || "").toLowerCase() === typedId) : null;
   const handleSave = async () => {
-    if (!employeeId) { setError("Select an employee."); return; }
+    if (!matched) { setError("Enter a valid employee ID."); return; }
     if (!reason.trim()) { setError("A reason is required."); return; }
     setSaving(true);
     try {
       await API.post("/exit/direct-exit", {
-        employee_id: employeeId,
+        employee_id: matched.employee_id,   // canonical stored ID
         final_exit_type: exitType,
         reason,
         last_working_day: lwd || undefined
@@ -343,16 +349,19 @@ function DirectExitModal({ onClose, onDone }) {
           Use this to mark an employee as Absconding or Terminated without a formal resignation process.
         </div>
         <div>
-          <label className="block text-xs font-semibold text-slate-700 mb-1">Employee*</label>
-          <select value={employeeId} onChange={e => setEmployeeId(e.target.value)} data-testid="direct-exit-employee-select"
-            className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none bg-white">
-            <option value="">— Select Employee —</option>
-            {employees.map(e => (
-              <option key={e.employee_id} value={e.employee_id}>
-                {e.first_name} {e.last_name} ({e.employee_id})
-              </option>
-            ))}
-          </select>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Employee ID*</label>
+          <input value={employeeId} onChange={e => setEmployeeId(e.target.value)} data-testid="direct-exit-employee-input"
+            placeholder="e.g. RMF0010"
+            className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+          {employeeId.trim() && (
+            matched ? (
+              <p className="mt-1.5 text-sm text-green-700 font-medium">
+                ✓ {matched.first_name} {matched.last_name} ({matched.employee_id})
+              </p>
+            ) : (
+              <p className="mt-1.5 text-sm text-red-600">No employee found with that ID.</p>
+            )
+          )}
         </div>
         <div>
           <label className="block text-xs font-semibold text-slate-700 mb-1">Exit Type*</label>
@@ -375,7 +384,7 @@ function DirectExitModal({ onClose, onDone }) {
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-3">
           <button onClick={onClose} className="flex-1 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-600">Cancel</button>
-          <button onClick={handleSave} disabled={saving}
+          <button onClick={handleSave} disabled={saving || !matched}
             className="flex-1 py-2.5 bg-red-600 text-white rounded-lg text-sm font-semibold disabled:opacity-60 hover:bg-red-700 transition-colors">
             {saving ? "Processing..." : "Mark as Direct Exit"}
           </button>
