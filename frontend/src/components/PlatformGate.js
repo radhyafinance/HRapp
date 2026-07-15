@@ -13,9 +13,21 @@ import { isNativeApp } from "@/utils/clientPlatform";
 
 // ── Optional IT contact shown on the block screen (leave "" to hide). ─────────
 const IT_CONTACT = ""; // e.g. "it@radhyafinance.com"
-
+// Public, external-facing pages that anyone must be able to open on ANY device
+// (candidates on the invite link, banks/police scanning an ID-card verify QR).
+// These are never blocked, even on Android web.
+const PUBLIC_PREFIXES = ["/apply/", "/verify/"];
+function isPublicPath() {
+  try {
+    const path = (window.location && window.location.pathname) || "";
+    return PUBLIC_PREFIXES.some((pre) => path.startsWith(pre));
+  } catch (e) {
+    return false;
+  }
+}
 function shouldBlock() {
   try {
+    if (isPublicPath()) return false; // public pages must work on every device
     const isAndroid = /android/i.test(navigator.userAgent || "");
     return isAndroid && !isNativeApp(); // Android browser/PWA, but not the APK
   } catch (e) {
