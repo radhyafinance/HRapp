@@ -53,11 +53,203 @@ except Exception:
     pass
 
 
-def _hi(text: str) -> str:
-    """Wrap Devanagari text in a font tag that uses the registered Hindi font."""
-    if _HINDI_FONT == "Helvetica":
+# --- Devanagari rendering via HarfBuzz shaping --------------------------------
+# ReportLab cannot shape Devanagari — conjunct ligatures (त्र, क्ष, श्र…) don't
+# form and the short-i matra misplaces. So each Hindi word is shaped with
+# HarfBuzz and embedded as an inline, baseline-aligned image. Word-by-word images
+# let ReportLab wrap normally at spaces. Falls back to plain text if the shaping
+# libraries are missing (the PDF still builds).
+import re as _re
+import hashlib as _hashlib
+import tempfile as _tempfile
+
+try:
+    import uharfbuzz as _hb
+    import freetype as _ft
+    from PIL import Image as _PILImage, ImageDraw as _PILImageDraw
+    _HB_OK = True
+except Exception:
+    _HB_OK = False
+
+_TICK_CACHE = {}
+
+
+def _tick_img(pt: float = 8.5) -> str:
+    """A drawn check-mark as an inline image (no reliably-available font has a
+    tick glyph). Returns an <img> tag for use inside a table-cell Paragraph;
+    falls back to 'X' if imaging is unavailable."""
+    if not _HB_OK:
+        return "X"
+    key = round(pt, 1)
+    if key not in _TICK_CACHE:
+        try:
+            os_ = _HB_OVERSAMPLE
+            sz = int(pt * os_ * 1.1)
+            img = _PILImage.new("RGBA", (sz, sz), (255, 255, 255, 0))
+            d = _PILImageDraw.Draw(img)
+            lw = max(2, int(sz * 0.12))
+            d.line([(sz * 0.16, sz * 0.52), (sz * 0.42, sz * 0.78)], fill=(0, 0, 0, 255), width=lw)
+            d.line([(sz * 0.42, sz * 0.78), (sz * 0.86, sz * 0.22)], fill=(0, 0, 0, 255), width=lw)
+            path = os.path.join(_HB_DIR, f"tick_{key}.png")
+            img.save(path)
+            _TICK_CACHE[key] = (path, sz / os_, sz / os_, -1.0)
+        except Exception:
+            return "X"
+    path, w, h, va = _TICK_CACHE[key]
+    return f'<img src="{path}" width="{w:.2f}" height="{h:.2f}" valign="{va:.2f}"/>'
+
+_HB_DIR = _tempfile.mkdtemp(prefix="jk_hindi_")
+_HB_FONTS = {}      # font_path -> (hb.Face, hb.Font, freetype.Face)
+_HB_CACHE = {}      # (text, pt, bold) -> (img_path, w_pt, h_pt, valign_pt)
+_HB_OVERSAMPLE = 4  # rasterise at 4x point size for crisp print output
+
+
+def _has_devanagari(s: str) -> bool:
+    return any(0x0900 <= ord(c) <= 0x097F for c in (s or ""))
+
+
+def _hb_font(path):
+    if path not in _HB_FONTS:
+        blob = _hb.Blob.from_file_path(path)
+        face = _hb.Face(blob)
+        _HB_FONTS[path] = (face, _hb.Font(face), _ft.Face(path))
+    return _HB_FONTS[path]
+
+
+_CONTENT_W_PT = 182 * mm   # A4 content width (210 − 14 − 14 mm margins)
+
+
+def _hb_shape_img(text: str, pt: float, bold: bool = False):
+    """Shape `text` with HarfBuzz and return (PIL RGBA image, baseline_from_top_px,
+    width_px, height_px). Returns (None, 0, 0, 0) if there is nothing to draw."""
+    fpath = _HINDI_SEMI_PATH if (bold and os.path.exists(_HINDI_SEMI_PATH)) else _HINDI_MED_PATH
+    face, font, ftf = _hb_font(fpath)
+    px = pt * _HB_OVERSAMPLE
+    scale = px / face.upem
+    ftf.set_char_size(int(round(px * 64)))
+    buf = _hb.Buffer()
+    buf.add_str(text)
+    buf.guess_segment_properties()
+    _hb.shape(font, buf)
+    penx = 0.0
+    glyphs = []
+    min_x = min_y = max_x = max_y = 0.0
+    for info, pos in zip(buf.glyph_infos, buf.glyph_positions):
+        ftf.load_glyph(info.codepoint, _ft.FT_LOAD_RENDER)
+        g = ftf.glyph
+        bmp = g.bitmap
+        gx = penx + pos.x_offset * scale + g.bitmap_left
+        gy = -(pos.y_offset * scale) - g.bitmap_top
+        if bmp.width and bmp.rows:
+            glyphs.append((bytes(bmp.buffer), bmp.width, bmp.rows, gx, gy))
+            min_x = min(min_x, gx); max_x = max(max_x, gx + bmp.width)
+            min_y = min(min_y, gy); max_y = max(max_y, gy + bmp.rows)
+        penx += pos.x_advance * scale
+    if not glyphs:
+        return (None, 0.0, 0.0, 0.0)
+    pad = int(px * 0.06)
+    W = int(max_x - min_x) + pad * 2
+    H = int(max_y - min_y) + pad * 2
+    ox, oy = pad - min_x, pad - min_y
+    img = _PILImage.new("RGBA", (W, H), (255, 255, 255, 0))
+    for buf_bytes, gw, gh, gx, gy in glyphs:
+        alpha = _PILImage.frombytes("L", (gw, gh), buf_bytes)
+        img.paste(_PILImage.new("RGBA", (gw, gh), (0, 0, 0, 255)),
+                  (int(gx + ox), int(gy + oy)), alpha)
+    return (img, oy, W, H)
+
+
+def _hb_raster(text: str, pt: float, bold: bool = False):
+    """One shaped run → (img_path, width_pt, height_pt, valign_pt), cached.
+    valign aligns the text baseline with the surrounding line."""
+    key = (text, round(pt, 2), bold)
+    if key in _HB_CACHE:
+        return _HB_CACHE[key]
+    try:
+        img, base_px, W, H = _hb_shape_img(text, pt, bold)
+        if img is None:
+            res = ("", 0.0, 0.0, 0.0)
+        else:
+            fname = os.path.join(_HB_DIR, _hashlib.md5(f"{text}|{pt}|{bold}".encode()).hexdigest() + ".png")
+            img.save(fname)
+            w_pt, h_pt = W / _HB_OVERSAMPLE, H / _HB_OVERSAMPLE
+            res = (fname, w_pt, h_pt, -(h_pt - base_px / _HB_OVERSAMPLE))
+    except Exception:
+        res = ("", 0.0, 0.0, 0.0)
+    _HB_CACHE[key] = res
+    return res
+
+
+def _hpara(text: str, style=None, pt: float = 9.0, width_pt: float = None,
+           align: str = "left", bold: bool = False, leading_mult: float = 1.55):
+    """A pure-Devanagari PARAGRAPH rendered as a HarfBuzz-shaped, word-wrapped
+    image flowable. ReportLab can't wrap inline images, so we break lines
+    ourselves to fit `width_pt`. Falls back to a plain Paragraph on any problem."""
+    if not _HB_OK or not _has_devanagari(text):
+        return _para(text, style if style is not None else BODY)
+    try:
+        os_ = _HB_OVERSAMPLE
+        if width_pt is None:
+            width_pt = _CONTENT_W_PT
+        max_w = width_pt * os_
+        space_px = pt * 0.30 * os_
+        words = text.split()
+        meta = {w: _hb_shape_img(w, pt, bold) for w in set(words)}
+        # greedy line wrap by shaped word width
+        lines, cur, cur_w = [], [], 0.0
+        for w in words:
+            ww = meta[w][2]
+            add = ww + (space_px if cur else 0)
+            if cur and cur_w + add > max_w:
+                lines.append(cur); cur, cur_w = [w], ww
+            else:
+                cur.append(w); cur_w += add
+        if cur:
+            lines.append(cur)
+        asc = max((meta[w][1] for w in words), default=pt * os_)
+        desc = max(((meta[w][3] - meta[w][1]) for w in words), default=0)
+        lead_px = pt * leading_mult * os_
+        total_h = int(lead_px * len(lines) + desc + 2)
+        total_w = int(max_w)
+        canvas = _PILImage.new("RGBA", (total_w, total_h), (255, 255, 255, 0))
+        for i, ln in enumerate(lines):
+            line_w = sum(meta[w][2] for w in ln) + space_px * (len(ln) - 1)
+            x0 = 0 if align == "left" else (total_w - line_w) / 2
+            base_y = asc + lead_px * i
+            x = x0
+            for w in ln:
+                im, bpx, W, H = meta[w]
+                if im is not None:
+                    canvas.paste(im, (int(x), int(base_y - bpx)), im)
+                x += W + space_px
+        fname = os.path.join(_HB_DIR, _hashlib.md5(f"P|{text}|{pt}|{width_pt}|{align}|{bold}".encode()).hexdigest() + ".png")
+        canvas.save(fname)
+        img = RLImage(fname, width=canvas.width / os_, height=canvas.height / os_)
+        img.hAlign = "LEFT" if align == "left" else "CENTER"
+        img.spaceBefore = 3
+        img.spaceAfter = 3
+        return img
+    except Exception:
+        return _para(text, style if style is not None else BODY)
+
+
+def _hi(text: str, pt: float = 9.0, bold: bool = False) -> str:
+    """Render Devanagari as inline HarfBuzz-shaped word images (correct conjuncts
+    and matras); English/punctuation pass through as text. Falls back to plain
+    text if shaping is unavailable."""
+    if not _HB_OK or not _has_devanagari(text):
         return text
-    return f'<font name="{_HINDI_FONT}">{text}</font>'
+    out = []
+    for tok in _re.split(r"(\s+)", text):
+        if tok and _has_devanagari(tok):
+            path, w, h, va = _hb_raster(tok, pt, bold)
+            out.append(
+                f'<img src="{path}" width="{w:.2f}" height="{h:.2f}" valign="{va:.2f}"/>'
+                if path else tok
+            )
+        else:
+            out.append(tok)
+    return "".join(out)
 
 
 # ----- Styles ---------------------------------------------------------------
@@ -73,10 +265,10 @@ TITLE = ParagraphStyle("TITLE", parent=_styles["Heading1"], fontSize=14, leading
                        spaceBefore=2, spaceAfter=2)
 SUBTITLE = ParagraphStyle("SUBTITLE", parent=_styles["Normal"], fontSize=9, leading=11,
                           alignment=TA_CENTER, textColor=colors.black, spaceAfter=4)
-BODY = ParagraphStyle("BODY", parent=_styles["BodyText"], fontSize=9, leading=12,
-                      alignment=TA_JUSTIFY)
-BODYL = ParagraphStyle("BODYL", parent=_styles["BodyText"], fontSize=9, leading=12,
-                       alignment=TA_LEFT)
+BODY = ParagraphStyle("BODY", parent=_styles["BodyText"], fontSize=9, leading=11,
+                      spaceBefore=0, spaceAfter=2, alignment=TA_JUSTIFY)
+BODYL = ParagraphStyle("BODYL", parent=_styles["BodyText"], fontSize=9, leading=11,
+                       spaceBefore=0, spaceAfter=2, alignment=TA_LEFT)
 SMALL = ParagraphStyle("SMALL", parent=_styles["BodyText"], fontSize=8, leading=10,
                        textColor=colors.black)
 NOTE = ParagraphStyle("NOTE", parent=_styles["Italic"], fontSize=8, leading=10,
@@ -98,48 +290,19 @@ _BORDER = colors.black
 
 
 def _hindi_heading_image(text: str, font_size: int = 14, width_mm: float = 170.0) -> RLImage:
-    """Render a Hindi heading using Pillow (proper OpenType shaping) at 300 DPI
-    and embed as a crisp image centred on the page. This avoids ReportLab's missing
-    Devanagari GSUB/GPOS support which causes inconsistent ligature rendering."""
-    try:
-        from PIL import Image as PILImage, ImageDraw, ImageFont
-        font_path = _HINDI_MED_PATH if os.path.exists(_HINDI_MED_PATH) else _HINDI_SEMI_PATH
-
-        # Render at 3× oversample for crispness, then display at natural point size.
-        # 1pt = 1/72 inch; at 300 DPI that is 300/72 ≈ 4.17 px/pt.
-        DPI = 300
-        px_per_pt = DPI / 72.0
-        oversample = 3
-        pil_pt = int(font_size * px_per_pt * oversample)  # e.g. 14pt → 175px
-
-        font = ImageFont.truetype(font_path, pil_pt)
-        dummy = PILImage.new("RGB", (1, 1))
-        bbox = ImageDraw.Draw(dummy).textbbox((0, 0), text, font=font)
-        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-        pad_x = int(pil_pt * 0.08)
-        pad_y = int(pil_pt * 0.06)
-        img_w, img_h = tw + pad_x * 2, th + pad_y * 2
-
-        img = PILImage.new("RGBA", (img_w, img_h), (255, 255, 255, 0))
-        ImageDraw.Draw(img).text(
-            (pad_x - bbox[0], pad_y - bbox[1]), text, font=font, fill=(0, 0, 0, 255)
-        )
-        buf = BytesIO()
-        img.save(buf, format="PNG", optimize=False, compress_level=1)
-        buf.seek(0)
-
-        # Display at natural text size (not stretched to full page width)
-        eff_dpi = DPI * oversample
-        rl_w = (img_w / (eff_dpi / 25.4)) * mm   # convert px → mm → PDF points
-        rl_h = (img_h / (eff_dpi / 25.4)) * mm
-        rl_img = RLImage(buf, width=rl_w, height=rl_h)
-        rl_img.hAlign = "CENTER"
-        return rl_img
-    except Exception:
-        return Paragraph(f'<font name="HindiB">{text}</font>',
-                         ParagraphStyle("_hfb", fontName="HindiB", fontSize=font_size,
-                                        leading=font_size + 4, alignment=TA_CENTER,
-                                        textColor=colors.black))
+    """Render a Hindi heading as a crisp HarfBuzz-shaped image, centred on the
+    page (proper conjunct/matra shaping that ReportLab can't do)."""
+    if _HB_OK:
+        path, w_pt, h_pt, _va = _hb_raster(text, float(font_size), bold=True)
+        if path:
+            rl_img = RLImage(path, width=w_pt, height=h_pt)
+            rl_img.hAlign = "CENTER"
+            return rl_img
+    # Fallback: plain paragraph (may not shape, but the PDF still builds)
+    return Paragraph(f'<font name="HindiB">{text}</font>',
+                     ParagraphStyle("_hfb", fontName="HindiB", fontSize=font_size,
+                                    leading=font_size + 4, alignment=TA_CENTER,
+                                    textColor=colors.black))
 
 
 def _kv_table(rows, label_w=60 * mm, value_w=110 * mm):
@@ -153,14 +316,40 @@ def _kv_table(rows, label_w=60 * mm, value_w=110 * mm):
         ("INNERGRID", (0, 0), (-1, -1), 0.4, _BORDER),
         ("LEFTPADDING", (0, 0), (-1, -1), 5),
         ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
     ]))
     return t
 
 
 def _grid_table(headers, rows, col_widths=None, repeat_header=True, header_bold=True, font_size=8.5):
-    data = [headers] + rows
+    # Wrap header cells in centered Paragraphs so long headers wrap INSIDE the
+    # cell instead of overflowing (plain strings don't wrap in ReportLab tables).
+    _hdr_style = ParagraphStyle(
+        "_gridhdr",
+        fontName="Helvetica-Bold" if header_bold else "Helvetica",
+        fontSize=font_size, leading=font_size + 1.5,
+        alignment=TA_CENTER, textColor=colors.black,
+    )
+    wrapped_headers = [
+        h if hasattr(h, "wrap") else Paragraph(str(h), _hdr_style)
+        for h in headers
+    ]
+    # Wrap non-empty body cells too, so long values (e.g. a degree list) wrap
+    # inside the cell instead of spilling into the next column.
+    _body_style = ParagraphStyle(
+        "_gridbody", fontName="Helvetica", fontSize=font_size,
+        leading=font_size + 1.5, textColor=colors.black,
+    )
+    wrapped_rows = [
+        [
+            c if hasattr(c, "wrap")
+            else (Paragraph(str(c), _body_style) if str(c).strip() else "")
+            for c in row
+        ]
+        for row in rows
+    ]
+    data = [wrapped_headers] + wrapped_rows
     t = Table(data, colWidths=col_widths, repeatRows=1 if repeat_header else 0)
     style = [
         ("FONTSIZE", (0, 0), (-1, -1), font_size),
@@ -170,11 +359,9 @@ def _grid_table(headers, rows, col_widths=None, repeat_header=True, header_bold=
         ("INNERGRID", (0, 0), (-1, -1), 0.4, _BORDER),
         ("LEFTPADDING", (0, 0), (-1, -1), 4),
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 2.5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
     ]
-    if header_bold:
-        style.append(("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"))
     t.setStyle(TableStyle(style))
     return t
 
@@ -184,7 +371,7 @@ def _blank_rows(num_cols, count):
 
 
 def _checkbox(checked: bool) -> str:
-    return "[ X ]" if checked else "[   ]"
+    return f"[ {_tick_img()} ]" if checked else "[   ]"
 
 
 def _fmt_date(value):
@@ -376,9 +563,8 @@ def _section_3_undertaking(story, c):
     addr = _addr_line(c) or "_______________"
     intro_en = (f"I, <b>{name}</b>, S/o or D/o or W/o Mr. <b>{fhn}</b>, aged about ____ years, "
                 f"residing at village &amp; post Mandal District <b>{addr}</b>")
-    intro_hi = _hi("मैं पुत्र / पुत्री / पत्नी श्री ____ उम्र ____ वर्ष गाँव और पोस्ट मण्डल जिला ____ का निवासी हूँ।")
     story.append(_para(intro_en, BODY))
-    story.append(_para(intro_hi, BODY))
+    story.append(_hpara("मैं पुत्र / पुत्री / पत्नी श्री ____ उम्र ____ वर्ष गाँव और पोस्ट मण्डल जिला ____ का निवासी हूँ।", BODY))
     story.append(_para(f"Do hereby affirm on oath that ({_hi('एतद् द्वारा शपथपूर्वक इसकी पुष्टि करता हूँ')})", BODYL))
 
     bullets = [
@@ -391,7 +577,7 @@ def _section_3_undertaking(story, c):
     ]
     for en, hi in bullets:
         story.append(_para(f"• {en}", BODY))
-        story.append(_para(_hi(hi), BODY))
+        story.append(_hpara(hi, BODY))
 
     story.append(Spacer(1, 4))
     story.append(_para(f"I further declare that — {_hi('मैं यह और भी घोषित करता हूँ —')}", BODYL))
@@ -408,7 +594,7 @@ def _section_3_undertaking(story, c):
     ]
     for en, hi in further:
         story.append(_para(f"• {en}", BODY))
-        story.append(_para(_hi(hi), BODY))
+        story.append(_hpara(hi, BODY))
 
     story.append(Spacer(1, 10))
     story.append(_kv_table([
@@ -458,8 +644,8 @@ def _section_4_insurance(story, c):
     story.append(_para(
         "In case of my death (or any other mishap), I request you to provide the insurance coverage amount to the nominee given in the table below.",
         BODY))
-    story.append(_para(
-        _hi("मेरी मृत्यु (या किसी अन्य दुर्घटना) के मामले में, मैं आपसे नीचे दी गई तालिका में दिए गए नामांकित व्यक्ति को बीमा कवरेज राशि प्रदान करने का अनुरोध करता हूँ।"),
+    story.append(_hpara(
+        "मेरी मृत्यु (या किसी अन्य दुर्घटना) के मामले में, मैं आपसे नीचे दी गई तालिका में दिए गए नामांकित व्यक्ति को बीमा कवरेज राशि प्रदान करने का अनुरोध करता हूँ।",
         BODY))
     story.append(_grid_table(
         ["Nominee Name", "Relationship", "PF share payable to each nominee", "Permanent Address with Pincode"],
@@ -757,13 +943,13 @@ def _section_9_notice(story, c):
                 f"Radhya Micro Finance Private Limited on <b>{doj}</b> in the role of <b>{role}</b>. "
                 "I have been informed regarding resignation that I will have to complete my notice-period as per the "
                 "details given below.")
-    hi_intro = _hi(
+    hi_intro = (
         f"मैं पुत्र / पुत्री / पत्नी ____, पता ____, थाना ____, जिला ____ का निवासी हूँ। मैं आज दिनांक "
         f"{doj or '____'} को राधा माइक्रो फाइनेंस प्राइवेट लिमिटेड में {role} के पद पर शामिल हो रहा हूँ, और मुझे "
         "त्याग पत्र के संदर्भ में यह भी बताया गया है कि मुझे अपने त्याग पत्र की अवधि पूरी करनी होगी, जिसका विवरण निम्नलिखित है।"
     )
     story.append(_para(en_intro, BODY))
-    story.append(_para(hi_intro, BODY))
+    story.append(_hpara(hi_intro, BODY))
     story.append(Spacer(1, 4))
 
     story.append(_grid_table(
@@ -779,9 +965,9 @@ def _section_9_notice(story, c):
         "I have read all the above statements, and I have also been explained by the HR officer that on failure to "
         "complete the notice period, the HR Department may take action on behalf of the Company.",
         BODY))
-    story.append(_para(_hi(
+    story.append(_hpara(
         "उपरोक्त सभी कथन मैंने पढ़ लिए हैं, और मुझे HR अधिकारी द्वारा यह भी समझाया गया है कि नोटिस अवधि पूरी न करने पर "
-        "कंपनी की तरफ से HR विभाग अपनी कार्यवाही करेगा।"), BODY))
+        "कंपनी की तरफ से HR विभाग अपनी कार्यवाही करेगा।", BODY))
     story.append(Spacer(1, 8))
     story.append(_kv_table([
         [_para("<b>Employee Signature :</b>", BODYL), _para("", BODYL)],
