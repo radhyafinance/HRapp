@@ -87,6 +87,10 @@ app.include_router(digilocker.router, prefix="/api/digilocker", tags=["DigiLocke
 from routes import cic_converter
 app.include_router(cic_converter.router, prefix="/api/cic", tags=["CIC Converter"])
 
+from routes import id_cards
+app.include_router(id_cards.router, prefix="/api/id-cards", tags=["ID Cards"])
+app.include_router(id_cards.public_router, prefix="/api/public/verify", tags=["Public ID Verification"])
+
 
 @app.get("/api")
 async def root():
