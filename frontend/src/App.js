@@ -18,6 +18,7 @@ import Letters from "./pages/Letters";
 import Settings from "./pages/Settings";
 import Gratuity from "./pages/Gratuity";
 import CandidateApply from "./pages/CandidateApply";
+import VerifyEmployee from "./pages/VerifyEmployee";
 import DigiLockerCallback from "./pages/DigiLockerCallback";
 import CICData from "./pages/CICData";
 import UpdatePrompt from "./components/UpdatePrompt";
@@ -30,6 +31,7 @@ function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
           <Route path="/apply/:token" element={<CandidateApply />} />
+          <Route path="/verify/:token" element={<VerifyEmployee />} />
           <Route path="/digilocker/callback" element={<DigiLockerCallback />} />
           <Route path="/" element={<ProtectedRoute><Layout /></ProtectedRoute>}>
             <Route index element={<Navigate to="/dashboard" replace />} />
