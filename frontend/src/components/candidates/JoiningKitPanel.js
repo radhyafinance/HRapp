@@ -24,6 +24,15 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
   });
   const [reportingToInfo, setReportingToInfo] = useState(null);
   const [reportingToChecking, setReportingToChecking] = useState(false);
+  const [kyc, setKyc] = useState(null); // { kyc_complete, kyc_reason }
+  // Load KYC readiness (Aadhaar front+back + PAN images uploaded AND core details filled).
+  useEffect(() => {
+    let active = true;
+    API.get(`/candidates/${candidate.id}/documents`)
+      .then((r) => { if (active) setKyc(r.data); })
+      .catch(() => { if (active) setKyc(null); });
+    return () => { active = false; };
+  }, [candidate.id, candidate.updated_at, candidate.aadhaar_number, candidate.pan_number]);
 
   const basic      = parseFloat(convertForm.basic)              || 0;
   const hra        = parseFloat(convertForm.hra)               || 0;
@@ -135,7 +144,10 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
     }
   };
 
-  const ready = !!(candidate.employee_id && candidate.expected_joining_date) && !dirty;
+  // KYC must be complete before kit generation / conversion. Don't block before the
+  // check has loaded (the backend enforces it regardless).
+  const kycComplete = kyc ? kyc.kyc_complete !== false : true;
+  const ready = !!(candidate.employee_id && candidate.expected_joining_date) && !dirty && kycComplete;
   const isConverted = candidate.status === "converted";
 
   const doConvert = async () => {
@@ -212,8 +224,9 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
             <><FileText size={14} /> Download Joining Kit (PDF)</>
           )}
         </button>
-        <button type="button" onClick={downloadKitDocx} disabled={downloadingDocx || !ready} data-testid="download-joining-kit-docx-btn"
-          className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-[#1E5BA8] text-white rounded-lg text-sm font-semibold hover:bg-[#16498A] disabled:opacity-50">
+        <button type="button" onClick={downloadKitDocx} disabled data-testid="download-joining-kit-docx-btn"
+          title="Word version is currently unavailable — please use the PDF."
+          className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-[#1E5BA8] text-white rounded-lg text-sm font-semibold hover:bg-[#16498A] disabled:opacity-50 disabled:cursor-not-allowed">
           {downloadingDocx ? (
             <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Generating...</>
           ) : (
@@ -222,6 +235,12 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
         </button>
       </div>
 
+      {kyc && kyc.kyc_complete === false && !isConverted && (
+        <div className="text-xs text-amber-800 bg-amber-100 border border-amber-300 rounded-lg p-2 flex items-start gap-2" data-testid="kyc-incomplete-warning">
+          <AlertCircle size={14} className="flex-shrink-0 mt-0.5" />
+          <span>KYC incomplete — Joining Kit and conversion are locked. {kyc.kyc_reason}</span>
+        </div>
+      )}
       <div className="border-t border-amber-200 pt-3">
         {convertedInfo ? (
           <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm" data-testid="conversion-success">

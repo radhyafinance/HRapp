@@ -136,7 +136,8 @@ async def dashboard_stats(current_user: dict = Depends(get_current_user)):
     present_today = await db.attendance_records.count_documents(att_query)
     on_leave_today = await db.leave_applications.count_documents(leave_today_query)
     pending_leaves = await db.leave_applications.count_documents(pending_leave_query)
-    total_candidates = await db.candidates.count_documents({})
+    # Exclude converted candidates (they are now employees) to match the Candidates tab.
+    total_candidates = await db.candidates.count_documents({"status": {"$ne": "converted"}})
     pending_candidates = await db.candidates.count_documents({"status": "pending"})
     exit_requests = await db.exit_requests.count_documents({"status": {"$nin": ["completed", "rejected"]}})
     now = datetime.now(timezone.utc)

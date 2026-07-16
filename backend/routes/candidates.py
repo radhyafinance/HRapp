@@ -23,6 +23,42 @@ def cand_to_dict(c):
     c["id"] = str(c.pop("_id"))
     return c
 
+# Core identity fields that must be filled (via OCR or manually) before a candidate
+# can get a Joining Kit or be converted to an employee.
+KYC_REQUIRED_FIELDS = [
+    ("first_name", "First name"),
+    ("last_name", "Last name"),
+    ("dob", "Date of birth"),
+    ("gender", "Gender"),
+    ("father_or_husband_name", "Father's / Husband's name"),
+    ("aadhaar_number", "Aadhaar number"),
+    ("pan_number", "PAN number"),
+    ("address", "Address"),
+]
+
+async def kyc_gate_reason(cand: dict, cand_id: str, docs: Optional[dict] = None) -> Optional[str]:
+    """Return a human-readable reason if the candidate is NOT KYC-complete, else None.
+    Requires Aadhaar front + back + PAN card images uploaded AND the core identity
+    fields present (populated by OCR or manual entry). Used to gate Joining Kit
+    generation and conversion to employee, for both the Add Candidate and
+    invite-link (self-onboarding) flows.
+    """
+    if docs is None:
+        docs = await db.candidate_documents.find_one({"candidate_id": cand_id}) or {}
+    missing_docs = []
+    if not docs.get("aadhaar_front"):
+        missing_docs.append("Aadhaar front")
+    if not docs.get("aadhaar_back"):
+        missing_docs.append("Aadhaar back")
+    if not docs.get("pan_card"):
+        missing_docs.append("PAN card")
+    if missing_docs:
+        return "Upload these documents first: " + ", ".join(missing_docs) + "."
+    missing_fields = [label for key, label in KYC_REQUIRED_FIELDS if not str(cand.get(key) or "").strip()]
+    if missing_fields:
+        return "Complete these details (scan Aadhaar/PAN via OCR, or fill manually) first: " + ", ".join(missing_fields) + "."
+    return None
+
 
 class CandidateCreate(BaseModel):
     first_name: str
@@ -534,9 +570,9 @@ async def get_documents_meta(cand_id: str, current_user: dict = Depends(get_curr
     """Get info about which documents exist (without binary)."""
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
-    doc = await db.candidate_documents.find_one({"candidate_id": cand_id})
-    if not doc:
-        return {"candidate_id": cand_id, "aadhaar_front": False, "aadhaar_back": False, "pan_card": False, "cv": False}
+    doc = await db.candidate_documents.find_one({"candidate_id": cand_id}) or {}
+    cand = await db.candidates.find_one({"_id": ObjectId(cand_id)}) or {}
+    gate = await kyc_gate_reason(cand, cand_id, docs=doc)
     return {
         "candidate_id": cand_id,
         "aadhaar_front": bool(doc.get("aadhaar_front")),
@@ -544,6 +580,8 @@ async def get_documents_meta(cand_id: str, current_user: dict = Depends(get_curr
         "pan_card": bool(doc.get("pan_card")),
         "cv": bool(doc.get("cv")),
         "cv_file_name": (doc.get("cv") or {}).get("file_name") if doc.get("cv") else None,
+        "kyc_complete": gate is None,
+        "kyc_reason": gate,
     }
 
 
@@ -642,6 +680,9 @@ async def convert_candidate_to_employee(
         raise HTTPException(status_code=400, detail="Set a Tentative Joining Date before converting.")
     if not cand.get("email"):
         raise HTTPException(status_code=400, detail="Candidate email is required to create a user account.")
+    gate = await kyc_gate_reason(cand, cand_id)
+    if gate:
+        raise HTTPException(status_code=400, detail=gate)
 
     employee_id = str(cand["employee_id"]).strip().upper()
     email = str(cand["email"]).lower().strip()
@@ -842,13 +883,13 @@ async def joining_kit_pdf(cand_id: str, current_user: dict = Depends(get_current
         raise HTTPException(status_code=400, detail="Set a tentative joining date before generating the kit.")
     if not cand.get("employee_id"):
         raise HTTPException(status_code=400, detail="Set an Employee ID before generating the kit.")
-
     docs = await db.candidate_documents.find_one({"candidate_id": cand_id}) or {}
+    gate = await kyc_gate_reason(cand, cand_id, docs=docs)
+    if gate:
+        raise HTTPException(status_code=400, detail=gate)
     company = await db.app_settings.find_one({"key": "company"}) or {}
-
     cand_safe = {k: v for k, v in cand.items() if k != "_id"}
     company_safe = {k: v for k, v in company.items() if k not in ("_id", "key")}
-
     from services.joining_kit_pdf import build_joining_kit_pdf
     pdf_bytes = build_joining_kit_pdf(
         cand_safe,
@@ -879,13 +920,13 @@ async def joining_kit_docx(cand_id: str, current_user: dict = Depends(get_curren
         raise HTTPException(status_code=400, detail="Set a tentative joining date before generating the kit.")
     if not cand.get("employee_id"):
         raise HTTPException(status_code=400, detail="Set an Employee ID before generating the kit.")
-
     docs = await db.candidate_documents.find_one({"candidate_id": cand_id}) or {}
+    gate = await kyc_gate_reason(cand, cand_id, docs=docs)
+    if gate:
+        raise HTTPException(status_code=400, detail=gate)
     company = await db.app_settings.find_one({"key": "company"}) or {}
-
     cand_safe = {k: v for k, v in cand.items() if k != "_id"}
     company_safe = {k: v for k, v in company.items() if k not in ("_id", "key")}
-
     from services.joining_kit_docx import build_joining_kit_docx
     docx_bytes = build_joining_kit_docx(
         cand_safe,
