@@ -182,3 +182,4 @@ webauthn==2.7.1
 firebase-admin==6.5.0
 uharfbuzz==0.55.0
 freetype-py==2.5.1
+qrcode==8.0

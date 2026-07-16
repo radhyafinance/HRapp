@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import requests
 
-BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://radhya-attendance.preview.emergentagent.com").rstrip("/")
+BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "https://nbfc-hr-app.preview.emergentagent.com").rstrip("/")
 ADMIN = {"username": "admin", "password": "Admin@123"}
 FA = {"username": "RMF0023", "password": "Welcome@123"}
 
