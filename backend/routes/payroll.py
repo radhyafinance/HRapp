@@ -28,6 +28,57 @@ def _is_non_working_saturday(d: date, sat_rule: Optional[str]) -> bool:
     return False
 
 
+# ── Salary hold ───────────────────────────────────────────────────────────────
+# When HR Admin accepts a resignation the employee's salary is held: the payroll
+# record is still created and fully calculated, but it is kept out of the NEFT
+# file (the only thing that actually moves money) until someone releases it.
+#
+# The flag is stored ON THE RECORD rather than derived from the employee's live
+# status, for two reasons: auto_exit_employees_past_lwd() flips notice_period ->
+# exited once the LWD passes, so a derived answer would change underneath us; and
+# a stored flag leaves an audit trail of who held/released what, and when.
+
+# Statuses whose money has not left yet, so a hold can still bite.
+_UNPAID_STATUSES = ["draft", "processed"]
+
+
+def _hold_doc(reason: str, actor: str) -> dict:
+    return {
+        "on_hold": True,
+        "hold_reason": reason,
+        "held_at": datetime.now(timezone.utc).isoformat(),
+        "held_by": actor,
+        "hold_eligible_at": None,   # stamped when the exit reaches `completed`
+    }
+
+
+async def hold_payroll_for_exit(employee_id: str, reason: str, actor: str) -> int:
+    """Hold every not-yet-paid payroll record for an employee.
+
+    Called when a resignation is fully approved. Records already marked `paid`
+    are left alone — that money is gone and a flag won't bring it back.
+    """
+    res = await db.payroll_records.update_many(
+        {"employee_id": employee_id, "status": {"$in": _UNPAID_STATUSES}, "on_hold": {"$ne": True}},
+        {"$set": _hold_doc(reason, actor)},
+    )
+    return res.modified_count
+
+
+async def mark_exit_holds_eligible(employee_id: str, actor: str) -> int:
+    """Mark an employee's held records as ready to release.
+
+    Eligibility is NOT a release: the money still doesn't move until an admin
+    approves it. This only changes what HR sees on the Payroll page.
+    """
+    res = await db.payroll_records.update_many(
+        {"employee_id": employee_id, "on_hold": True},
+        {"$set": {"hold_eligible_at": datetime.now(timezone.utc).isoformat(),
+                  "hold_eligible_by": actor}},
+    )
+    return res.modified_count
+
+
 def _is_payslip_visible_to_employee(record: dict) -> bool:
     """Gating rule for non-admin payslip visibility:
 
@@ -38,6 +89,11 @@ def _is_payslip_visible_to_employee(record: dict) -> bool:
 
     HR Admin / Management bypass this and see everything.
     """
+    # A held record should never reach `paid` anyway (publish/finalize refuse
+    # it) — this is the backstop, so a stray `paid` can't show a payslip for
+    # money that was never sent.
+    if record.get("on_hold"):
+        return False
     if record.get("status") != "paid":
         return False
     period = record.get("period", "") or ""
@@ -129,13 +185,18 @@ def calc_payroll_components(emp: dict, days_in_month: int = 30, lop_days: float 
     }
 
 
-async def calculate_lop_days(employee_id: str, year: int, month: int, joining_date_str: str) -> float:
+async def calculate_lop_days(employee_id: str, year: int, month: int, joining_date_str: str,
+                             last_working_day_str: Optional[str] = None) -> float:
     """Auto-calculate LOP days for the month.
 
     LOP = working days where the employee has no punch-in, no approved leave,
     and the day is not a public holiday, Sunday, or a non-working Saturday
     (resolved per the employee's shift saturday_rule).
     Half-day attendance is counted as present (not LOP).
+
+    last_working_day_str: when the employee leaves mid-month, every day after
+    their LWD is LOP unconditionally — including Sundays and holidays, which
+    are otherwise paid. They are not employed on those days.
     """
     days_in_month = _cal.monthrange(year, month)[1]
     period = f"{year}-{month:02d}"
@@ -144,6 +205,11 @@ async def calculate_lop_days(employee_id: str, year: int, month: int, joining_da
         joining_date = date.fromisoformat(joining_date_str[:10])
     except Exception:
         joining_date = date(year, month, 1)
+
+    try:
+        lwd = date.fromisoformat(last_working_day_str[:10]) if last_working_day_str else None
+    except Exception:
+        lwd = None
 
     # Resolve the employee's effective shift to get saturday_rule
     emp = await db.employees.find_one({"employee_id": employee_id}, {"_id": 0, "role": 1}) or {}
@@ -184,6 +250,14 @@ async def calculate_lop_days(employee_id: str, year: int, month: int, joining_da
     for day in range(1, days_in_month + 1):
         d = date(year, month, day)
 
+        # Past the last working day the employee is no longer employed, so every
+        # remaining day is LOP — weekly offs and holidays included. This is checked
+        # before the `d > today` skip below: days after the LWD are LOP whether or
+        # not they have happened yet.
+        if lwd and d > lwd:
+            lop += 1.0
+            continue
+
         # Skip future dates or pre-joining dates
         if d > today or d < joining_date:
             continue
@@ -223,6 +297,10 @@ async def calculate_lop_days(employee_id: str, year: int, month: int, joining_da
 
 def pay_to_dict(p):
     p["id"] = str(p.pop("_id"))
+    # Records written before salary holds existed have no on_hold field — normalise
+    # so the UI never has to distinguish "not held" from "missing".
+    p["on_hold"] = bool(p.get("on_hold"))
+    p["hold_eligible"] = bool(p.get("hold_eligible_at"))
     # Always expose a derived total_deductions field for UI/exports
     p["total_deductions"] = round(
         float(p.get("epf_employee") or 0)
@@ -254,13 +332,31 @@ class PayrollUpdateRequest(BaseModel):
 async def process_payroll(data: ProcessPayrollRequest, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
-    query = {"status": {"$in": ["active", "probation"]}}
+    period = f"{data.year}-{data.month:02d}"
+
+    # Who gets a payroll record this month.
+    #
+    # `notice_period` staff are still employed and still working, so they are paid
+    # on the normal cycle like everyone else — their record is simply born held.
+    #
+    # The `exited` arm catches the final part-month: auto_exit_employees_past_lwd()
+    # flips someone to `exited` the day after their LWD, so an employee who left on
+    # the 15th is already `exited` by the time payroll runs on the 30th. Without
+    # this they would silently get nothing for the days they did work. Matching on
+    # the LWD falling inside this period keeps it to that one month — someone who
+    # left in March does not reappear in September's run.
+    query = {
+        "$or": [
+            {"status": {"$in": ["active", "probation", "notice_period"]}},
+            {"status": "exited", "last_working_day": {"$regex": f"^{period}"}},
+        ]
+    }
     if data.employee_ids:
         query["employee_id"] = {"$in": data.employee_ids}
     employees = await db.employees.find(query).to_list(1000)
-    period = f"{data.year}-{data.month:02d}"
     days_in_month = _cal.monthrange(data.year, data.month)[1]
     processed = []
+    held = []
     for emp in employees:
         emp_id = emp["employee_id"]
         existing = await db.payroll_records.find_one({"employee_id": emp_id, "period": period})
@@ -268,8 +364,22 @@ async def process_payroll(data: ProcessPayrollRequest, current_user: dict = Depe
             continue
         # Auto-calculate LOP: absent days with no approved leave, no holiday, not Sunday
         joining_date_str = emp.get("joining_date", f"{data.year}-{data.month:02d}-01") or f"{data.year}-{data.month:02d}-01"
-        lop_days = await calculate_lop_days(emp_id, data.year, data.month, joining_date_str)
+        # Only pass the LWD once it is set (i.e. the exit was approved) so it can
+        # cut off pay mid-month. Everyone else is unaffected.
+        lwd_str = emp.get("last_working_day") or None
+        lop_days = await calculate_lop_days(emp_id, data.year, data.month, joining_date_str, lwd_str)
         components = calc_payroll_components(emp, days_in_month, lop_days)
+
+        # An accepted resignation means the salary is held from the moment of
+        # acceptance through to clearance.
+        emp_status = emp.get("status")
+        is_exiting = emp_status == "notice_period" or (emp_status == "exited" and lwd_str)
+        hold = _hold_doc(
+            f"Resignation accepted — held pending exit clearance"
+            + (f" (last working day {str(lwd_str)[:10]})" if lwd_str else ""),
+            current_user.get("employee_id") or current_user.get("username") or "System",
+        ) if is_exiting else {"on_hold": False}
+
         record = {
             "employee_id": emp_id,
             "employee_name": f"{emp.get('first_name', '')} {emp.get('last_name', '')}",
@@ -286,12 +396,16 @@ async def process_payroll(data: ProcessPayrollRequest, current_user: dict = Depe
             "ifsc_code": emp.get("bank_details", {}).get("ifsc_code", ""),
             "bank_name": emp.get("bank_details", {}).get("bank_name", ""),
             "status": "draft",
+            **hold,
             "processed_at": datetime.now(timezone.utc).isoformat(),
             "processed_by": current_user.get("employee_id"),
         }
         await db.payroll_records.insert_one(record)
         processed.append(emp_id)
-    return {"processed": len(processed), "employee_ids": processed, "period": period}
+        if is_exiting:
+            held.append(emp_id)
+    return {"processed": len(processed), "employee_ids": processed, "period": period,
+            "held": len(held), "held_employee_ids": held}
 
 
 @router.delete("/period/{period}")
@@ -422,11 +536,62 @@ async def update_payroll(record_id: str, data: PayrollUpdateRequest, current_use
 async def finalize_payroll(record_id: str, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
+    record = await db.payroll_records.find_one({"_id": ObjectId(record_id)})
+    if not record:
+        raise HTTPException(status_code=404, detail="Not found")
+    if record.get("on_hold"):
+        raise HTTPException(
+            status_code=400,
+            detail="This salary is on hold and cannot be marked as paid. Release the hold first.",
+        )
     await db.payroll_records.update_one(
         {"_id": ObjectId(record_id)},
         {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc).isoformat()}},
     )
     return {"message": "Payroll marked as paid"}
+
+
+class ReleaseHoldRequest(BaseModel):
+    note: Optional[str] = None
+
+
+@router.post("/{record_id}/release-hold")
+async def release_hold(record_id: str, data: ReleaseHoldRequest,
+                       current_user: dict = Depends(get_current_user)):
+    """Release a held salary so it enters the next NEFT export.
+
+    Reaching `completed` on the exit only makes a record *eligible*; nothing is
+    paid until an admin calls this. Releasing before the exit is complete is
+    allowed but recorded as an override, so the trail shows it was a judgement
+    call rather than the normal path.
+    """
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    record = await db.payroll_records.find_one({"_id": ObjectId(record_id)})
+    if not record:
+        raise HTTPException(status_code=404, detail="Not found")
+    if not record.get("on_hold"):
+        raise HTTPException(status_code=400, detail="This salary is not on hold.")
+
+    override = not record.get("hold_eligible_at")
+    if override and not (data.note or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="The exit is not complete yet. Give a reason to release this salary early.",
+        )
+
+    await db.payroll_records.update_one(
+        {"_id": ObjectId(record_id)},
+        {"$set": {
+            "on_hold": False,
+            "released_at": datetime.now(timezone.utc).isoformat(),
+            "released_by": current_user.get("employee_id") or current_user.get("username"),
+            "release_note": (data.note or "").strip(),
+            "release_override": override,
+        }},
+    )
+    record = await db.payroll_records.find_one({"_id": ObjectId(record_id)})
+    return pay_to_dict(record)
 
 
 @router.post("/publish")
@@ -440,19 +605,30 @@ async def publish_payslips(period: str, current_user: dict = Depends(get_current
         int(y); int(m)
     except (ValueError, AttributeError):
         raise HTTPException(status_code=400, detail="Period must be in YYYY-MM format")
+    # Held salaries are skipped: marking one `paid` would publish a payslip for
+    # money that was never sent.
     res = await db.payroll_records.update_many(
-        {"period": period, "status": {"$in": ["draft", "processed"]}},
+        {"period": period, "status": {"$in": ["draft", "processed"]}, "on_hold": {"$ne": True}},
         {"$set": {"status": "paid", "paid_at": datetime.now(timezone.utc).isoformat(),
                   "published_by": current_user.get("employee_id") or current_user.get("username")}},
     )
-    return {"period": period, "published": res.modified_count}
+    skipped = await db.payroll_records.count_documents({"period": period, "on_hold": True})
+    return {"period": period, "published": res.modified_count, "held_skipped": skipped}
 
 
 @router.get("/export/neft")
 async def export_neft(period: str, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
-    records = await db.payroll_records.find({"period": period}).to_list(1000)
+    all_records = await db.payroll_records.find({"period": period}).to_list(1000)
+
+    # This file is the only thing that actually moves money, so it is where the
+    # hold has to bite. Held salaries are dropped from the sheet — but never
+    # silently: the count comes back in a header so the UI can say so out loud.
+    # Nothing is written into the sheet itself; the bank parses it.
+    held_records = [r for r in all_records if r.get("on_hold")]
+    records = [r for r in all_records if not r.get("on_hold")]
+
     settings_doc = await db.app_settings.find_one({"key": "company"}) or {}
 
     # Only include employees whose bank account has been verified
@@ -498,7 +674,7 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
         ws.title = f"NEFT_{period}"
         headers = [
             "Transaction type \n(Within Bank (WIB)/\nNEFT (NFT)/\nRTGS (RTG)/\nIMPS (IFC))",
-            "Amount (\u20b9)\n(Should not be more than 15 digit including decimals and paise)",
+            "Amount (₹)\n(Should not be more than 15 digit including decimals and paise)",
             "Debit Account no\nShould be exactly 12 digit",
             "IFSC (Always 11 character alphanumeric and 5th character always 0 (zero)) (For ICICI bank accounts keep it blank)",
             "Beneficiary Account No (Max length for other bank 34 character alphanumeric and for ICICI Bank 12 digit number )",
@@ -568,10 +744,17 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
         wb.save(buffer)
         buffer.seek(0)
         filename = f"NEFT_{short_code}_{period}.xlsx"
+        held_amount = round(sum(float(r.get("net_salary") or 0) for r in held_records), 2)
         return Response(
             content=buffer.getvalue(),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "X-Payroll-Held-Count": str(len(held_records)),
+                "X-Payroll-Held-Amount": str(held_amount),
+                # Browsers hide custom headers from JS unless they are exposed.
+                "Access-Control-Expose-Headers": "X-Payroll-Held-Count, X-Payroll-Held-Amount",
+            },
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -650,6 +833,7 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
         ("CTC", 27, 27, orange_fill),
         ("Statutory IDs", 28, 30, navy_fill),
         ("Bank Details", 31, 33, orange_fill),
+        ("Payment", 34, 34, navy_fill),
     ]
     col_headers = [
         "Sr", "Employee ID", "Name", "Designation", "Department", "Joining Date", "Status",
@@ -662,8 +846,9 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
         "Monthly CTC",
         "PAN", "UAN", "ESI No.",
         "Bank Name", "Account No.", "IFSC",
+        "Payment Status",
     ]
-    n_cols = len(col_headers)  # 33
+    n_cols = len(col_headers)  # 34
 
     # Title rows
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=n_cols)
@@ -671,8 +856,11 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
     ws.cell(row=1, column=1).alignment = Alignment(horizontal="center", vertical="center")
     ws.row_dimensions[1].height = 22
 
+    held_count = sum(1 for r in records if r.get("on_hold"))
+    held_note = f"  |  {held_count} salary on hold" if held_count == 1 else (
+        f"  |  {held_count} salaries on hold" if held_count else "")
     ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=n_cols)
-    ws.cell(row=2, column=1, value=f"Period: {period_label}  |  Generated: {datetime.now(timezone.utc).strftime('%d %b %Y %H:%M UTC')}  |  {len(records)} employees").font = subtitle_font
+    ws.cell(row=2, column=1, value=f"Period: {period_label}  |  Generated: {datetime.now(timezone.utc).strftime('%d %b %Y %H:%M UTC')}  |  {len(records)} employees{held_note}").font = subtitle_font
     ws.cell(row=2, column=1).alignment = Alignment(horizontal="center", vertical="center")
 
     # Group header row (row 3)
@@ -728,6 +916,16 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
         ctc = float(rec.get("ctc_monthly") or 0)
 
         bank = emp.get("bank_details", {}) or {}
+        # Held rows stay in the register — this is the compliance record of what was
+        # earned, and totals below are the full liability. The column is what tells
+        # you the money didn't actually go out.
+        if rec.get("on_hold"):
+            pay_status = "HELD — ready to release" if rec.get("hold_eligible_at") else "HELD — exit in progress"
+        elif rec.get("released_at"):
+            pay_status = "Released"
+        else:
+            pay_status = (rec.get("status") or "").replace("_", " ").title()
+
         row_values = [
             sr,
             rec.get("employee_id", ""),
@@ -754,6 +952,7 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
             bank.get("bank_name", "") or rec.get("bank_name", ""),
             bank.get("account_number", "") or rec.get("bank_account", ""),
             bank.get("ifsc_code", "") or rec.get("ifsc_code", ""),
+            pay_status,
         ]
 
         for col_idx, val in enumerate(row_values, 1):
@@ -801,6 +1000,7 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
         13,                                 # CTC
         13, 14, 14,                         # Statutory IDs
         18, 18, 13,                         # Bank
+        24,                                 # Payment Status
     ]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
