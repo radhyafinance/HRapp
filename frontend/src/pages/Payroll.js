@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useMemo } from "react";
 import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
-import { Play, Download, Eye, X, FileText, Save, CheckCircle2, Trash2, Send } from "lucide-react";
+import { Play, Download, Eye, X, FileText, Save, CheckCircle2, Trash2, Send, Lock, Unlock, AlertTriangle } from "lucide-react";
 
 function Modal({ title, onClose, children }) {
   return (
@@ -44,6 +44,8 @@ export default function Payroll() {
   const [savingEdits, setSavingEdits] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [releaseNote, setReleaseNote] = useState("");
+  const [releasing, setReleasing] = useState(false);
   const isManager = ["hr_admin", "management"].includes(user?.role);
 
   // Build dynamic period list: 2025-01 up to current month
@@ -71,6 +73,34 @@ export default function Payroll() {
     const lopDays = r.lop_days != null ? r.lop_days : 0;
     setEditLopDays(lopDays);
     setEditRemarks(r.remarks || "");
+    setReleaseNote("");
+  };
+
+  const releaseHold = async () => {
+    if (!showSlip) return;
+    const early = !showSlip.hold_eligible;
+    if (early && !releaseNote.trim()) {
+      alert("The exit isn't complete yet. Give a reason to release this salary early.");
+      return;
+    }
+    const warn = early
+      ? `\n\nThe exit process is NOT complete for this employee. This is an early release and will be recorded as an override.`
+      : "";
+    if (!window.confirm(
+      `Release ${showSlip.employee_name}'s salary for ${showSlip.period}?\n\n` +
+      `₹${Number(showSlip.net_salary || 0).toLocaleString("en-IN")} will be included in the next NEFT sheet you download.${warn}`
+    )) return;
+    setReleasing(true);
+    try {
+      const res = await API.post(`/payroll/${showSlip.id}/release-hold`, { note: releaseNote.trim() || null });
+      setShowSlip(res.data);
+      setRecords(prev => prev.map(r => r.id === res.data.id ? res.data : r));
+      setReleaseNote("");
+    } catch (e) {
+      alert(e.response?.data?.detail || "Failed to release the hold");
+    } finally {
+      setReleasing(false);
+    }
   };
 
   const saveEdits = async () => {
@@ -115,12 +145,15 @@ export default function Payroll() {
     setPublishing(true);
     try {
       const res = await API.post(`/payroll/publish?period=${p}`);
+      const skipped = res.data.held_skipped
+        ? `\n\n${res.data.held_skipped} salary(s) on hold were SKIPPED — they stay unpaid and hidden from the employee until released.`
+        : "";
       if (res.data.published === 0) {
-        alert(`All payslips for ${months[selectedMonth-1]} ${selectedYear} are already marked as Paid.`);
+        alert(`No payslips to publish for ${months[selectedMonth-1]} ${selectedYear}.${skipped || " They are already marked as Paid."}`);
       } else {
-        alert(`${res.data.published} payslip(s) for ${months[selectedMonth-1]} ${selectedYear} marked as Paid. Employees can now view them.`);
-        fetchRecords();
+        alert(`${res.data.published} payslip(s) for ${months[selectedMonth-1]} ${selectedYear} marked as Paid. Employees can now view them.${skipped}`);
       }
+      fetchRecords();
     } catch (e) {
       alert(e.response?.data?.detail || "Publish failed");
     } finally {
@@ -148,7 +181,10 @@ export default function Payroll() {
     setProcessing(true);
     try {
       const res = await API.post("/payroll/process", { month: selectedMonth, year: selectedYear });
-      alert(`Processed ${res.data.processed} payroll records for ${months[selectedMonth-1]} ${selectedYear}`);
+      const heldNote = res.data.held
+        ? `\n\n${res.data.held} of them are ON HOLD (resignation accepted) and will be left out of the NEFT sheet until released.`
+        : "";
+      alert(`Processed ${res.data.processed} payroll records for ${months[selectedMonth-1]} ${selectedYear}${heldNote}`);
       fetchRecords();
     } catch (e) {
       alert(e.response?.data?.detail || "Processing failed");
@@ -163,6 +199,18 @@ export default function Payroll() {
       const res = await API.get("/payroll/export/neft", { params: { period }, responseType: "blob" });
       const url = URL.createObjectURL(res.data);
       const a = document.createElement("a"); a.href = url; a.download = `NEFT_${period}.xlsx`; a.click();
+      // Held salaries are left out of the sheet. Say so — a silent omission in the
+      // file that actually moves money is exactly what we're trying to avoid.
+      const heldCount = Number(res.headers?.["x-payroll-held-count"] || 0);
+      const heldAmount = Number(res.headers?.["x-payroll-held-amount"] || 0);
+      if (heldCount > 0) {
+        alert(
+          `Heads up — ${heldCount} salary(s) on hold were left OUT of this NEFT sheet.\n\n` +
+          `₹${heldAmount.toLocaleString("en-IN")} is being withheld pending exit clearance.\n\n` +
+          `They are listed on the Payroll page with a "Held" tag, and are still shown in the ` +
+          `Salary Register for your records.`
+        );
+      }
     } catch (e) {
       alert("NEFT export failed");
     }
@@ -380,6 +428,30 @@ export default function Payroll() {
         );
       })()}
 
+      {/* Salaries on hold — shown to HR admin/management only */}
+      {isManager && (() => {
+        const held = records.filter(r => r.on_hold);
+        if (held.length === 0) return null;
+        const total = held.reduce((s, r) => s + Number(r.net_salary || 0), 0);
+        const ready = held.filter(r => r.hold_eligible).length;
+        return (
+          <div className="mb-4 rounded-xl border border-red-300 bg-red-50 px-4 py-3 flex items-start gap-3" data-testid="held-salaries-banner">
+            <Lock size={18} className="text-red-600 flex-shrink-0 mt-0.5" />
+            <div className="text-sm text-red-900">
+              <p className="font-bold">
+                {held.length} salary{held.length === 1 ? "" : " records"} on hold — ₹{Math.round(total).toLocaleString("en-IN")} withheld
+              </p>
+              <p className="text-red-800 mt-0.5">
+                Resignation accepted. These are left out of the NEFT sheet until released, but still appear in the Salary Register.
+                {ready > 0 && (
+                  <> <span className="font-semibold">{ready} {ready === 1 ? "has" : "have"} completed exit clearance and {ready === 1 ? "is" : "are"} ready to release</span> — open the payslip to release.</>
+                )}
+              </p>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Manager: full payroll table */}
       {isManager && (
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
@@ -410,7 +482,16 @@ export default function Payroll() {
                     <td className="px-4 py-3 text-sm font-semibold text-red-600" data-testid={`deductions-${r.id}`}>-₹{Math.round(totalDed).toLocaleString("en-IN")}</td>
                     <td className="px-4 py-3 text-sm font-bold text-green-700">₹{r.net_salary?.toLocaleString("en-IN")}</td>
                     <td className="px-4 py-3">
-                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${r.status === "paid" ? "bg-green-100 text-green-700" : r.status === "processed" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"}`}>{r.status}</span>
+                      <div className="flex flex-col items-start gap-1">
+                        <span className={`px-2 py-1 rounded-full text-xs font-medium ${r.status === "paid" ? "bg-green-100 text-green-700" : r.status === "processed" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"}`}>{r.status}</span>
+                        {r.on_hold && (
+                          <span data-testid={`hold-badge-${r.id}`}
+                            title={r.hold_reason || "Salary on hold — excluded from the NEFT sheet"}
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${r.hold_eligible ? "bg-orange-100 text-orange-700" : "bg-red-100 text-red-700"}`}>
+                            <Lock size={9} /> {r.hold_eligible ? "Held — ready" : "Held"}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex gap-1.5">
@@ -591,6 +672,41 @@ export default function Payroll() {
               )}
             </div>
 
+            {/* Salary on hold — HR releases it here */}
+            {isManager && showSlip.on_hold && (
+              <div className="border border-red-300 bg-red-50 rounded-lg p-3 space-y-2.5" data-testid="hold-panel">
+                <div className="flex items-start gap-2">
+                  <Lock size={16} className="text-red-600 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm text-red-900">
+                    <p className="font-bold">Salary on hold — not in the NEFT sheet</p>
+                    {showSlip.hold_reason && <p className="text-red-800 text-[12px] mt-0.5">{showSlip.hold_reason}</p>}
+                  </div>
+                </div>
+                {showSlip.hold_eligible ? (
+                  <p className="text-[12px] text-green-800 bg-green-50 border border-green-200 rounded p-2 flex items-start gap-1.5">
+                    <CheckCircle2 size={13} className="flex-shrink-0 mt-0.5" />
+                    <span>Exit clearance is complete. This salary is ready to release.</span>
+                  </p>
+                ) : (
+                  <p className="text-[12px] text-amber-900 bg-amber-50 border border-amber-300 rounded p-2 flex items-start gap-1.5">
+                    <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
+                    <span>The exit isn't complete yet (NOCs and final documents pending). Releasing now is an override and will be recorded as one.</span>
+                  </p>
+                )}
+                <input
+                  value={releaseNote}
+                  onChange={e => setReleaseNote(e.target.value)}
+                  data-testid="release-note-input"
+                  placeholder={showSlip.hold_eligible ? "Note (optional)" : "Reason for releasing early (required)"}
+                  className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
+                />
+                <button onClick={releaseHold} disabled={releasing} data-testid="release-hold-btn"
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-semibold hover:bg-red-700 disabled:opacity-50">
+                  {releasing ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Releasing...</> : <><Unlock size={14} /> Release Salary</>}
+                </button>
+              </div>
+            )}
+
             {/* HR action buttons */}
             {isManager && showSlip.status !== "paid" && (
               <div className="flex flex-col sm:flex-row gap-2">
@@ -598,8 +714,10 @@ export default function Payroll() {
                   className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-[#1E2A47] text-white rounded-lg text-sm font-semibold hover:bg-[#2A3A5E] disabled:opacity-50">
                   {savingEdits ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Saving...</> : <><Save size={14} /> Save Adjustments</>}
                 </button>
-                <button onClick={markPaid} disabled={finalizing || showSlip.status === "draft"} data-testid="mark-paid-btn"
-                  title={showSlip.status === "draft" ? "Save adjustments first to move record to Processed before marking as paid" : ""}
+                <button onClick={markPaid} disabled={finalizing || showSlip.status === "draft" || showSlip.on_hold} data-testid="mark-paid-btn"
+                  title={showSlip.on_hold
+                    ? "This salary is on hold. Release it before marking as paid."
+                    : showSlip.status === "draft" ? "Save adjustments first to move record to Processed before marking as paid" : ""}
                   className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed">
                   {finalizing ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Marking...</> : <><CheckCircle2 size={14} /> Mark as Paid</>}
                 </button>
