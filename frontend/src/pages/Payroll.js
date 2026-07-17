@@ -199,16 +199,39 @@ export default function Payroll() {
       const res = await API.get("/payroll/export/neft", { params: { period }, responseType: "blob" });
       const url = URL.createObjectURL(res.data);
       const a = document.createElement("a"); a.href = url; a.download = `NEFT_${period}.xlsx`; a.click();
-      // Held salaries are left out of the sheet. Say so — a silent omission in the
-      // file that actually moves money is exactly what we're trying to avoid.
-      const heldCount = Number(res.headers?.["x-payroll-held-count"] || 0);
-      const heldAmount = Number(res.headers?.["x-payroll-held-amount"] || 0);
-      if (heldCount > 0) {
+      // Three things keep someone out of this sheet, and none of them may be silent —
+      // it's the file that actually moves money. Report every exclusion, with names.
+      const h = res.headers || {};
+      const n = (k) => Number(h[k] || 0);
+      const ids = (k) => (h[k] || "").split(",").filter(Boolean).join(", ");
+      const held = n("x-payroll-held-count");
+      const drafts = n("x-payroll-draft-count");
+      const unver = n("x-payroll-unverified-count");
+      const parts = [];
+      if (held > 0) {
+        parts.push(
+          `• ${held} ON HOLD — ₹${n("x-payroll-held-amount").toLocaleString("en-IN")} withheld ` +
+          `pending exit clearance.\n  ${ids("x-payroll-held-ids")}`
+        );
+      }
+      if (drafts > 0) {
+        parts.push(
+          `• ${drafts} NOT REVIEWED YET (still Draft). Open each payslip and click ` +
+          `"Save Adjustments" to approve it for payment.\n  ${ids("x-payroll-draft-ids")}`
+        );
+      }
+      if (unver > 0) {
+        parts.push(
+          `• ${unver} BANK NOT VERIFIED — cannot be paid until the account is verified ` +
+          `on their employee record.\n  ${ids("x-payroll-unverified-ids")}`
+        );
+      }
+      if (parts.length) {
         alert(
-          `Heads up — ${heldCount} salary(s) on hold were left OUT of this NEFT sheet.\n\n` +
-          `₹${heldAmount.toLocaleString("en-IN")} is being withheld pending exit clearance.\n\n` +
-          `They are listed on the Payroll page with a "Held" tag, and are still shown in the ` +
-          `Salary Register for your records.`
+          `NEFT sheet for ${months[selectedMonth-1]} ${selectedYear}: ` +
+          `${n("x-payroll-included-count")} employee(s) included.\n\n` +
+          `The following were LEFT OUT:\n\n${parts.join("\n\n")}\n\n` +
+          `All of them still appear in the Salary Register for your records.`
         );
       }
     } catch (e) {
@@ -452,6 +475,30 @@ export default function Payroll() {
         );
       })()}
 
+      {/* Not payable yet — bank unverified or never reviewed. Both silently keep
+          someone out of the NEFT sheet, so surface them before the bank run. */}
+      {isManager && (() => {
+        const rows = records.filter(r => r.period === period);
+        const unver = rows.filter(r => r.bank_verified === false);
+        const drafts = rows.filter(r => r.status === "draft" && !r.on_hold);
+        if (!unver.length && !drafts.length) return null;
+        const list = (rs) => rs.map(r => r.employee_id).join(", ");
+        return (
+          <div className="mb-4 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 flex items-start gap-3" data-testid="not-payable-banner">
+            <AlertTriangle size={18} className="text-amber-600 flex-shrink-0 mt-0.5" />
+            <div className="text-sm text-amber-900 space-y-1">
+              <p className="font-bold">Not payable in {months[selectedMonth - 1]} {selectedYear}'s NEFT sheet</p>
+              {unver.length > 0 && (
+                <p><strong>{unver.length} bank account{unver.length === 1 ? "" : "s"} not verified</strong> — verify on the employee record: <span className="font-mono text-[12px]">{list(unver)}</span></p>
+              )}
+              {drafts.length > 0 && (
+                <p><strong>{drafts.length} still Draft</strong> — nobody has reviewed the figure. Open the payslip and click Save Adjustments: <span className="font-mono text-[12px]">{list(drafts)}</span></p>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Manager: full payroll table */}
       {isManager && (
       <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
@@ -489,6 +536,13 @@ export default function Payroll() {
                             title={r.hold_reason || "Salary on hold — excluded from the NEFT sheet"}
                             className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide ${r.hold_eligible ? "bg-orange-100 text-orange-700" : "bg-red-100 text-red-700"}`}>
                             <Lock size={9} /> {r.hold_eligible ? "Held — ready" : "Held"}
+                          </span>
+                        )}
+                        {r.bank_verified === false && (
+                          <span data-testid={`bank-badge-${r.id}`}
+                            title="This employee's bank account is not verified, so they are left out of the NEFT sheet. Verify the account on their employee record."
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide bg-red-100 text-red-700">
+                            <AlertTriangle size={9} /> Bank not verified
                           </span>
                         )}
                       </div>

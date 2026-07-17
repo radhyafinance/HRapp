@@ -295,6 +295,26 @@ async def calculate_lop_days(employee_id: str, year: int, month: int, joining_da
     return lop
 
 
+async def _with_bank_status(records: list) -> list:
+    """Tag each record with whether the employee's bank account is verified.
+
+    An unverified account keeps someone out of the NEFT sheet entirely, so HR needs
+    to see that on the Payroll page — before the bank run, not by noticing an absence
+    in a spreadsheet afterwards.
+    """
+    ids = [r.get("employee_id") for r in records if r.get("employee_id")]
+    if not ids:
+        return records
+    emps = await db.employees.find(
+        {"employee_id": {"$in": ids}}, {"employee_id": 1, "bank_details": 1, "_id": 0}
+    ).to_list(None)
+    verified = {e["employee_id"] for e in emps
+                if (e.get("bank_details") or {}).get("verified") is True}
+    for r in records:
+        r["bank_verified"] = r.get("employee_id") in verified
+    return records
+
+
 def pay_to_dict(p):
     p["id"] = str(p.pop("_id"))
     # Records written before salary holds existed have no on_hold field — normalise
@@ -470,7 +490,7 @@ async def list_payroll(
     # Gate visibility for non-admin roles: only paid AND past month-end
     if role not in ["hr_admin", "management"]:
         records = [r for r in records if _is_payslip_visible_to_employee(r)]
-    return [pay_to_dict(r) for r in records]
+    return await _with_bank_status([pay_to_dict(r) for r in records])
 
 
 @router.get("/employee/{employee_id}")
@@ -622,25 +642,37 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
         raise HTTPException(status_code=403, detail="Access denied")
     all_records = await db.payroll_records.find({"period": period}).to_list(1000)
 
-    # This file is the only thing that actually moves money, so it is where the
-    # hold has to bite. Held salaries are dropped from the sheet — but never
-    # silently: the count comes back in a header so the UI can say so out loud.
+    # This file is the only thing that actually moves money, so every exclusion from
+    # it is reported back in a header and surfaced by the UI. Three things keep a
+    # record out, and NONE of them may be silent:
+    #   1. on hold      -- resignation accepted, pending exit clearance
+    #   2. still draft  -- nobody has reviewed the auto-calculated figure yet
+    #   3. bank account not verified
     # Nothing is written into the sheet itself; the bank parses it.
-    held_records = [r for r in all_records if r.get("on_hold")]
-    records = [r for r in all_records if not r.get("on_hold")]
-
-    settings_doc = await db.app_settings.find_one({"key": "company"}) or {}
-
-    # Only include employees whose bank account has been verified
-    emp_ids = [r.get("employee_id") for r in records if r.get("employee_id")]
+    emp_ids_all = [r.get("employee_id") for r in all_records if r.get("employee_id")]
     emp_docs = await db.employees.find(
-        {"employee_id": {"$in": emp_ids}},
+        {"employee_id": {"$in": emp_ids_all}},
         {"employee_id": 1, "bank_details": 1, "_id": 0}
     ).to_list(None)
     bank_verified_ids = {
         e["employee_id"] for e in emp_docs
         if e.get("bank_details", {}).get("verified") is True
     }
+
+    def _eid(r):
+        return (r.get("employee_id") or "").strip()
+
+    held_records = [r for r in all_records if r.get("on_hold")]
+    rest = [r for r in all_records if not r.get("on_hold")]
+    # `draft` means the figure came straight out of the auto-calculation and no human
+    # has checked it. The app already refuses to mark a draft as *paid*; it must not
+    # be wired to an actual bank transfer either. "Approve for Payment" clears these.
+    draft_records = [r for r in rest if r.get("status") == "draft"]
+    reviewed = [r for r in rest if r.get("status") != "draft"]
+    unverified_records = [r for r in reviewed if _eid(r) not in bank_verified_ids]
+    records = [r for r in reviewed if _eid(r) in bank_verified_ids]
+
+    settings_doc = await db.app_settings.find_one({"key": "company"}) or {}
     # NEFT debit account is fixed by company policy — always use 019005008108
     debit_account = "019005008108"
     txn_type = (settings_doc.get("transaction_type") or "NFT").strip()
@@ -674,7 +706,7 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
         ws.title = f"NEFT_{period}"
         headers = [
             "Transaction type \n(Within Bank (WIB)/\nNEFT (NFT)/\nRTGS (RTG)/\nIMPS (IFC))",
-            "Amount (₹)\n(Should not be more than 15 digit including decimals and paise)",
+            "Amount (\u20b9)\n(Should not be more than 15 digit including decimals and paise)",
             "Debit Account no\nShould be exactly 12 digit",
             "IFSC (Always 11 character alphanumeric and 5th character always 0 (zero)) (For ICICI bank accounts keep it blank)",
             "Beneficiary Account No (Max length for other bank 34 character alphanumeric and for ICICI Bank 12 digit number )",
@@ -698,10 +730,8 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
             ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
 
         for r in records:
-            emp_id = (r.get("employee_id") or "").strip()
-            # Skip employees whose bank account is not verified
-            if emp_id not in bank_verified_ids:
-                continue
+            # `records` is already filtered: not held, not draft, bank verified.
+            emp_id = _eid(r)
             net_amount = round(float(r.get("net_salary", 0) or 0), 2)
             beneficiary_acct = (r.get("bank_account") or "").strip()
             ifsc = (r.get("ifsc_code") or "").strip().upper()
@@ -745,6 +775,18 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
         buffer.seek(0)
         filename = f"NEFT_{short_code}_{period}.xlsx"
         held_amount = round(sum(float(r.get("net_salary") or 0) for r in held_records), 2)
+
+        def _ids(rows):
+            # Employee IDs, not just a count — so HR can act on the omission instead of
+            # working out who is absent by reading a spreadsheet.
+            return ",".join(sorted(_eid(r) for r in rows if _eid(r)))[:3000]
+
+        _exposed = [
+            "X-Payroll-Held-Count", "X-Payroll-Held-Amount", "X-Payroll-Held-Ids",
+            "X-Payroll-Draft-Count", "X-Payroll-Draft-Ids",
+            "X-Payroll-Unverified-Count", "X-Payroll-Unverified-Ids",
+            "X-Payroll-Included-Count",
+        ]
         return Response(
             content=buffer.getvalue(),
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -752,8 +794,14 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
                 "Content-Disposition": f'attachment; filename="{filename}"',
                 "X-Payroll-Held-Count": str(len(held_records)),
                 "X-Payroll-Held-Amount": str(held_amount),
+                "X-Payroll-Held-Ids": _ids(held_records),
+                "X-Payroll-Draft-Count": str(len(draft_records)),
+                "X-Payroll-Draft-Ids": _ids(draft_records),
+                "X-Payroll-Unverified-Count": str(len(unverified_records)),
+                "X-Payroll-Unverified-Ids": _ids(unverified_records),
+                "X-Payroll-Included-Count": str(len(records)),
                 # Browsers hide custom headers from JS unless they are exposed.
-                "Access-Control-Expose-Headers": "X-Payroll-Held-Count, X-Payroll-Held-Amount",
+                "Access-Control-Expose-Headers": ", ".join(_exposed),
             },
         )
     except Exception as e:
