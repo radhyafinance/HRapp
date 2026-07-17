@@ -65,6 +65,7 @@ HO_DESIGNATIONS = [
     "Accounts Manager",
     "Senior Manager",
     "Manager",
+    "Deputy Manager",
     "Assistant Manager",
     "Senior Executive",
     "Executive",
