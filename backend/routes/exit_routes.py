@@ -500,6 +500,24 @@ async def approve_exit(exit_id: str, data: ApproveExitRequest, current_user: dic
                 timeline, "fully_approved", "System",
                 f"Resignation fully approved. Exit type: {data.final_exit_type.title()}. Last working day set to {data.last_working_day}. NOC process initiated."
             )
+            # Salary is held from acceptance onwards. Payroll runs after this point
+            # create their records already held; this catches the narrow case where
+            # a record for this month was processed EARLIER TODAY, before the
+            # resignation was accepted. Salaries go out on the last day of the
+            # month, so that window is hours — but the money has not left yet, and
+            # this is the last chance to stop it.
+            from routes.payroll import hold_payroll_for_exit
+            swept = await hold_payroll_for_exit(
+                exit_req["employee_id"],
+                f"Resignation accepted — held pending exit clearance "
+                f"(last working day {data.last_working_day})",
+                current_user.get("employee_id") or current_user.get("name") or "Admin",
+            )
+            if swept:
+                add_timeline_event(
+                    timeline, "salary_held", "System",
+                    f"Salary on hold: {swept} unpaid payroll record(s) held pending exit clearance."
+                )
             updates["timeline"] = timeline
         # else: still "submitted", next approver becomes active
 
@@ -641,7 +659,19 @@ async def upload_final_docs(
         await db.users.update_one(
             {"employee_id": exit_req["employee_id"]}, {"$set": {"is_active": False}}
         )
-
+        # Clearance done — held salaries become eligible for release. This does NOT
+        # pay anyone: an admin still has to approve each release on the Payroll page.
+        from routes.payroll import mark_exit_holds_eligible
+        eligible = await mark_exit_holds_eligible(
+            exit_req["employee_id"],
+            current_user.get("employee_id") or current_user.get("name") or "Admin",
+        )
+        if eligible:
+            add_timeline_event(
+                timeline, "salary_release_eligible", "System",
+                f"{eligible} held salary record(s) are now ready to release. "
+                f"HR Admin must approve the release on the Payroll page before payment."
+            )
     await db.exit_requests.update_one(
         {"_id": ObjectId(exit_id)},
         {"$set": {"final_documents": final_docs, "status": new_status, "timeline": timeline, "updated_at": now}}
