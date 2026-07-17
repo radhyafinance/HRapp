@@ -325,6 +325,7 @@ function DirectExitModal({ onClose, onDone }) {
   // Case-insensitive, whitespace-tolerant match of the typed ID against the loaded list.
   const typedId = employeeId.trim().toLowerCase();
   const matched = typedId ? employees.find(e => (e.employee_id || "").toLowerCase() === typedId) : null;
+
   const handleSave = async () => {
     if (!matched) { setError("Enter a valid employee ID."); return; }
     if (!reason.trim()) { setError("A reason is required."); return; }
@@ -580,6 +581,8 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
   const [showEditLwd, setShowEditLwd] = useState(false);
   const [showChangeExitType, setShowChangeExitType] = useState(false);
   const [nocSections, setNocSections] = useState({});
+  const [staff, setStaff] = useState([]);
+  const [savingAssignee, setSavingAssignee] = useState(null);
   const [ffsData, setFfsData] = useState(null);
   const [ffsLoading, setFfsLoading] = useState(false);
 
@@ -587,6 +590,30 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
   const isManagement = currentUser?.role === "management";
   const isManager = currentUser?.role === "managers";
   const myEmpId = currentUser?.employee_id;
+
+  // Staff list for the NOC owner dropdowns. Admin-only, so don't fetch it otherwise.
+  useEffect(() => {
+    if (currentUser?.role !== "hr_admin") return;
+    API.get("/employees?status=all")
+      .then(r => setStaff((r.data || [])
+        .filter(e => ["active", "probation"].includes(e.status))
+        .sort((a, b) => (a.employee_id || "").localeCompare(b.employee_id || ""))))
+      .catch(() => {});
+  }, [currentUser]);
+
+  // Reassigning works on a live exit on purpose — a wrong owner used to mean the
+  // section could never be cleared by anyone except HR Admin.
+  const setAssignee = async (sectionKey, employeeId) => {
+    setSavingAssignee(sectionKey);
+    try {
+      await API.put(`/exit/${exit.id}/noc-assignees`, { assignees: { [sectionKey]: employeeId || "" } });
+      onRefresh();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Could not change the NOC owner");
+    } finally {
+      setSavingAssignee(null);
+    }
+  };
 
   // Which NOC sections can I fill?
   const myNocSections = Object.entries(exit?.noc_clearances || {}).filter(([key, sec]) => {
@@ -788,7 +815,30 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
                       <span className={`${cleared ? "text-green-600" : "text-slate-500"}`}>{NOC_SECTION_ICONS[sectionKey]}</span>
                       <div>
                         <p className="text-sm font-semibold text-[#1E2A47]">{config.label || sectionKey}</p>
-                        <p className="text-xs text-slate-500">{sectionData.assignee_name || "—"}</p>
+                        {isAdmin && !cleared && sectionKey !== "admin" ? (
+                          <select
+                            value={sectionData.assignee_id || ""}
+                            disabled={savingAssignee === sectionKey}
+                            onChange={e => setAssignee(sectionKey, e.target.value)}
+                            data-testid={`noc-assignee-${sectionKey}`}
+                            title="Who has to give this clearance. Change it any time until it's cleared."
+                            className="mt-0.5 text-xs border border-slate-300 rounded-md px-1.5 py-1 bg-white max-w-[15rem] focus:ring-2 focus:ring-[#E85B1E] outline-none disabled:opacity-50"
+                          >
+                            <option value="">— unassigned (HR Admin only) —</option>
+                            {staff.map(e => (
+                              <option key={e.employee_id} value={e.employee_id}>
+                                {e.employee_id} · {e.first_name} {e.last_name} ({e.department || "—"})
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <p className="text-xs text-slate-500">{sectionData.assignee_name || "—"}</p>
+                        )}
+                        {isAdmin && !cleared && !sectionData.assignee_id && sectionKey !== "admin" && (
+                          <p className="text-[10px] text-amber-700 font-semibold mt-0.5">
+                            Nobody assigned — only HR Admin can clear this.
+                          </p>
+                        )}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">

@@ -105,45 +105,39 @@ def exit_to_dict(e: dict) -> dict:
     return e
 
 
+async def _dept_owner(department: str, fallback_label: str) -> dict:
+    """First active person in a department, or a placeholder if there is none.
+
+    Resolved by DEPARTMENT, never by designation text. Matching on titles is what
+    broke this before: "accounts manager" stopped matching the moment the role was
+    retitled, and the Audit owner was hardcoded to RMF0022. Departments are stable;
+    titles are not.
+    """
+    emp = await db.employees.find_one(
+        {"department": department, "status": {"$in": ["active", "probation"]}},
+        {"employee_id": 1, "first_name": 1, "last_name": 1},
+    )
+    if not emp:
+        return {"id": None, "name": fallback_label}
+    return {"id": emp["employee_id"],
+            "name": f"{emp.get('first_name','')} {emp.get('last_name','')}".strip() or fallback_label}
+
+
 async def _get_noc_assignments(reporting_to: str) -> dict:
-    """Auto-assign NOC owners from the employee database."""
-    # Accounts Manager
-    acc_emp = await db.employees.find_one(
-        {"designation": {"$regex": "accounts manager", "$options": "i"},
-         "status": {"$in": ["active", "probation"]}},
-        {"employee_id": 1, "first_name": 1, "last_name": 1}
-    )
-    accounts_id = acc_emp["employee_id"] if acc_emp else None
-    accounts_name = (f"{acc_emp.get('first_name','')} {acc_emp.get('last_name','')}".strip()
-                     if acc_emp else "Accounts Manager")
-
-    # IT person (single person in IT department)
-    it_emp = await db.employees.find_one(
-        {"department": "IT", "status": {"$in": ["active", "probation"]}},
-        {"employee_id": 1, "first_name": 1, "last_name": 1}
-    )
-    it_id = it_emp["employee_id"] if it_emp else None
-    it_name = (f"{it_emp.get('first_name','')} {it_emp.get('last_name','')}".strip()
-               if it_emp else "IT Team")
-
-    # Reporting manager name
+    """Suggested NOC owners. HR Admin can change any of them (see set_noc_assignees)."""
     mgr_name = "Reporting Manager"
     if reporting_to:
-        mgr_emp = await db.employees.find_one({"employee_id": reporting_to}, {"first_name": 1, "last_name": 1})
+        mgr_emp = await db.employees.find_one({"employee_id": reporting_to},
+                                              {"first_name": 1, "last_name": 1})
         if mgr_emp:
             mgr_name = f"{mgr_emp.get('first_name','')} {mgr_emp.get('last_name','')}".strip()
 
-    # Audit/Risk — hardcoded RMF0022
-    audit_emp = await db.employees.find_one({"employee_id": "RMF0022"}, {"first_name": 1, "last_name": 1})
-    audit_name = (f"{audit_emp.get('first_name','')} {audit_emp.get('last_name','')}".strip()
-                  if audit_emp else "Risk & Credit Manager")
-
     return {
         "branch_manager": {"id": reporting_to, "name": mgr_name},
-        "accounts":       {"id": accounts_id,  "name": accounts_name},
-        "it":             {"id": it_id,         "name": it_name},
-        "audit":          {"id": "RMF0022",     "name": audit_name},
-        "admin":          {"id": None,           "name": "HR Admin"},  # any hr_admin
+        "accounts": await _dept_owner("Accounts", "Accounts Team"),
+        "it": await _dept_owner("IT", "IT Team"),
+        "audit": await _dept_owner("Risk and Credit", "Risk & Credit Team"),
+        "admin": {"id": None, "name": "HR Admin"},   # any hr_admin
     }
 
 
@@ -248,6 +242,7 @@ async def submit_resignation(
     target_emp_id = (target_emp_id or "").strip()
     if not target_emp_id:
         raise HTTPException(status_code=400, detail="No employee ID found for current user")
+
     # Match exactly first; fall back to case-insensitive so "rmf0010" / "RMF0010 " still resolve.
     emp = await db.employees.find_one({"employee_id": target_emp_id})
     if not emp:
@@ -342,13 +337,18 @@ async def list_exits(
     role = current_user.get("role")
     emp_id = current_user.get("employee_id")
 
+    # Being assigned a NOC section must let you SEE the exit. Without this an
+    # assignee outside the employee's reporting line -- Accounts, IT, Risk -- is given
+    # a clearance on an exit they cannot open, so only HR Admin could ever clear it.
+    mine = [{"noc_clearances." + sec + ".assignee_id": emp_id} for sec in NOC_SECTIONS] if emp_id else []
+
     if role in ["employee", "field_agent"]:
-        query["employee_id"] = emp_id
+        query["$or"] = [{"employee_id": emp_id}] + mine
     elif role == "managers":
         from services.hierarchy import get_descendant_employee_ids
         descendants = await get_descendant_employee_ids(emp_id) if emp_id else set()
         allowed = list(descendants) + ([emp_id] if emp_id else [])
-        query["employee_id"] = {"$in": allowed}
+        query["$or"] = [{"employee_id": {"$in": allowed}}] + mine
     # hr_admin, management: no filter
 
     if status:
@@ -423,7 +423,11 @@ async def get_exit(exit_id: str, current_user: dict = Depends(get_current_user))
     role = current_user.get("role")
     emp_id = current_user.get("employee_id")
     if role in ["employee", "field_agent"] and exit_req["employee_id"] != emp_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+        # ...unless they own a NOC section on it.
+        assigned = any((exit_req.get("noc_clearances", {}).get(sec) or {}).get("assignee_id") == emp_id
+                       for sec in NOC_SECTIONS)
+        if not assigned:
+            raise HTTPException(status_code=403, detail="Access denied")
     return exit_to_dict(exit_req)
 
 
@@ -500,6 +504,7 @@ async def approve_exit(exit_id: str, data: ApproveExitRequest, current_user: dic
                 timeline, "fully_approved", "System",
                 f"Resignation fully approved. Exit type: {data.final_exit_type.title()}. Last working day set to {data.last_working_day}. NOC process initiated."
             )
+
             # Salary is held from acceptance onwards. Payroll runs after this point
             # create their records already held; this catches the narrow case where
             # a record for this month was processed EARLIER TODAY, before the
@@ -547,6 +552,65 @@ async def update_lwd(exit_id: str, data: UpdateLWDRequest, current_user: dict = 
         {"$set": {"last_working_day": data.last_working_day}}
     )
     return {"message": "Last Working Day updated", "last_working_day": data.last_working_day}
+
+
+class NOCAssigneesRequest(BaseModel):
+    # section -> employee_id ("" or null clears it back to HR Admin only)
+    assignees: dict
+
+
+@router.put("/{exit_id}/noc-assignees")
+async def set_noc_assignees(exit_id: str, data: NOCAssigneesRequest,
+                            current_user: dict = Depends(get_current_user)):
+    """Change who owns each NOC section on this exit.
+
+    The auto-resolved owners are only a suggestion -- people move, go on leave, or get
+    retitled. Changing an owner here works on exits already in flight, which is the
+    whole point: a wrong owner used to mean the section could never be cleared by
+    anyone but HR Admin.
+
+    A cleared section is left alone: reassigning it would orphan the clearance record.
+    """
+    if current_user.get("role") != "hr_admin":
+        raise HTTPException(status_code=403, detail="Only HR Admin can assign NOC owners")
+    exit_req = await db.exit_requests.find_one({"_id": ObjectId(exit_id)})
+    if not exit_req:
+        raise HTTPException(status_code=404, detail="Exit request not found")
+
+    noc = dict(exit_req.get("noc_clearances") or {})
+    timeline = list(exit_req.get("timeline", []))
+    changed = []
+    for section, new_id in (data.assignees or {}).items():
+        if section not in NOC_SECTIONS:
+            raise HTTPException(status_code=400, detail=f"Invalid NOC section: {section}")
+        sec = dict(noc.get(section) or {})
+        if sec.get("status") == "cleared":
+            continue                       # already done; don't rewrite history
+        new_id = (new_id or "").strip() or None
+        if new_id == sec.get("assignee_id"):
+            continue
+        name = "HR Admin"
+        if new_id:
+            emp = await db.employees.find_one({"employee_id": new_id},
+                                              {"first_name": 1, "last_name": 1})
+            if not emp:
+                raise HTTPException(status_code=400, detail=f"No employee with ID {new_id}")
+            name = f"{emp.get('first_name','')} {emp.get('last_name','')}".strip() or new_id
+        sec["assignee_id"] = new_id
+        sec["assignee_name"] = name
+        noc[section] = sec
+        changed.append(f"{NOC_SECTIONS[section]['label']} -> {name}")
+
+    if changed:
+        add_timeline_event(timeline, "noc_reassigned", current_user.get("name", "Admin"),
+                           "NOC owner changed: " + "; ".join(changed))
+        await db.exit_requests.update_one({"_id": ObjectId(exit_id)}, {"$set": {
+            "noc_clearances": noc, "timeline": timeline,
+            "updated_at": datetime.now(timezone.utc).isoformat()}})
+    return {"changed": len(changed), "details": changed,
+            "noc_clearances": {k: {"assignee_id": v.get("assignee_id"),
+                                   "assignee_name": v.get("assignee_name"),
+                                   "status": v.get("status")} for k, v in noc.items()}}
 
 
 @router.post("/{exit_id}/noc/{section}")
@@ -659,6 +723,7 @@ async def upload_final_docs(
         await db.users.update_one(
             {"employee_id": exit_req["employee_id"]}, {"$set": {"is_active": False}}
         )
+
         # Clearance done — held salaries become eligible for release. This does NOT
         # pay anyone: an admin still has to approve each release on the Payroll page.
         from routes.payroll import mark_exit_holds_eligible
@@ -672,6 +737,7 @@ async def upload_final_docs(
                 f"{eligible} held salary record(s) are now ready to release. "
                 f"HR Admin must approve the release on the Payroll page before payment."
             )
+
     await db.exit_requests.update_one(
         {"_id": ObjectId(exit_id)},
         {"$set": {"final_documents": final_docs, "status": new_status, "timeline": timeline, "updated_at": now}}
