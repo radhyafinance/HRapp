@@ -3,7 +3,7 @@ import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
 import {
   AlertTriangle, Award, CheckCircle2, ClipboardList, Eye, FileText, Play,
-  Save, Users, X,
+  RefreshCw, Save, Users, X,
 } from "lucide-react";
 
 const HALVES = [
@@ -63,6 +63,7 @@ export default function Performance() {
   const [period, setPeriod] = useState("");
   const [open, setOpen] = useState(null);
   const [showCycle, setShowCycle] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
@@ -108,6 +109,34 @@ export default function Performance() {
 
   const rows = tab === "my" ? mine : tab === "team" ? team : all;
 
+  // A cycle is a snapshot of a moving org — people join, designations get corrected.
+  // Sync adds anyone now eligible who has no form. It never touches an existing one.
+  const syncCycle = async () => {
+    const c = cycles.find(x => x.period === period);
+    if (!c) return;
+    if (!window.confirm(
+      `Add forms for anyone eligible in ${c.label} who doesn't have one yet?\n\n` +
+      `Existing forms are not touched — nothing already filled in can be lost.`
+    )) return;
+    setSyncing(true);
+    try {
+      const res = await API.post(`/performance/cycles/${period}/sync`);
+      const added = res.data.added_employees || [];
+      alert(
+        (res.data.added
+          ? `${res.data.added} form(s) added:\n${added.map(a => `  ${a.employee_id} ${a.name} — ${a.template_name}`).join("\n")}`
+          : "Nothing to add — everyone eligible already has a form.") +
+        (res.data.excluded_count
+          ? `\n\nStill excluded (${res.data.excluded_count}):\n` +
+            res.data.excluded.map(e => `  ${e.employee_id} ${e.name} — ${e.reason}`).join("\n")
+          : "")
+      );
+      load();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Sync failed");
+    } finally { setSyncing(false); }
+  };
+
   const openReview = async (r) => {
     try {
       const res = await API.get(`/performance/${r.id}`);
@@ -135,6 +164,13 @@ export default function Performance() {
               <option value="">All periods</option>
               {cycles.map(c => <option key={c.period} value={c.period}>{c.label}</option>)}
             </select>
+            {period && (
+              <button onClick={syncCycle} disabled={syncing} data-testid="sync-cycle-btn"
+                title="Add forms for anyone eligible who doesn't have one yet. Never touches existing forms."
+                className="flex items-center gap-2 px-4 py-2 border border-slate-300 text-slate-600 rounded-lg text-sm font-semibold hover:bg-slate-50 disabled:opacity-50">
+                <RefreshCw size={14} /> {syncing ? "Syncing…" : "Sync"}
+              </button>
+            )}
             <button onClick={() => setShowCycle(true)} data-testid="open-cycle-btn"
               className="flex items-center gap-2 px-4 py-2 bg-[#1E2A47] text-white rounded-lg text-sm font-semibold hover:bg-[#2A3A5E]">
               <Play size={14} /> Open a Cycle
@@ -387,6 +423,8 @@ function ReviewModal({ review, user, isAdmin, onClose, onSaved }) {
   const [recommend, setRecommend] = useState(review.review_details?.special_recommendations || "");
   const [remarks, setRemarks] = useState(review.review_details?.remarks || "");
   const [busy, setBusy] = useState(false);
+  const [savingDraft, setSavingDraft] = useState(false);
+  const [savedAt, setSavedAt] = useState(null);
   const [err, setErr] = useState("");
 
   const total = useMemo(
@@ -395,6 +433,28 @@ function ReviewModal({ review, user, isAdmin, onClose, onSaved }) {
 
   const overweight = review.parameters.filter(p => (parseFloat(scores[p.seq]) || 0) > p.weight);
   const blank = review.parameters.filter(p => scores[p.seq] === "" || scores[p.seq] == null);
+
+  // Save without submitting. No validation on purpose — a half-finished form is a
+  // legitimate thing to save, and losing seven written answers to a stray click isn't.
+  const saveDraft = async () => {
+    setErr(""); setSavingDraft(true);
+    try {
+      await API.put(`/performance/${review.id}/draft`, {
+        mode,
+        scores: review.parameters
+          .filter(p => scores[p.seq] !== "" && scores[p.seq] != null)
+          .map(p => ({ seq: p.seq, score: parseFloat(scores[p.seq]) })),
+        narrative: (review.narrative || []).map(n => ({
+          seq: n.seq,
+          text: narr[n.seq]?.text ?? null,
+          rating: Number(narr[n.seq]?.rating) || null,
+        })),
+      });
+      setSavedAt(new Date().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" }));
+    } catch (e) {
+      setErr(e.response?.data?.detail || "Could not save your draft");
+    } finally { setSavingDraft(false); }
+  };
 
   const submit = async () => {
     setErr("");
@@ -485,7 +545,11 @@ function ReviewModal({ review, user, isAdmin, onClose, onSaved }) {
                       <td className="px-2 py-2 text-slate-400">{p.seq}</td>
                       <td className="px-2 py-2">
                         <p className="font-semibold text-[#0F172A]">{p.name}</p>
+                        {p.name_hi && <p className="font-semibold text-slate-700" lang="hi">{p.name_hi}</p>}
                         <p className="text-[10px] text-slate-500 leading-snug">{p.description}</p>
+                        {p.description_hi && (
+                          <p className="text-[10px] text-slate-500 leading-snug" lang="hi">{p.description_hi}</p>
+                        )}
                       </td>
                       <td className="px-2 py-2 text-slate-500 text-[10px]">{p.tool}</td>
                       <td className="px-2 py-2 font-bold text-slate-700">{p.weight}</td>
@@ -523,6 +587,9 @@ function ReviewModal({ review, user, isAdmin, onClose, onSaved }) {
             {review.narrative.map(n => (
               <div key={n.seq} className="border border-slate-200 rounded-lg p-3 space-y-2">
                 <p className="text-xs font-semibold text-[#0F172A]">{n.seq}. {n.question}</p>
+                {n.question_hi && (
+                  <p className="text-xs text-slate-600" lang="hi">{n.question_hi}</p>
+                )}
 
                 {mode !== "self" && (
                   <div className="bg-slate-50 rounded p-2">
@@ -598,11 +665,24 @@ function ReviewModal({ review, user, isAdmin, onClose, onSaved }) {
         )}
 
         {!readOnly && (
-          <button onClick={submit} disabled={busy} data-testid="submit-review-btn"
-            className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] disabled:opacity-50">
-            {busy ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Submitting…</>
-                  : <><Save size={14} /> Submit {mode === "self" ? "self-assessment" : "assessment"} — {total}/100</>}
-          </button>
+          <div className="space-y-2">
+            <div className="flex flex-col sm:flex-row gap-2">
+              <button onClick={saveDraft} disabled={savingDraft || busy} data-testid="save-draft-btn"
+                title="Save what you've filled in so far. Nothing is submitted and your manager can't see it yet."
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 border border-slate-300 text-slate-700 rounded-lg text-sm font-semibold hover:bg-slate-50 disabled:opacity-50">
+                {savingDraft ? "Saving…" : <><Save size={14} /> Save draft</>}
+              </button>
+              <button onClick={submit} disabled={busy || savingDraft} data-testid="submit-review-btn"
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold hover:bg-[#D04A15] disabled:opacity-50">
+                {busy ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Submitting…</>
+                      : <><CheckCircle2 size={14} /> Submit — {total}/100</>}
+              </button>
+            </div>
+            <p className="text-center text-[11px] text-slate-400">
+              {savedAt ? `Draft saved at ${savedAt}. ` : ""}
+              Saving keeps your work; submitting is final.
+            </p>
+          </div>
         )}
         {mode === "view" && review.status === "pending_self" && (
           <p className="text-center text-xs text-slate-400">Waiting on {review.employee_name}'s self-assessment.</p>

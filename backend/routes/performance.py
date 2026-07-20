@@ -4,7 +4,17 @@ Two instruments, mirroring the FY26 appraisal workbooks:
 
   * PE grid   -- role-specific weighted parameters summing to 100. Everyone gets one.
   * Narrative -- 7 questions, self answer + 1-5 rating, manager comment + 1-5 rating.
-                 Everyone EXCEPT Field Officers. Q7 differs field vs head-office.
+                 EVERYONE answers these. Q7 differs field vs head-office. (The FOs'
+                 copies were on paper -- the scanned "FO Self" forms -- which is why
+                 they have no tab in the assessment workbook.)
+
+The Field Officer form is BILINGUAL: every parameter and question carries a Hindi
+twin shown under the English, because that is the language the FOs actually filled
+their paper forms in.
+
+VISIBILITY: the reporting manager's scores, comments, grade and notes are for HR,
+management and the manager who wrote them. An employee sees their own answers and,
+once assessed, only that the review is Completed -- see _redact().
 
 The GRADE comes from the REPORTING MANAGER's total only, never the average of self
 and manager. In the source workbooks every single employee self-scored 100/100, so
@@ -29,7 +39,8 @@ from pydantic import BaseModel
 
 from auth_utils import get_current_user
 from database import db
-from services.pe_templates import NARRATIVE_QUESTIONS, PE_TEMPLATES, grade_for
+from services.pe_templates import (NARRATIVE_QUESTIONS, NARRATIVE_QUESTIONS_HI,
+                                   PE_TEMPLATES, grade_for)
 
 router = APIRouter()
 
@@ -160,6 +171,40 @@ class CycleRequest(BaseModel):
     year: int          # calendar year the cycle starts in (H2/2025 = Oct25-Mar26)
 
 
+def _review_doc(row: dict, period: str, half: str, year: int, now: str, user: dict) -> dict:
+    """Build one blank review.
+
+    The template is SNAPSHOT in here rather than referenced. Editing a template later
+    must not retroactively rewrite the weights a past appraisal was already graded on.
+    """
+    tpl = _TEMPLATE_BY_KEY[row["template_key"]]
+    return {
+        "period": period, "label": label_of(half, year),
+        "half": half, "year": year,
+        "employee_id": row["employee_id"], "employee_name": row["name"],
+        "designation": row["designation"], "department": row["department"],
+        "reporting_to": row["reporting_to"],
+        "template_key": tpl["key"], "template_name": tpl["name"],
+        "narrative_variant": tpl["narrative"],
+        "bilingual": bool(tpl.get("bilingual")),
+        "parameters": [{**p, "self_score": None, "manager_score": None}
+                       for p in tpl["parameters"]],
+        "narrative": [{"seq": i + 1, "question": q,
+                       # Hindi twin, only on bilingual templates (Field Officers).
+                       "question_hi": (NARRATIVE_QUESTIONS_HI.get(tpl["narrative"]) or [None] * 9)[i]
+                                      if tpl.get("bilingual") else None,
+                       "self_answer": None, "self_rating": None,
+                       "manager_comment": None, "manager_rating": None}
+                      for i, q in enumerate(NARRATIVE_QUESTIONS[tpl["narrative"]])]
+        if tpl["narrative"] else [],
+        "eligibility": row["eligibility"], "eligibility_reason": row["eligibility_reason"],
+        "self_total": None, "manager_total": None, "grade": None, "grade_level": None,
+        "status": "pending_self",
+        "review_details": {},
+        "created_at": now, "created_by": user.get("employee_id"),
+    }
+
+
 @router.get("/cycles")
 async def list_cycles(current_user: dict = Depends(get_current_user)):
     _admin(current_user)
@@ -199,30 +244,8 @@ async def open_cycle(data: CycleRequest, current_user: dict = Depends(get_curren
     now = datetime.now(timezone.utc).isoformat()
 
     for row in plan["included"]:
-        tpl = _TEMPLATE_BY_KEY[row["template_key"]]
-        # The template is SNAPSHOT into the review. Editing a template later must not
-        # retroactively rewrite the weights a past appraisal was graded on.
-        await db.pe_reviews.insert_one({
-            "period": period, "label": label_of(data.half, data.year),
-            "half": data.half, "year": data.year,
-            "employee_id": row["employee_id"], "employee_name": row["name"],
-            "designation": row["designation"], "department": row["department"],
-            "reporting_to": row["reporting_to"],
-            "template_key": tpl["key"], "template_name": tpl["name"],
-            "narrative_variant": tpl["narrative"],
-            "parameters": [{**p, "self_score": None, "manager_score": None}
-                           for p in tpl["parameters"]],
-            "narrative": [{"seq": i + 1, "question": q, "self_answer": None,
-                           "self_rating": None, "manager_comment": None,
-                           "manager_rating": None}
-                          for i, q in enumerate(NARRATIVE_QUESTIONS[tpl["narrative"]])]
-            if tpl["narrative"] else [],
-            "eligibility": row["eligibility"], "eligibility_reason": row["eligibility_reason"],
-            "self_total": None, "manager_total": None, "grade": None, "grade_level": None,
-            "status": "pending_self",
-            "review_details": {},
-            "created_at": now, "created_by": current_user.get("employee_id"),
-        })
+        await db.pe_reviews.insert_one(
+            _review_doc(row, period, data.half, data.year, now, current_user))
 
     await db.pe_cycles.insert_one({
         "period": period, "label": label_of(data.half, data.year),
@@ -233,6 +256,47 @@ async def open_cycle(data: CycleRequest, current_user: dict = Depends(get_curren
         "created_at": now, "created_by": current_user.get("employee_id"),
     })
     return {"period": period, "created": len(plan["included"]),
+            "excluded": plan["excluded"], "excluded_count": len(plan["excluded"])}
+
+
+@router.post("/cycles/{period}/sync")
+async def sync_cycle(period: str, current_user: dict = Depends(get_current_user)):
+    """Add forms for anyone eligible who hasn't got one in an already-open cycle.
+
+    Needed because a cycle is a snapshot of a moving org: someone joins, a wrong
+    designation gets corrected, a missing template gets added. Without this the only
+    way to pick them up would be to delete the cycle and start again, throwing away
+    everyone else's work.
+
+    Purely additive and safe to re-run: existing reviews are never touched, so no
+    self-assessment or score can be lost. Anyone still not eligible, or still with no
+    template, comes back in `excluded` with the reason.
+    """
+    _admin(current_user)
+    cycle = await db.pe_cycles.find_one({"period": period})
+    if not cycle:
+        raise HTTPException(status_code=404, detail="Cycle not found")
+
+    plan = await _plan(cycle["half"], cycle["year"])
+    have = {r["employee_id"] for r in
+            await db.pe_reviews.find({"period": period}, {"employee_id": 1, "_id": 0}).to_list(2000)}
+    now = datetime.now(timezone.utc).isoformat()
+
+    added = []
+    for row in plan["included"]:
+        if row["employee_id"] in have:
+            continue                      # never touch a review that already exists
+        await db.pe_reviews.insert_one(
+            _review_doc(row, period, cycle["half"], cycle["year"], now, current_user))
+        added.append({"employee_id": row["employee_id"], "name": row["name"],
+                      "template_name": row["template_name"]})
+
+    await db.pe_cycles.update_one({"period": period}, {"$set": {
+        "excluded": plan["excluded"],
+        "last_synced_at": now,
+        "last_synced_by": current_user.get("employee_id"),
+    }})
+    return {"period": period, "added": len(added), "added_employees": added,
             "excluded": plan["excluded"], "excluded_count": len(plan["excluded"])}
 
 
@@ -248,16 +312,22 @@ async def close_cycle(period: str, current_user: dict = Depends(get_current_user
 
 @router.delete("/cycles/{period}")
 async def delete_cycle(period: str, current_user: dict = Depends(get_current_user)):
-    """Delete a cycle and its reviews. Refused once any manager assessment exists --
-    that is real appraisal input and must not vanish on a stray click."""
+    """Delete a cycle and its reviews. Refused the moment ANYONE has filled anything in.
+
+    A self-assessment is 14 scores and 7 written answers -- as much real work as the
+    manager's half, and just as gone if this runs. Guarding only the manager's input
+    would protect the wrong person. To add people to a live cycle use /sync; it is
+    additive and destroys nothing.
+    """
     _admin(current_user)
-    scored = await db.pe_reviews.count_documents(
-        {"period": period, "manager_total": {"$ne": None}})
-    if scored:
+    started = await db.pe_reviews.count_documents(
+        {"period": period, "$or": [{"self_total": {"$ne": None}},
+                                   {"manager_total": {"$ne": None}}]})
+    if started:
         raise HTTPException(
             status_code=400,
-            detail=f"{scored} review(s) already have a manager assessment. "
-                   f"Close the cycle instead of deleting it.")
+            detail=f"{started} review(s) have already been filled in. Deleting would "
+                   f"destroy that work. Use Sync to add missing people, or close the cycle.")
     r = await db.pe_reviews.delete_many({"period": period})
     await db.pe_cycles.delete_one({"period": period})
     return {"period": period, "deleted": r.deleted_count}
@@ -276,14 +346,14 @@ async def list_reviews(period: str = None, employee_id: str = None,
     elif employee_id:
         query["employee_id"] = employee_id
     rows = await db.pe_reviews.find(query).sort([("period", -1), ("employee_id", 1)]).to_list(1000)
-    return [pe_to_dict(r) for r in rows]
+    return [_redact(pe_to_dict(r), current_user) for r in rows]
 
 
 @router.get("/my")
 async def my_reviews(current_user: dict = Depends(get_current_user)):
     rows = await db.pe_reviews.find(
         {"employee_id": current_user.get("employee_id")}).sort("period", -1).to_list(20)
-    return [pe_to_dict(r) for r in rows]
+    return [_redact(pe_to_dict(r), current_user) for r in rows]
 
 
 @router.get("/to-review")
@@ -293,7 +363,40 @@ async def to_review(current_user: dict = Depends(get_current_user)):
         "reporting_to": current_user.get("employee_id"),
         "status": {"$in": ["pending_manager", "pending_self"]},
     }).sort("period", -1).to_list(200)
-    return [pe_to_dict(r) for r in rows]
+    return [_redact(pe_to_dict(r), current_user) for r in rows]
+
+
+def _redact(review: dict, user: dict) -> dict:
+    """Strip the manager's scoring before an employee sees their own review.
+
+    The reporting manager's scores, comments, grade and notes are for management and
+    HR only. The employee keeps everything they wrote themselves; once assessed they
+    see only that the review is Completed. The manager who wrote it still sees it, as
+    do HR/management.
+    """
+    if user.get("role") in ("hr_admin", "management"):
+        return review
+    if review.get("reporting_to") == user.get("employee_id"):
+        # The manager sees their report's review -- but NOT an unsubmitted draft. Until
+        # the employee submits, what they have typed is their own business; "Save draft"
+        # must not quietly publish half-written answers to their boss.
+        if review.get("status") == "pending_self":
+            review.pop("self_total", None)
+            for p in review.get("parameters", []):
+                p.pop("self_score", None)
+            for n in review.get("narrative", []):
+                n.pop("self_answer", None)
+                n.pop("self_rating", None)
+        return review              # otherwise: the author of the assessment sees all
+    for k in ("manager_total", "grade", "grade_level", "review_details",
+              "manager_submitted_at"):
+        review.pop(k, None)
+    for p in review.get("parameters", []):
+        p.pop("manager_score", None)
+    for n in review.get("narrative", []):
+        n.pop("manager_comment", None)
+        n.pop("manager_rating", None)
+    return review
 
 
 def _can_see(review: dict, user: dict) -> bool:
@@ -310,7 +413,7 @@ async def get_review(review_id: str, current_user: dict = Depends(get_current_us
         raise HTTPException(status_code=404, detail="Not found")
     if not _can_see(r, current_user):
         raise HTTPException(status_code=403, detail="Access denied")
-    return pe_to_dict(r)
+    return _redact(pe_to_dict(r), current_user)
 
 
 class ParamScore(BaseModel):
@@ -364,6 +467,61 @@ def _apply_scores(review: dict, scores: List[ParamScore], field: str) -> float:
         p[field] = v
         total += v
     return round(total, 2)
+
+
+class DraftSubmit(BaseModel):
+    mode: str                                   # self | manager
+    scores: Optional[List[ParamScore]] = None
+    narrative: Optional[List[dict]] = None
+
+
+@router.put("/{review_id}/draft")
+async def save_draft(review_id: str, data: DraftSubmit,
+                     current_user: dict = Depends(get_current_user)):
+    """Save a part-finished form without submitting it.
+
+    Deliberately does NOT validate or change status: a draft is allowed to be blank,
+    incomplete, or over-weight. Validation belongs at submit. Someone writing seven
+    answers should be able to stop halfway and come back, not lose the lot.
+    """
+    r = await db.pe_reviews.find_one({"_id": ObjectId(review_id)})
+    if not r:
+        raise HTTPException(status_code=404, detail="Not found")
+    me = current_user.get("employee_id")
+    is_admin = current_user.get("role") in ("hr_admin", "management")
+    if data.mode == "self":
+        if r["employee_id"] != me and not is_admin:
+            raise HTTPException(status_code=403, detail="You can only edit your own form")
+        if r.get("manager_total") is not None:
+            raise HTTPException(status_code=400, detail="Already assessed — this can no longer be changed.")
+        sfield, tfield, rfield = "self_score", "self_answer", "self_rating"
+    elif data.mode == "manager":
+        if r.get("reporting_to") != me and not is_admin:
+            raise HTTPException(status_code=403, detail="Only their reporting manager can assess them")
+        sfield, tfield, rfield = "manager_score", "manager_comment", "manager_rating"
+    else:
+        raise HTTPException(status_code=400, detail="mode must be 'self' or 'manager'")
+
+    by_seq = {s.seq: s.score for s in (data.scores or [])}
+    for p in r["parameters"]:
+        if p["seq"] in by_seq and by_seq[p["seq"]] is not None:
+            p[sfield] = by_seq[p["seq"]]
+    nby = {n.get("seq"): n for n in (data.narrative or [])}
+    for item in r.get("narrative") or []:
+        got = nby.get(item["seq"])
+        if not got:
+            continue
+        if got.get("text") is not None:
+            item[tfield] = got["text"]
+        if got.get("rating"):
+            item[rfield] = got["rating"]
+
+    await db.pe_reviews.update_one({"_id": r["_id"]}, {"$set": {
+        "parameters": r["parameters"], "narrative": r.get("narrative") or [],
+        "draft_saved_at": datetime.now(timezone.utc).isoformat(),
+        "draft_saved_by": me,
+    }})
+    return {"saved": True, "saved_at": datetime.now(timezone.utc).isoformat()}
 
 
 @router.put("/{review_id}/self")

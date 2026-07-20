@@ -223,7 +223,8 @@ export default function Payroll() {
       if (unver > 0) {
         parts.push(
           `• ${unver} BANK NOT VERIFIED — cannot be paid until the account is verified ` +
-          `on their employee record.\n  ${ids("x-payroll-unverified-ids")}`
+          `on their employee record.\n  ${ids("x-payroll-unverified-ids")}\n  ` +
+          `(someone can appear here AND above — both need fixing)`
         );
       }
       if (parts.length) {

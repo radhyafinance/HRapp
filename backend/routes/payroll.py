@@ -666,11 +666,18 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
     rest = [r for r in all_records if not r.get("on_hold")]
     # `draft` means the figure came straight out of the auto-calculation and no human
     # has checked it. The app already refuses to mark a draft as *paid*; it must not
-    # be wired to an actual bank transfer either. "Approve for Payment" clears these.
+    # be wired to an actual bank transfer either. Opening the payslip and clicking
+    # "Save Adjustments" moves a record to `processed` and clears this.
     draft_records = [r for r in rest if r.get("status") == "draft"]
     reviewed = [r for r in rest if r.get("status") != "draft"]
-    unverified_records = [r for r in reviewed if _eid(r) not in bank_verified_ids]
     records = [r for r in reviewed if _eid(r) in bank_verified_ids]
+
+    # Reported over every non-held record, INCLUDING drafts, so a record blocked for
+    # two reasons reports both at once. Reporting only the reviewed ones would mean
+    # fixing the draft, re-downloading, and only then learning the bank is unverified.
+    # This overlaps `draft_records` on purpose -- both problems are real and both
+    # need fixing.
+    unverified_records = [r for r in rest if _eid(r) not in bank_verified_ids]
 
     settings_doc = await db.app_settings.find_one({"key": "company"}) or {}
     # NEFT debit account is fixed by company policy — always use 019005008108
