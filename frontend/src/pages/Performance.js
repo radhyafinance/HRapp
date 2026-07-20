@@ -90,6 +90,16 @@ export default function Performance() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Land on the newest cycle rather than "All periods". Nearly every visit is
+  // about the cycle currently running; showing every period at once buries it.
+  // Once only — after that the admin's own choice stands, including "All periods".
+  const [periodPicked, setPeriodPicked] = useState(false);
+  useEffect(() => {
+    if (periodPicked || !cycles.length) return;
+    setPeriod(cycles[0].period);          // /cycles comes back newest-first
+    setPeriodPicked(true);
+  }, [cycles, periodPicked]);
+
   // Land on whichever tab actually has something waiting on this person.
   const [tabPicked, setTabPicked] = useState(false);
   useEffect(() => {
@@ -109,28 +119,45 @@ export default function Performance() {
 
   const rows = tab === "my" ? mine : tab === "team" ? team : all;
 
-  // A cycle is a snapshot of a moving org — people join, designations get corrected.
-  // Sync adds anyone now eligible who has no form. It never touches an existing one.
+  // A cycle is a snapshot of a moving org — people join, designations get corrected,
+  // templates get fixed. Sync adds missing forms and rebuilds empty ones from the
+  // current template. A form anyone has written in is left alone and reported back.
   const syncCycle = async () => {
     const c = cycles.find(x => x.period === period);
     if (!c) return;
     if (!window.confirm(
-      `Add forms for anyone eligible in ${c.label} who doesn't have one yet?\n\n` +
-      `Existing forms are not touched — nothing already filled in can be lost.`
+      `Update ${c.label}?\n\n` +
+      `• Adds forms for anyone eligible who doesn't have one\n` +
+      `• Rebuilds empty forms from the current template, so template fixes ` +
+      `(like the Field Officer Hindi questions) reach forms already created\n\n` +
+      `Forms with anything filled in are NOT touched — nothing can be lost.`
     )) return;
     setSyncing(true);
     try {
       const res = await API.post(`/performance/cycles/${period}/sync`);
       const added = res.data.added_employees || [];
-      alert(
-        (res.data.added
-          ? `${res.data.added} form(s) added:\n${added.map(a => `  ${a.employee_id} ${a.name} — ${a.template_name}`).join("\n")}`
-          : "Nothing to add — everyone eligible already has a form.") +
-        (res.data.excluded_count
-          ? `\n\nStill excluded (${res.data.excluded_count}):\n` +
-            res.data.excluded.map(e => `  ${e.employee_id} ${e.name} — ${e.reason}`).join("\n")
-          : "")
-      );
+      const updated = res.data.updated_employees || [];
+      const skipped = res.data.skipped_with_work || [];
+      const parts = [];
+      if (res.data.added)
+        parts.push(`${res.data.added} form(s) added:\n` +
+          added.map(a => `  ${a.employee_id} ${a.name} — ${a.template_name}`).join("\n"));
+      if (res.data.updated)
+        parts.push(`${res.data.updated} empty form(s) rebuilt from the current template:\n` +
+          updated.map(a => `  ${a.employee_id} ${a.name} — ${a.template_name}`).join("\n"));
+      // Loudly, not silently: these are the forms that still need updating but
+      // cannot be, because rebuilding them would destroy someone's answers.
+      if (res.data.skipped_count)
+        parts.push(`${res.data.skipped_count} form(s) need updating but were LEFT ALONE ` +
+          `because they already have answers in them:\n` +
+          skipped.map(s => `  ${s.employee_id} ${s.name}`).join("\n") +
+          `\n\nTo update these you must clear the form first — check with the person ` +
+          `before throwing their answers away.`);
+      if (res.data.excluded_count)
+        parts.push(`Still excluded (${res.data.excluded_count}):\n` +
+          res.data.excluded.map(e => `  ${e.employee_id} ${e.name} — ${e.reason}`).join("\n"));
+      alert(parts.length ? parts.join("\n\n")
+        : "Nothing to do — every eligible person has an up-to-date form.");
       load();
     } catch (e) {
       alert(e.response?.data?.detail || "Sync failed");

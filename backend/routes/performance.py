@@ -205,6 +205,36 @@ def _review_doc(row: dict, period: str, half: str, year: int, now: str, user: di
     }
 
 
+# Fields a review copies off its template. These are the ones a refresh may
+# rewrite; everything else on the document is either identity or somebody's work.
+_TEMPLATE_FIELDS = ("template_key", "template_name", "narrative_variant", "bilingual",
+                    "parameters", "narrative", "designation", "department",
+                    "reporting_to", "eligibility", "eligibility_reason")
+
+
+def _has_work(r: dict) -> bool:
+    """True if anyone has put anything into this form.
+
+    Checked on the VALUES, not on status. Saving a draft deliberately leaves the
+    status at `pending_self`, so status alone would call a half-written form blank
+    and a refresh would throw the answers away.
+    """
+    if r.get("self_total") is not None or r.get("manager_total") is not None:
+        return True
+    if r.get("status") != "pending_self":
+        return True
+    if r.get("review_details"):
+        return True
+    for p in r.get("parameters") or []:
+        if p.get("self_score") is not None or p.get("manager_score") is not None:
+            return True
+    for n in r.get("narrative") or []:
+        if (n.get("self_answer") or n.get("self_rating") is not None
+                or n.get("manager_comment") or n.get("manager_rating") is not None):
+            return True
+    return False
+
+
 @router.get("/cycles")
 async def list_cycles(current_user: dict = Depends(get_current_user)):
     _admin(current_user)
@@ -268,9 +298,18 @@ async def sync_cycle(period: str, current_user: dict = Depends(get_current_user)
     way to pick them up would be to delete the cycle and start again, throwing away
     everyone else's work.
 
-    Purely additive and safe to re-run: existing reviews are never touched, so no
-    self-assessment or score can be lost. Anyone still not eligible, or still with no
-    template, comes back in `excluded` with the reason.
+    It also REBUILDS forms that nobody has written in yet, from the current
+    template. A review snapshots its template at creation (see `_review_doc`) so a
+    later template edit cannot rewrite the weights a past appraisal was graded on --
+    but that also means forms created before a template was fixed keep the old
+    questions forever. The Field Officer Hindi questions were exactly this: the
+    templates were corrected, the already-created forms stayed English-only.
+
+    Safe to re-run. A form is only rebuilt when it is genuinely empty -- no scores,
+    no answers, no saved draft. Anything with work in it is left alone and reported
+    in `skipped_with_work`, so a form that needs updating but cannot be is never
+    silently passed over. Anyone still not eligible, or still with no template,
+    comes back in `excluded` with the reason.
     """
     _admin(current_user)
     cycle = await db.pe_cycles.find_one({"period": period})
@@ -278,25 +317,49 @@ async def sync_cycle(period: str, current_user: dict = Depends(get_current_user)
         raise HTTPException(status_code=404, detail="Cycle not found")
 
     plan = await _plan(cycle["half"], cycle["year"])
-    have = {r["employee_id"] for r in
-            await db.pe_reviews.find({"period": period}, {"employee_id": 1, "_id": 0}).to_list(2000)}
+    existing = {r["employee_id"]: r for r in
+                await db.pe_reviews.find({"period": period}).to_list(2000)}
     now = datetime.now(timezone.utc).isoformat()
 
-    added = []
+    added, updated, skipped = [], [], []
     for row in plan["included"]:
-        if row["employee_id"] in have:
-            continue                      # never touch a review that already exists
-        await db.pe_reviews.insert_one(
-            _review_doc(row, period, cycle["half"], cycle["year"], now, current_user))
-        added.append({"employee_id": row["employee_id"], "name": row["name"],
-                      "template_name": row["template_name"]})
+        fresh = _review_doc(row, period, cycle["half"], cycle["year"], now, current_user)
+        old = existing.get(row["employee_id"])
+
+        if old is None:
+            await db.pe_reviews.insert_one(fresh)
+            added.append({"employee_id": row["employee_id"], "name": row["name"],
+                          "template_name": row["template_name"]})
+            continue
+
+        # Only the template-derived half of the document is eligible to change,
+        # and only when it actually differs -- otherwise the count would report
+        # work that did not happen.
+        changes = {k: fresh[k] for k in _TEMPLATE_FIELDS if old.get(k) != fresh[k]}
+        if not changes:
+            continue
+        if _has_work(old):
+            skipped.append({"employee_id": row["employee_id"], "name": row["name"],
+                            "status": old.get("status"),
+                            "reason": "form already has answers or scores in it"})
+            continue
+
+        changes["refreshed_at"] = now
+        changes["refreshed_by"] = current_user.get("employee_id")
+        await db.pe_reviews.update_one({"_id": old["_id"]}, {"$set": changes})
+        updated.append({"employee_id": row["employee_id"], "name": row["name"],
+                        "template_name": row["template_name"],
+                        "fields": sorted(k for k in changes if k in _TEMPLATE_FIELDS)})
 
     await db.pe_cycles.update_one({"period": period}, {"$set": {
         "excluded": plan["excluded"],
         "last_synced_at": now,
         "last_synced_by": current_user.get("employee_id"),
     }})
-    return {"period": period, "added": len(added), "added_employees": added,
+    return {"period": period,
+            "added": len(added), "added_employees": added,
+            "updated": len(updated), "updated_employees": updated,
+            "skipped_with_work": skipped, "skipped_count": len(skipped),
             "excluded": plan["excluded"], "excluded_count": len(plan["excluded"])}
 
 

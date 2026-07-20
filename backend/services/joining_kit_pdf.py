@@ -305,6 +305,16 @@ def _hindi_heading_image(text: str, font_size: int = 14, width_mm: float = 170.0
                                     textColor=colors.black))
 
 
+# Vertical padding added to rows a person fills in by hand. 2.5pt of default
+# padding leaves a ~4mm line; this takes it to roughly 9mm, which is writable
+# with a ballpoint without the sheet running to a third page.
+_HAND_PAD = 11
+# Signature blocks need a taller box than a written line -- people sign large.
+_SIGN_PAD = 16
+# Items 21-24 get a page to themselves, so their tables can be roomier still.
+_HAND_PAD_LG = 16
+
+
 def _kv_table(rows, label_w=60 * mm, value_w=110 * mm):
     """Numbered key/value table matching docx style: thin black border, no zebra."""
     t = Table(rows, colWidths=[label_w, value_w])
@@ -322,7 +332,15 @@ def _kv_table(rows, label_w=60 * mm, value_w=110 * mm):
     return t
 
 
-def _grid_table(headers, rows, col_widths=None, repeat_header=True, header_bold=True, font_size=8.5):
+def _grid_table(headers, rows, col_widths=None, repeat_header=True, header_bold=True,
+                font_size=8.5, body_pad=None):
+    """Bordered grid.
+
+    `body_pad` adds vertical padding to the BODY rows only, to leave room for
+    handwriting. Padding rather than a fixed row height on purpose: a fixed height
+    would clip a pre-filled value that wraps to two lines (addresses do), whereas
+    padding sets a floor and still lets the row grow.
+    """
     # Wrap header cells in centered Paragraphs so long headers wrap INSIDE the
     # cell instead of overflowing (plain strings don't wrap in ReportLab tables).
     _hdr_style = ParagraphStyle(
@@ -362,6 +380,9 @@ def _grid_table(headers, rows, col_widths=None, repeat_header=True, header_bold=
         ("TOPPADDING", (0, 0), (-1, -1), 2.5),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
     ]
+    if body_pad:
+        style += [("TOPPADDING", (0, 1), (-1, -1), body_pad),
+                  ("BOTTOMPADDING", (0, 1), (-1, -1), body_pad)]
     t.setStyle(TableStyle(style))
     return t
 
@@ -453,11 +474,10 @@ def _section_1(story, c, company):
         ("7", "Bike RC Number", False, ""),
         ("8", "Bike PUC / Insurance", False, ""),
         ("9", "Online Police Verification Report", False, ""),
-        ("10", "PF Proof Document", False, ""),
-        ("11", "ESIC Proof Document", False, ""),
-        ("12", "PAN Card Copy", has_pan, "Already provided" if has_pan else ""),
-        ("13", "Consent Form — Original Documents Submission", True, "Included below"),
-        ("14", "POSH Declaration &amp; BGV Consent Form", True, "Included below"),
+        # PF Proof and ESIC Proof dropped; the Consent Form line went with the
+        # consent page itself, so nothing here points at a page that is gone.
+        ("10", "PAN Card Copy", has_pan, "Already provided" if has_pan else ""),
+        ("11", "POSH Declaration &amp; BGV Consent Form", True, "Included below"),
     ]
     rows = [[sr, p, _checkbox(checked), remark] for sr, p, checked, remark in items]
     story.append(_grid_table(
@@ -502,8 +522,12 @@ def _section_2_employee_info(story, c):
         rows,
         col_widths=[10 * mm, 60 * mm, 100 * mm],
         font_size=9,
+        body_pad=_HAND_PAD,
     ))
-    story.append(Spacer(1, 6))
+
+    # 21 onwards starts a fresh page. Items 1-20 now have writing room, which
+    # fills page one on its own; the tables below need a full page between them.
+    story.append(PageBreak())
 
     # 21. Education
     story.append(_para(f"<b>21. Educational Qualification</b> &nbsp;&nbsp; {_hi('शैक्षणिक योग्यता')}", BODYL))
@@ -517,6 +541,7 @@ def _section_2_employee_info(story, c):
     story.append(_grid_table(
         ["Sr. No.", "School / Degree", "Institute / Board Name", "Marks / Grade", "Passing Year"],
         edu_rows,
+        body_pad=_HAND_PAD_LG,
         col_widths=[14 * mm, 60 * mm, 50 * mm, 25 * mm, 22 * mm],
     ))
     story.append(Spacer(1, 6))
@@ -528,6 +553,7 @@ def _section_2_employee_info(story, c):
     story.append(_grid_table(
         ["Sr. No.", "Company Name", "Position Held", "Employment Period (From-To)", "Reason for Leaving"],
         [["1", "", "", "", ""], ["2", "", "", "", ""], ["3", "", "", "", ""]],
+        body_pad=_HAND_PAD_LG,
         col_widths=[14 * mm, 45 * mm, 35 * mm, 40 * mm, 36 * mm],
     ))
     story.append(Spacer(1, 6))
@@ -539,6 +565,7 @@ def _section_2_employee_info(story, c):
     story.append(_grid_table(
         ["Sr. No.", "Name", "Relationship", "Designation", "Posted At"],
         [["1", "", "", "", ""], ["2", "", "", "", ""]],
+        body_pad=_HAND_PAD_LG,
         col_widths=[14 * mm, 45 * mm, 35 * mm, 40 * mm, 36 * mm],
     ))
     story.append(Spacer(1, 6))
@@ -550,6 +577,7 @@ def _section_2_employee_info(story, c):
     story.append(_grid_table(
         ["Sr. No.", "Name", "Company Name", "Position", "Phone No."],
         [["1", "", "", "", ""], ["2", "", "", "", ""]],
+        body_pad=_HAND_PAD_LG,
         col_widths=[14 * mm, 45 * mm, 45 * mm, 30 * mm, 36 * mm],
     ))
 
@@ -1140,71 +1168,18 @@ def _section_12_asset_form(story, c):
         font_size=8,
     ))
     story.append(Spacer(1, 8))
+    # Three signatories, one column each: the employee receiving the assets, HR
+    # approving the issue, and Administration actually handing them over. The old
+    # four-column version paired two bare "Signature" cells with two department
+    # names, which read as two blocks, not three.
     story.append(_grid_table(
-        ["Signature", "Approved By HR Department", "Signature", "Issued By Administration Department"],
-        _blank_rows(4, 1),
-        col_widths=[40 * mm, 50 * mm, 40 * mm, 40 * mm],
+        ["Employee's Signature", "Approved By HR Department",
+         "Issued By Administration Department"],
+        _blank_rows(3, 1),
+        col_widths=[57 * mm, 57 * mm, 56 * mm],
         font_size=8.5,
+        body_pad=_SIGN_PAD,
     ))
-
-
-def _section_13_consent_docs(story, c):
-    """Consent Form for Submission of Original Educational Documents."""
-    story.append(PageBreak())
-    story.append(_para("CONSENT FORM FOR SUBMISSION OF ORIGINAL EDUCATIONAL DOCUMENTS", H1))
-    story.append(Spacer(1, 6))
-
-    name = _full_name(c) or "_______________"
-    fhn = c.get("father_or_husband_name") or "_______________"
-    doj = _fmt_date(c.get("expected_joining_date")) or "_______________"
-
-    story.append(_para(
-        f"I, <b>{name}</b>, son/daughter of <b>{fhn}</b>, hereby give my free consent to submit my original "
-        "10th and 12th mark sheets to Radhya Micro Finance Pvt. Ltd. at the time of my joining.",
-        BODY))
-    story.append(Spacer(1, 6))
-    story.append(_para("I understand and agree that:", BODYL))
-    clauses = [
-        "I am voluntarily submitting my original educational documents (10th &amp; 12th mark sheets) to the company for official verification and record purposes.",
-        "The company will retain my above-mentioned original documents for a period of one (1) month from my date of joining.",
-        "After one month of joining, I will collect my original documents from the company.",
-        "The company shall keep my documents in safe custody during the retention period.",
-        "I confirm that I am submitting these documents without any pressure or coercion and with full understanding of the terms mentioned above.",
-        "I agree to abide by the above terms and conditions.",
-    ]
-    for clause in clauses:
-        story.append(_para(f"• {clause}", BODY))
-    story.append(Spacer(1, 6))
-
-    story.append(_para("<b>DOCUMENTS SUBMITTED:</b>", BODYL))
-    story.append(_para("• ORIGINAL 10TH &amp; 12TH MARK SHEETS", BODY))
-    story.append(Spacer(1, 6))
-
-    story.append(_kv_table([
-        [_para("<b>Date of Joining</b>", BODYL), _para(doj, BODYL)],
-        [_para("<b>Date of Submission</b>", BODYL), _para("", BODYL)],
-        [_para("<b>Submitted By (Candidate Name)</b>", BODYL), _para(name, BODYL)],
-        [_para("<b>Signature of Candidate</b>", BODYL), _para("", BODYL)],
-    ]))
-    story.append(Spacer(1, 10))
-
-    story.append(_para("<b>DOCUMENT RECEIVING DETAILS (AFTER 1 MONTH)</b>", H2))
-    story.append(_kv_table([
-        [_para("<b>Date of Receiving Documents</b>", BODYL), _para("", BODYL)],
-        [_para("<b>Received By (Candidate Name)</b>", BODYL), _para("", BODYL)],
-        [_para("<b>Signature of Receiver</b>", BODYL), _para("", BODYL)],
-        [_para("<b>Documents Given By (Employee Name)</b>", BODYL), _para("", BODYL)],
-        [_para("<b>Documents Given By (Employee Signature)</b>", BODYL), _para("", BODYL)],
-    ]))
-    story.append(Spacer(1, 10))
-
-    story.append(_para("<b>For Office Use Only</b>", H2))
-    story.append(_kv_table([
-        [_para("<b>Authorized Signatory Name</b>", BODYL), _para("", BODYL)],
-        [_para("<b>Designation</b>", BODYL), _para("", BODYL)],
-        [_para("<b>Signature &amp; Stamp</b>", BODYL), _para("", BODYL)],
-        [_para("<b>Date</b>", BODYL), _para("", BODYL)],
-    ]))
 
 
 def _section_14_posh_bgv(story, c):
@@ -1320,7 +1295,6 @@ def build_joining_kit_pdf(candidate: dict, company: dict | None = None,
     _section_10_assets(story, candidate)
     _section_11_nda(story, candidate, company)
     _section_12_asset_form(story, candidate)
-    _section_13_consent_docs(story, candidate)
     _section_14_posh_bgv(story, candidate)
     doc.build(story)
     buffer.seek(0)
