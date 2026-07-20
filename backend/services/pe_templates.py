@@ -524,7 +524,11 @@ PE_TEMPLATES = [
         "name": 'Executive - Administration',
         "narrative": 'ho',
         "applies_to": [
+            # Bhaskar (RMF0006) is saved as Senior Executive; the FY26 sheet said
+            # "Executive- Admin". Both ranks map here -- Administration is a
+            # one-person function, so the rank doesn't change the job.
             {"designation": 'Executive', "department": 'Administration'},
+            {"designation": 'Senior Executive', "department": 'Administration'},
         ],
         "parameters": [
             {"seq": 1, "weight": 10,
