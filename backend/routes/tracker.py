@@ -98,6 +98,62 @@ def _flatten_json(obj: dict, out: dict, prefix: str = ""):
             if src == "battery.level" and isinstance(val, (int, float)) and 0 <= val <= 1:
                 val = round(val * 100, 1)
             out[dst] = val
+
+# ── on-duty gating ────────────────────────────────────────────────────────────
+# Asia/Kolkata. Punch times are stored as IST-local ISO strings; the ping clock is
+# UTC. Everything below compares in IST so the two line up.
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _parse_punch(v) -> Optional[datetime]:
+    """Punch timestamp -> aware datetime in IST. None if unparseable."""
+    if not v:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    # Naive values are IST wall-clock, which is how attendance records them.
+    return dt.replace(tzinfo=IST) if dt.tzinfo is None else dt.astimezone(IST)
+
+
+async def _is_on_duty(employee_id: str, ts_utc: datetime) -> bool:
+    """Was this employee punched in at this moment?
+
+    Location is recorded ONLY between punch-in and punch-out. Before this existed
+    every ping was stored unconditionally, so staff were tracked through evenings,
+    weekends and days off. Off-duty pings are now discarded outright rather than
+    stored-and-hidden: the only certain answer to "were we tracking them at home"
+    is that it was never written down.
+
+    A forgotten punch-out ends the window at midnight IST rather than running on
+    into the next day.
+    """
+    ts = ts_utc.astimezone(IST)
+    date_str = ts.strftime("%Y-%m-%d")
+    att = await db.attendance_records.find_one(
+        {"employee_id": employee_id, "date": date_str})
+    if not att:
+        return False                       # no attendance record = not at work
+
+    # Multi-session days (punch out for lunch and back in) are the normal shape;
+    # older records carry a single pair at the top level.
+    sessions = att.get("sessions") or []
+    if not sessions:
+        sessions = [{"punch_in_time": att.get("punch_in_time"),
+                     "punch_out_time": att.get("punch_out_time")}]
+
+    midnight = ts.replace(hour=23, minute=59, second=59, microsecond=999999)
+    for s in sessions:
+        start = _parse_punch(s.get("punch_in_time"))
+        if not start:
+            continue
+        end = _parse_punch(s.get("punch_out_time")) or midnight
+        if start <= ts <= end:
+            return True
+    return False
+
+
 async def _process_ping(qp: dict, request: Request):
     """Persist a single ping given flattened params."""
     raw_id = str(qp.get("id") or qp.get("deviceid") or qp.get("device_id") or "").strip()
@@ -148,7 +204,11 @@ async def _process_ping(qp: dict, request: Request):
                 ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
     except (ValueError, TypeError):
         pass
-    date_str = ts.strftime("%Y-%m-%d")
+    # Off duty -> discard. Nothing is written, not even a flagged row.
+    if not await _is_on_duty(emp_id, ts):
+        return
+
+    date_str = ts.astimezone(IST).strftime("%Y-%m-%d")
     log = {
         "employee_id": emp_id,
         "date": date_str,
@@ -206,7 +266,8 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
     employees = await db.employees.find(
         {"employee_id": {"$in": emp_ids}},
         {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1,
-         "designation": 1, "department": 1, "role": 1, "status": 1, "phone": 1},
+         "designation": 1, "department": 1, "role": 1, "status": 1, "phone": 1,
+         "branch": 1},
     ).to_list(2000)
     emp_map = {e["employee_id"]: e for e in employees}
     now = datetime.now(timezone.utc)
@@ -246,7 +307,18 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
             "last_lat": t.get("last_lat"),
             "last_lon": t.get("last_lon"),
             "last_battery": t.get("last_battery"),
+            "branch": emp.get("branch", ""),
         })
+    # Distance covered TODAY only. The Active Today tab is a live view of the day in
+    # progress, so a running total from any other period would be misleading there.
+    # Deliberately after the loop so one slow lookup can't stall the whole list.
+    today = _today()
+    for row in out:
+        try:
+            row["distance_km_today"] = await _gps_distance_km(row["employee_id"], today)
+        except Exception:
+            row["distance_km_today"] = None
+
     # Sort: live > recent > stale > silent > never, then by name
     order = {"live": 0, "recent": 1, "stale": 2, "silent": 3, "never": 4}
     out.sort(key=lambda x: (order.get(x["freshness"], 5), x["name"]))
@@ -382,8 +454,13 @@ _MIN_MOVE_M = 30        # sub-30 m hops = GPS jitter while stationary → ignore
 _MAX_ACCURACY_M = 100   # drop fixes worse than 100 m
 _MAX_SPEED_MS = 42.0    # ~150 km/h; faster-implied segments are bad fixes
 def _today() -> str:
-    # Matches the date basis used by /my-config and the ping log (UTC).
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    """Today's date in IST.
+
+    Must match the basis pings are stored under (_process_ping buckets by IST).
+    This used to be UTC, which disagreed with the stored date between 00:00 and
+    05:30 IST -- so an early-morning lookup read the previous day's data.
+    """
+    return datetime.now(IST).strftime("%Y-%m-%d")
 def _haversine_m(lat1, lon1, lat2, lon2):
     R = 6371000.0
     p1, p2 = math.radians(lat1), math.radians(lat2)

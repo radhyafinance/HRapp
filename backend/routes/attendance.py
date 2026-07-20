@@ -772,9 +772,20 @@ async def list_active_field_staff(current_user: dict = Depends(get_current_user)
             "last_timestamp": {"$first": "$timestamp"},
             "last_lat": {"$first": "$latitude"},
             "last_lon": {"$first": "$longitude"},
+            "last_battery": {"$first": "$battery"},
         }}
     ]).to_list(1000)
     loc_map = {s["_id"]: s for s in location_stats}
+
+    # Reuse the tracker's GPS distance helper rather than a second implementation --
+    # two ways of computing the same number is how they end up disagreeing.
+    from routes.tracker import _gps_distance_km
+    dist_map = {}
+    for eid in emp_ids:
+        try:
+            dist_map[eid] = await _gps_distance_km(eid, today)
+        except Exception:
+            dist_map[eid] = None
 
     out = []
     for r in records:
@@ -791,6 +802,11 @@ async def list_active_field_staff(current_user: dict = Depends(get_current_user)
             "role": emp.get("role", ""),
             "punch_in_time": r.get("punch_in_time"),
             "punch_out_time": r.get("punch_out_time"),
+            "branch": emp.get("branch", ""),
+            # Distance covered TODAY only -- this tab is a live view of the day in
+            # progress, so any longer-running total would misread as "today".
+            "distance_km_today": dist_map.get(emp_id, 0.0),
+            "last_battery": loc.get("last_battery") if loc else None,
             "location_points": loc["count"] if loc else 0,
             "last_seen": loc["last_timestamp"] if loc else r.get("punch_in_time"),
             "last_lat": loc["last_lat"] if loc else (r.get("punch_in_location", {}) or {}).get("lat"),

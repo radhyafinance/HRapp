@@ -152,3 +152,21 @@ code {
         border-bottom-color: inherit;
     }
 }
+
+/* ── Leaflet stacking ───────────────────────────────────────────────────────
+   Leaflet ships its own z-index values: panes at 400 and controls (+/- buttons,
+   attribution) at 1000. The app sidebar is z-80, so on any page with a map the
+   map painted straight over the open menu.
+
+   `isolation: isolate` puts the whole map in its own stacking context. Leaflet's
+   internal layering still works exactly as before (tiles < overlays < markers <
+   popups), but none of it can escape above the map's own level in the page — so
+   the sidebar, drawers and modals sit on top where they belong.
+
+   Do NOT "fix" this by forcing .leaflet-pane to a single z-index: the panes rely
+   on their relative values, and flattening them puts markers under the tiles. */
+.leaflet-container {
+    isolation: isolate;
+    position: relative;
+    z-index: 0;
+}

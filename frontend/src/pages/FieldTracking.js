@@ -22,6 +22,8 @@ export default function FieldTracking() {
   const { user } = useAuth();
   const [tab, setTab] = useState("live");
   const [activeStaff, setActiveStaff] = useState([]);
+  const [liveBranch, setLiveBranch] = useState("");
+  const [liveSearch, setLiveSearch] = useState("");
   const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(null);
@@ -47,6 +49,18 @@ export default function FieldTracking() {
   const [histLoading, setHistLoading] = useState(false);
   const isManager = ["hr_admin", "management", "managers"].includes(user?.role);
   const canViewOdoPhotos = ["hr_admin", "management"].includes(user?.role);
+  // Branch list is derived from who is actually punched in today, not the full
+  // branch master — a filter offering branches with nobody in them is noise.
+  const liveBranches = [...new Set(activeStaff.map(s => s.branch).filter(Boolean))].sort();
+
+  const liveRows = activeStaff.filter(s => {
+    if (liveBranch && s.branch !== liveBranch) return false;
+    const q = liveSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (s.name || "").toLowerCase().includes(q) ||
+           (s.employee_id || "").toLowerCase().includes(q);
+  });
+
   const fetchActive = async () => {
     setLoading(true);
     try { const res = await API.get("/attendance/field-staff/active"); setActiveStaff(res.data); }
@@ -379,28 +393,59 @@ export default function FieldTracking() {
       {!selected && !histSelected && tab === "live" && (
         <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
           <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-            <h3 className="font-bold text-[#1E2A47]" style={{ fontFamily: "'Outfit', sans-serif" }}>Punched In Today</h3>
-            <button onClick={fetchActive} data-testid="refresh-active-btn"
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1E2A47] text-white rounded-lg text-xs font-semibold hover:bg-[#2A3A5E]">
-              <RefreshCw size={12} /> Refresh
-            </button>
+            <h3 className="font-bold text-[#1E2A47] whitespace-nowrap" style={{ fontFamily: "'Outfit', sans-serif" }}>
+              Punched In Today
+            </h3>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                value={liveSearch} onChange={e => setLiveSearch(e.target.value)}
+                placeholder="Search name or ID…" data-testid="live-search"
+                className="border border-slate-300 rounded-lg px-3 py-1.5 text-xs w-44 focus:ring-2 focus:ring-[#E85B1E] outline-none"
+              />
+              <select
+                value={liveBranch} onChange={e => setLiveBranch(e.target.value)}
+                data-testid="live-branch-filter"
+                className="border border-slate-300 rounded-lg px-2 py-1.5 text-xs bg-white focus:ring-2 focus:ring-[#E85B1E] outline-none"
+              >
+                <option value="">All branches</option>
+                {liveBranches.map(b => <option key={b} value={b}>{b}</option>)}
+              </select>
+              <button onClick={fetchActive} data-testid="refresh-active-btn"
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-[#1E2A47] text-white rounded-lg text-xs font-semibold hover:bg-[#2A3A5E]">
+                <RefreshCw size={12} /> Refresh
+              </button>
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full" data-testid="active-staff-table">
               <thead><tr className="bg-slate-50 border-b">
-                {["Employee", "Designation", "Punch In", "Status", "Points", "Last Seen", ""].map(h =>
+                {["Employee", "Punch In", "Status", "Distance", "Battery", "Last Seen", ""].map(h =>
                   <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>)}
               </tr></thead>
               <tbody>
                 {loading ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
                 : activeStaff.length === 0 ? <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-400">No active staff today. Check the <strong>Tracker Devices</strong> tab to diagnose.</td></tr>
-                : activeStaff.map(s => (
+                : liveRows.length === 0 ? <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-400">No one matches that search or branch.</td></tr>
+                : liveRows.map(s => (
                   <tr key={s.employee_id} className="border-b border-slate-100 hover:bg-slate-50">
-                    <td className="px-4 py-3"><p className="text-sm font-medium text-[#0F172A]">{s.name}</p><p className="text-xs text-[#E85B1E] font-mono">{s.employee_id}</p></td>
-                    <td className="px-4 py-3 text-sm text-slate-600">{s.designation || "-"}</td>
+                    <td className="px-4 py-3">
+                      <p className="text-sm font-medium text-[#0F172A]">{s.name}</p>
+                      <p className="text-xs text-[#E85B1E] font-mono">{s.employee_id}</p>
+                      <p className="text-xs text-slate-500">{s.designation || "-"}{s.branch ? ` · ${s.branch}` : ""}</p>
+                    </td>
                     <td className="px-4 py-3 text-sm text-slate-600">{s.punch_in_time ? new Date(s.punch_in_time).toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" }) : "-"}</td>
                     <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${s.punch_out_time ? "bg-blue-100 text-blue-700" : "bg-green-100 text-green-700"}`}>{s.punch_out_time ? "Punched Out" : "Active"}</span></td>
-                    <td className="px-4 py-3 text-sm font-semibold text-[#1E2A47]">{s.location_points}</td>
+                    <td className="px-4 py-3 text-sm font-semibold text-[#1E2A47]" data-testid={`distance-${s.employee_id}`}>
+                      {s.distance_km_today != null ? `${s.distance_km_today} km` : "—"}
+                    </td>
+                    <td className="px-4 py-3" data-testid={`battery-${s.employee_id}`}>
+                      {s.last_battery != null ? (
+                        <span className="flex items-center gap-1">
+                          <Battery size={12} className={s.last_battery > 30 ? "text-green-600" : s.last_battery > 15 ? "text-amber-500" : "text-red-600"} />
+                          <span className="text-sm font-semibold text-slate-700">{Math.round(s.last_battery)}%</span>
+                        </span>
+                      ) : <span className="text-xs text-slate-400">—</span>}
+                    </td>
                     <td className="px-4 py-3 text-xs text-slate-500">{s.last_seen ? new Date(s.last_seen).toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit" }) : "-"}</td>
                     <td className="px-4 py-3">
                       <button onClick={() => setSelected(s)} data-testid={`view-track-${s.employee_id}`}
