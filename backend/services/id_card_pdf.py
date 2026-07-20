@@ -24,7 +24,7 @@ from reportlab.pdfgen import canvas
 
 import qrcode
 from qrcode.constants import ERROR_CORRECT_Q
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 from services.id_card_assets import asset_path
 
@@ -138,6 +138,104 @@ def _logo(c, top_y):
 
 
 # ── photo ────────────────────────────────────────────────────────────────────
+# Framing constants. A passport photo is not reliably composed -- some are tight
+# headshots, some are half-body shots with the face high in the frame. Cropping
+# the middle of such a photo puts the chest in the circle and the forehead on the
+# cut line, so the crop is placed relative to the detected face instead.
+_FACE_TARGET_Y = 0.46   # where the face box's centre sits down the crop
+_FACE_ZOOM = 3.4        # preferred crop side, as a multiple of the face height
+_FACE_ZOOM_TIGHT = 1.6  # tightest crop allowed when avoiding an edge (see below)
+_FACE_DETECT_MAX = 800  # detection runs on a copy no bigger than this
+_FACE_MIN_CROP = 420    # never zoom in past this many source px
+
+
+def _face_box(src: Image.Image):
+    """(top, right, bottom, left) of the largest face in `src`, or None.
+
+    Detection runs on a downscaled copy: HOG cost scales with pixel count, and a
+    passport photo carries far more detail than finding one face needs.
+
+    The import is deferred and every failure returns None. A missing or broken
+    dlib must cost us the centring, not the card -- the caller falls back to the
+    old centre crop.
+    """
+    try:
+        import numpy as np
+        import face_recognition
+    except Exception:
+        return None
+    try:
+        small = src.convert("RGB")
+        small.thumbnail((_FACE_DETECT_MAX, _FACE_DETECT_MAX), Image.LANCZOS)
+        if not small.size[0] or not small.size[1]:
+            return None
+        # Per-axis: thumbnail() rounds to whole pixels, so the two ratios differ
+        # very slightly and one scale for both would skew the box.
+        sx = src.size[0] / float(small.size[0])
+        sy = src.size[1] / float(small.size[1])
+        arr = np.array(small)
+        for upsample in (1, 2):
+            found = face_recognition.face_locations(
+                arr, model="hog", number_of_times_to_upsample=upsample)
+            if found:
+                # Largest by area. Group photos and a face on a poster behind the
+                # subject both show up here; the subject is the biggest face.
+                t, r, b, l = max(found, key=lambda f: (f[2] - f[0]) * (f[1] - f[3]))
+                return (t * sy, r * sx, b * sy, l * sx)
+        return None
+    except Exception:
+        return None
+
+
+def _crop_box(src: Image.Image, box) -> tuple:
+    """Square crop framing `box`; the centred square when `box` is None."""
+    w, h = src.size
+    if box is None:
+        side = min(w, h)
+        x0, y0 = (w - side) // 2, (h - side) // 2
+        return (x0, y0, x0 + side, y0 + side)
+
+    top, right, bottom, left = box
+    face_h = max(1.0, bottom - top)
+    fx = (left + right) / 2.0
+    fy = (top + bottom) / 2.0
+
+    # Frame the head, but never ask for pixels the photo does not have.
+    side = min(face_h * _FACE_ZOOM, float(min(w, h)))
+
+    # Largest crop that still lands the face on target without running off an
+    # edge of the photo. Half-body shots put the face high in the frame, so the
+    # preferred crop usually wants to start above the top edge; taking the whole
+    # width instead and sliding down leaves the face sitting too high in the
+    # circle. Tightening is the better trade -- a bigger face reads well on a
+    # 10 mm circle, a correctly-scaled one parked near the rim does not.
+    fit = min(fy / _FACE_TARGET_Y,
+              (h - fy) / (1.0 - _FACE_TARGET_Y),
+              2.0 * fx,
+              2.0 * (w - fx))
+    # ...but not past the point where the circular mask starts cutting the
+    # corners off the face itself. A square face box needs ~1.50x its own height
+    # of crop to survive the mask at this target offset; 1.6 keeps a margin.
+    side = max(min(side, fit), face_h * _FACE_ZOOM_TIGHT)
+
+    # Resolution and bounds floors. These can re-introduce a clamp below, which
+    # is fine -- they only bind on photos that were never going to frame well.
+    side = min(side, float(min(w, h)))
+    side = max(side, float(min(_FACE_MIN_CROP, min(w, h))))
+
+    # Round the side ONCE and derive both edges from it. Rounding each edge on
+    # its own can leave the box a pixel taller than it is wide, which resizes
+    # into a subtly stretched face.
+    side_i = max(1, int(round(side)))
+    x0 = int(round(fx - side_i / 2.0))
+    y0 = int(round(fy - side_i * _FACE_TARGET_Y))
+    # Final safety clamp. With the fit above this is usually a no-op; it still
+    # matters when a floor won, or when the face sits right on an edge.
+    x0 = max(0, min(x0, w - side_i))
+    y0 = max(0, min(y0, h - side_i))
+    return (x0, y0, x0 + side_i, y0 + side_i)
+
+
 def _circular_photo(photo_bytes: Optional[bytes], px: int = 560) -> Image.Image:
     """Circular passport photo with the orange ring. Falls back to a silhouette.
 
@@ -151,12 +249,12 @@ def _circular_photo(photo_bytes: Optional[bytes], px: int = 560) -> Image.Image:
 
     if photo_bytes:
         try:
-            src = Image.open(io.BytesIO(photo_bytes)).convert("RGB")
-            # cover-crop to a square, then fill the circle
-            w, h = src.size
-            side = min(w, h)
-            src = src.crop(((w - side) // 2, (h - side) // 2,
-                            (w - side) // 2 + side, (h - side) // 2 + side))
+            src = Image.open(io.BytesIO(photo_bytes))
+            # Honour EXIF orientation first: a phone-shot photo stored sideways
+            # would otherwise be cropped -- and face-detected -- on its side.
+            src = ImageOps.exif_transpose(src).convert("RGB")
+            # Square-crop around the face, then fill the circle.
+            src = src.crop(_crop_box(src, _face_box(src)))
             src = src.resize(size, Image.LANCZOS).convert("RGBA")
         except Exception:
             src = None
