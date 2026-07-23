@@ -3,11 +3,11 @@
 Strategy:
 - Compare a punch-time selfie against the employee's reference passport_photo.
 - Returns (matched: bool, distance: float, reason: str | None).
-- Lower distance = closer match. Default threshold 0.55 (lenient for mobile/outdoor).
+- Lower distance = closer match. Threshold 0.60 — dlib's own documented default.
 - Distances:
     < 0.45 → strong match
-    0.45 - 0.55 → acceptable match
-    > 0.55 → not the same person
+    0.45 - 0.60 → acceptable match
+    > 0.60 → not the same person
 """
 import base64
 import io
@@ -20,7 +20,11 @@ from PIL import Image, ImageOps
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TOLERANCE = 0.55   # balanced — 0.55 reduces false mismatches for mobile/outdoor selfies
+# dlib's documented default. LOWER is stricter, so the previous 0.55 rejected more
+# genuine staff than the model was tuned for — its comment claimed the opposite.
+# Raising it only affects punches that were actually compared; it does nothing for
+# the ones where no face was detected, which are a separate (detector) problem.
+DEFAULT_TOLERANCE = 0.60
 MAX_DIM = 1200             # resize before encoding for speed (preserves enough detail for face detection)
 
 
