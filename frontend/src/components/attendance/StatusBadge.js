@@ -18,6 +18,7 @@ import React from "react";
 export function AttendanceStatusBadge({ record: r }) {
   if (!r) return null;
   const { status, geofence_verified, punch_in_time, late_minutes, auto_status_reason } = r;
+  const needsReview = !!r.needs_hr_review;
 
   // Status pill — what to render & color
   let label;
@@ -62,10 +63,32 @@ export function AttendanceStatusBadge({ record: r }) {
     );
   }
 
+  // The punch-out never landed, so the system closed the day and estimated the
+  // hours. Shown independently of status -- an auto-closed day can be any status,
+  // and the point is that these numbers were not measured.
+  let review = null;
+  if (needsReview) {
+    const src = r.auto_closed_source;
+    const from =
+      src === "last_location_ping" ? "estimated from their last GPS location"
+      : src === "shift_end" ? "estimated from their shift end time"
+      : "could not be estimated — no evidence of when they left";
+    review = (
+      <span
+        title={`Punch-out never came through, so the day was closed automatically and the hours ${from}. Check the times and regularise this record.`}
+        className="ml-1 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-50 text-violet-700 border border-violet-200"
+        data-testid="needs-review-badge"
+      >
+        Needs review
+      </span>
+    );
+  }
+
   return (
     <span className="inline-flex items-center" data-testid="att-status">
       <span className={`px-2 py-1 rounded-full text-xs font-medium ${cls}`}>{label}</span>
       {reason}
+      {review}
     </span>
   );
 }

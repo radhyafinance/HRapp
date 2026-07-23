@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef } from "react";
 import API from "../utils/api";
+import { punchWithRetry } from "../utils/punch";
 import { Camera, MapPin, CheckCircle, AlertCircle, Clock, LogIn, LogOut, RefreshCw, Edit3, Plus, FileEdit, Search, Filter, Download, CalendarDays, User } from "lucide-react";
 import { useAuth } from "../contexts/AuthContext";
 import { AdminRegulariseModal, EmployeeRegulariseRequestModal, PendingRequestsPanel, MyRequestsList } from "../components/attendance/Regularisation";
@@ -70,6 +71,8 @@ export default function Attendance() {
   const [teamLoading, setTeamLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
+  // Records auto-closed because the punch-out never landed — hours are estimates.
+  const [onlyNeedsReview, setOnlyNeedsReview] = useState(false);
   const today_iso = toLocalDateStr();
   const [dateFrom, setDateFrom] = useState(today_iso);
   const [dateTo, setDateTo] = useState(today_iso);
@@ -136,6 +139,7 @@ export default function Attendance() {
       const params = { date_from: dateFrom, date_to: dateTo, limit: 500 };
       if (search.trim()) params.search = search.trim();
       if (filterStatus) params.status = filterStatus;
+      if (onlyNeedsReview) params.needs_review = true;
       if (selectedBranch && selectedBranch !== "all") params.branch = selectedBranch;
       const res = await API.get("/attendance", { params });
       setTeamRecords(res.data || []);
@@ -147,7 +151,7 @@ export default function Attendance() {
     if (!isManager) return;
     const t = setTimeout(fetchTeamRecords, 250);  // debounce search/date changes
     return () => clearTimeout(t);
-  }, [isManager, search, filterStatus, dateFrom, dateTo, pendingReload, selectedBranch]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isManager, search, filterStatus, dateFrom, dateTo, pendingReload, selectedBranch, onlyNeedsReview]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load employee list once for admin's "Add attendance" modal dropdown
   useEffect(() => {
@@ -189,23 +193,19 @@ export default function Attendance() {
   const doPunch = async (type, photo_base64) => {
     setProcessing(true);
     setResult(null);
-    try {
-      const endpoint = type === "in" ? "/attendance/punch-in" : "/attendance/punch-out";
-      const payload = {
-        employee_id: user.employee_id,
-        latitude: location?.lat || 0,
-        longitude: location?.lon || 0,
-        accuracy: location?.accuracy,
-        photo_base64,
-      };
-      const res = await API.post(endpoint, payload);
-      setResult({ success: true, ...res.data });
-      fetchData();
-    } catch (e) {
-      setResult({ success: false, message: e.response?.data?.detail || "Punch failed" });
-    } finally {
-      setProcessing(false);
-    }
+    // Retries only network / 5xx failures — see utils/punch.js.
+    const res = await punchWithRetry(type, {
+      employee_id: user.employee_id,
+      latitude: location?.lat || 0,
+      longitude: location?.lon || 0,
+      accuracy: location?.accuracy,
+      photo_base64,
+    });
+    setResult(res);
+    // Refresh on success including the recovered case: the punch is recorded
+    // server-side either way, so the page must reflect it.
+    if (res.success) fetchData();
+    setProcessing(false);
   };
 
   const handleCapture = async (photo_base64) => {
@@ -717,6 +717,16 @@ export default function Attendance() {
                   <option value="weekly_off">Weekly Off</option>
                   <option value="holiday">Holiday</option>
                 </select>
+
+                <label
+                  title="Days the system closed on its own because the punch-out never came through. The hours are estimates and need checking."
+                  className={`flex items-center gap-2 px-3 py-2 text-sm rounded-lg border cursor-pointer select-none ${onlyNeedsReview ? "bg-violet-50 border-violet-300 text-violet-800" : "bg-white border-slate-300 text-slate-600"}`}
+                  data-testid="needs-review-filter">
+                  <input type="checkbox" checked={onlyNeedsReview}
+                    onChange={e => setOnlyNeedsReview(e.target.checked)}
+                    className="accent-violet-600" />
+                  Needs review
+                </label>
               </div>
 
               <div className="overflow-x-auto">

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import API from "../../utils/api";
+import { punchWithRetry } from "../../utils/punch";
 import { LogIn, LogOut, MapPin, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
 import { CameraCapture } from "../attendance/CameraCapture";
 
@@ -32,22 +32,19 @@ export function QuickPunchCard({ user, todayStatus, onPunched }) {
   const doPunch = async (type, photo_base64) => {
     setProcessing(true);
     setResult(null);
-    try {
-      const endpoint = type === "in" ? "/attendance/punch-in" : "/attendance/punch-out";
-      const res = await API.post(endpoint, {
-        employee_id: user.employee_id,
-        latitude: location?.lat || 0,
-        longitude: location?.lon || 0,
-        accuracy: location?.accuracy,
-        photo_base64,
-      });
-      setResult({ success: true, ...res.data });
-      onPunched && onPunched();
-    } catch (e) {
-      setResult({ success: false, message: e.response?.data?.detail || "Punch failed" });
-    } finally {
-      setProcessing(false);
-    }
+    // Retries only network / 5xx failures — see utils/punch.js.
+    const res = await punchWithRetry(type, {
+      employee_id: user.employee_id,
+      latitude: location?.lat || 0,
+      longitude: location?.lon || 0,
+      accuracy: location?.accuracy,
+      photo_base64,
+    });
+    setResult(res);
+    // Refresh on success including the recovered case: the punch is recorded
+    // server-side either way, so the card must stop offering the same button.
+    if (res.success) onPunched && onPunched();
+    setProcessing(false);
   };
 
   const startPunch = (type) => {

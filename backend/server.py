@@ -152,6 +152,30 @@ async def _daily_auto_exit_loop():
             await asyncio.sleep(24 * 3600)
 
 
+async def _daily_auto_close_sessions_loop():
+    """Close punch-outs that never happened. Runs daily at 00:20 IST.
+
+    After midnight so the day is genuinely over, and after auto-exit at 00:05 so
+    the two do not contend for the same records.
+    """
+    from routes.attendance import auto_close_open_sessions
+    while True:
+        try:
+            wait = _seconds_until_next_ist(0, 20)
+            logger.info(f"Auto-close scheduler: next run in {wait/3600:.1f}h (00:20 IST)")
+            await asyncio.sleep(wait)
+            result = await auto_close_open_sessions()
+            if result["closed_count"]:
+                logger.info(f"Auto-close: {result['closed_count']} open session(s) closed "
+                            f"and flagged for HR review: {result['closed']}")
+        except asyncio.CancelledError:
+            logger.info("Auto-close scheduler stopped")
+            raise
+        except Exception as e:
+            logger.error(f"Auto-close scheduler failed: {e} — retrying tomorrow")
+            await asyncio.sleep(24 * 3600)
+
+
 async def _odometer_reminder_loop():
     """Hourly nudge for employees who owe an odometer photo; escalates to HR
     after 19:00 IST. The reminder function itself gates on work hours."""
@@ -252,6 +276,20 @@ async def startup():
     # Start daily 00:05 IST scheduler for ongoing auto-exit checks
     app.state.auto_exit_task = asyncio.create_task(_daily_auto_exit_loop())
 
+    # Close any punch-out that never landed while the server was down or before
+    # this shipped. Runs on startup so an existing backlog is cleared once,
+    # rather than waiting for the next midnight.
+    try:
+        from routes.attendance import auto_close_open_sessions
+        close_result = await auto_close_open_sessions()
+        if close_result["closed_count"]:
+            logger.info(f"Startup auto-close: {close_result['closed_count']} open session(s) "
+                        f"closed and flagged for HR review: {close_result['closed']}")
+    except Exception as e:
+        logger.warning(f"Startup auto-close skipped: {e}")
+
+    app.state.auto_close_task = asyncio.create_task(_daily_auto_close_sessions_loop())
+
     # Seed / migrate admin user — login by username "admin" (no longer email-based)
     admin_username = os.environ.get("ADMIN_USERNAME", "admin")
     admin_password = os.environ.get("ADMIN_PASSWORD", "Admin@123")
@@ -322,7 +360,8 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    for task_name in ("face_photo_purge_task", "auto_exit_task", "odometer_reminder_task"):
+    for task_name in ("face_photo_purge_task", "auto_exit_task",
+                      "auto_close_task", "odometer_reminder_task"):
         task = getattr(app.state, task_name, None)
         if task and not task.done():
             task.cancel()

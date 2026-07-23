@@ -60,6 +60,166 @@ async def _is_face_match_strict() -> bool:
 FACE_PHOTO_RETENTION_DAYS = 45
 
 
+# ──────────────────────────────────────────────────────────────
+#  Forgotten / failed punch-outs
+# ──────────────────────────────────────────────────────────────
+AUTO_CLOSE_LOOKBACK_DAYS = 7
+
+
+def _ist_today() -> date:
+    return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date()
+
+
+def _shift_end_utc(shift: Optional[dict], date_str: str) -> Optional[datetime]:
+    """The shift's end time on `date_str`, as UTC.
+
+    Mirrors `shift_start_ist` in services.shift_rules: shift hours are IST
+    wall-clock, punch times are stored as UTC.
+    """
+    if not shift:
+        return None
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return None
+    try:
+        end_ist = datetime(d.year, d.month, d.day,
+                           int(shift.get("end_hour", 18)),
+                           int(shift.get("end_minute", 0)), tzinfo=IST_TZ)
+    except ValueError:
+        return None
+    return end_ist.astimezone(timezone.utc)
+
+
+async def _last_seen_utc(employee_id: str, date_str: str) -> Optional[datetime]:
+    """Latest location ping for that employee on that day, if any.
+
+    This is the strongest evidence we have of when someone was still working.
+    Only field staff ping, so office staff fall through to the shift end.
+    """
+    try:
+        rows = await db.location_logs.find(
+            {"employee_id": employee_id, "date": date_str}, {"_id": 0, "timestamp": 1}
+        ).to_list(5000)
+    except Exception:
+        return None
+    latest = None
+    for r in rows:
+        ts = r.get("timestamp")
+        if not ts:
+            continue
+        try:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if latest is None or dt > latest:
+            latest = dt
+    return latest
+
+
+async def auto_close_open_sessions(lookback_days: int = AUTO_CLOSE_LOOKBACK_DAYS) -> dict:
+    """Close attendance sessions left open on a day that has already ended.
+
+    A punch-out can fail for reasons that have nothing to do with the employee --
+    a dropped connection, a backend restart, a phone that died. Without this the
+    record stays open forever: hours are never computed and only HR can repair it,
+    which means the failure is invisible until someone notices.
+
+    Deliberately conservative:
+
+    * **Only days strictly before today (IST).** Someone still at work is never
+      closed out from under them.
+    * **Status is never recomputed.** We do not know when they actually left, so
+      running the short-hours rule on a guess could silently turn a full day into
+      a half day. Whatever punch-in decided stands until a human looks.
+    * **Hours are marked as an estimate**, never presented as measured.
+    * Records HR has already regularised, or already auto-closed, are left alone,
+      so this is safe to re-run.
+
+    Every record it touches is flagged `needs_hr_review`, so the repair is queued
+    rather than quietly applied.
+    """
+    today_ist = _ist_today()
+    oldest = (today_ist - timedelta(days=max(1, lookback_days))).isoformat()
+    newest = (today_ist - timedelta(days=1)).isoformat()
+
+    candidates = await db.attendance_records.find({
+        "date": {"$gte": oldest, "$lte": newest},
+        "punch_in_time": {"$exists": True, "$ne": None},
+        "regularised": {"$ne": True},
+        "auto_closed": {"$ne": True},
+    }).to_list(2000)
+
+    closed = []
+    for rec in candidates:
+        sessions = list(rec.get("sessions") or [])
+        if not sessions and rec.get("punch_in_time") and not rec.get("punch_out_time"):
+            # Legacy single-session record — same migration shape punch_out uses.
+            sessions = [{
+                "punch_in_time": rec.get("punch_in_time"),
+                "punch_in_location": rec.get("punch_in_location"),
+                "punch_out_time": None,
+            }]
+        open_idx = None
+        for i in range(len(sessions) - 1, -1, -1):
+            if not sessions[i].get("punch_out_time"):
+                open_idx = i
+                break
+        if open_idx is None:
+            continue
+
+        date_str = rec.get("date")
+        emp_id = rec.get("employee_id")
+        try:
+            pin_dt = datetime.fromisoformat(str(sessions[open_idx].get("punch_in_time")))
+            if pin_dt.tzinfo is None:
+                pin_dt = pin_dt.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            logger.warning("auto_close: unreadable punch_in_time for %s on %s", emp_id, date_str)
+            continue
+
+        # Best evidence first, then the shift's end time.
+        source = "last_location_ping"
+        est = await _last_seen_utc(emp_id, date_str)
+        if est is None or est < pin_dt:
+            emp = await db.employees.find_one({"employee_id": emp_id}, {"_id": 0, "role": 1}) or {}
+            shift = await resolve_shift_for(emp.get("role"), emp_id, db)
+            est = _shift_end_utc(shift, date_str)
+            source = "shift_end"
+        if est is None or est < pin_dt:
+            # Nothing usable. Close at the punch-in itself rather than inventing
+            # time worked -- zero hours is visibly wrong, which is the point.
+            est = pin_dt
+            source = "no_evidence"
+
+        hours = round((est - pin_dt).total_seconds() / 3600, 2)
+        sessions[open_idx]["punch_out_time"] = est.isoformat()
+        sessions[open_idx]["hours_worked"] = hours
+        sessions[open_idx]["auto_closed"] = True
+        total = round(sum((s.get("hours_worked") or 0)
+                          for s in sessions if s.get("punch_out_time")), 2)
+
+        await db.attendance_records.update_one({"_id": rec["_id"]}, {"$set": {
+            "sessions": sessions,
+            "session_count": len(sessions),
+            "punch_out_time": est.isoformat(),
+            "hours_worked": total,
+            "hours_worked_estimated": True,
+            "auto_closed": True,
+            "auto_closed_at": datetime.now(timezone.utc).isoformat(),
+            "auto_closed_source": source,
+            "needs_hr_review": True,
+            # Status deliberately untouched -- see the docstring.
+        }})
+        closed.append({"employee_id": emp_id, "date": date_str,
+                       "estimated_hours": hours, "source": source})
+
+    return {"closed_count": len(closed), "closed": closed,
+            "window": {"from": oldest, "to": newest}}
+
+
 async def purge_old_face_mismatch_photos() -> dict:
     """Strip face-mismatch selfies from attendance records older than the retention window.
 
@@ -823,6 +983,7 @@ async def list_attendance(
     status: str = None,
     search: str = None,
     branch: str = None,
+    needs_review: bool = None,
     limit: int = 500,
     current_user: dict = Depends(get_current_user),
 ):
@@ -830,6 +991,10 @@ async def list_attendance(
     - hr_admin / management: full access; no scoping
     - managers (reporting manager): defaults to direct reports + own records (HO staff excluded)
     - employees / field_agent: only own records
+
+    `needs_review=true` narrows to records auto-closed because the punch-out never
+    landed. Filtered in the query rather than in the browser so the list is the
+    whole set, not just whatever fitted in the last page of results.
     """
     role = current_user.get("role")
     me_id = current_user.get("employee_id")
@@ -864,6 +1029,8 @@ async def list_attendance(
         query.setdefault("date", {})["$lte"] = date_to
     if status:
         query["status"] = status
+    if needs_review:
+        query["needs_hr_review"] = True
 
     # Optional fuzzy name/id search — resolve to employee_id list
     if search and role in ["hr_admin", "management", "managers"]:
@@ -1168,6 +1335,11 @@ async def _apply_regularisation(
 
     # Mark as HR-locked so subsequent auto-rules (punch-out, etc.) won't override.
     changes["regularised"] = True
+    # A human has now set the real times, so the record leaves the review queue and
+    # its hours stop being an estimate. Without this the badge would stick around
+    # after the fix and the queue would never empty.
+    changes["needs_hr_review"] = False
+    changes["hours_worked_estimated"] = False
 
     if existing:
         await db.attendance_records.update_one({"_id": existing["_id"]}, {"$set": changes})
