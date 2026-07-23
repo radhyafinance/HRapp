@@ -91,6 +91,12 @@ from routes import id_cards
 app.include_router(id_cards.router, prefix="/api/id-cards", tags=["ID Cards"])
 app.include_router(id_cards.public_router, prefix="/api/public/verify", tags=["Public ID Verification"])
 
+# Temporary diagnostic: face-check audit, HR Admin only, read-only. The preview
+# environment has its own database, so this endpoint is the only way to see the
+# real attendance history. Remove this and backend/face_audit.py when done.
+import face_audit
+app.include_router(face_audit.router, prefix="/api", tags=["Face Audit"])
+
 
 @app.get("/api")
 async def root():
