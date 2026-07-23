@@ -1,0 +1,13 @@
+employee_id,date,side,matched,distance,warning
+RMF0012,2026-04-30,in,True,0.339,""
+RMF0008,2026-04-30,in,True,0.3812,""
+RMF0008,2026-04-30,out,True,0.3335,""
+RMF0012,2026-05-01,in,True,0.3875,""
+RMF0008,2026-05-01,in,False,0.4223,"Face match weak (distance 0.4223); HR will review."
+RMF0008,2026-05-01,out,False,0.4462,"Face match weak (distance 0.4462); HR will review."
+RMF0008,2026-05-06,in,True,0.3749,""
+RMF0009,2026-05-06,in,False,0.4495,"Face match weak (distance 0.4495); HR will review."
+RMF0009,2026-05-06,out,False,0.4067,"Face match weak (distance 0.4067); HR will review."
+RMF0008,2026-05-08,in,False,0.4066,"Face match weak (distance 0.4066); HR will review."
+RMF0008,2026-05-08,out,True,0.3848,""
+RMF0012,2026-07-11,in,False,0.5962,"Face match weak (distance 0.5962); HR will review."
