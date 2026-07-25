@@ -4,6 +4,31 @@ import { useAuth } from "../contexts/AuthContext";
 import { MapPin, Activity, Clock, AlertCircle, ArrowLeft, RefreshCw, Battery, Smartphone, Search } from "lucide-react";
 import RouteMap from "../components/RouteMap";
 import { toLocalDateStr } from "../utils/shiftRules";
+// Location-permission chip. A SEPARATE axis from freshness — see the note below
+// the table. Reported by the v1.4.0+ app; older apps / PWA show "—".
+const PERMISSION_STYLES = {
+  always: { label: "Allowed always", cls: "bg-green-50 text-green-700 border-green-200" },
+  in_use: { label: "Foreground only", cls: "bg-amber-50 text-amber-700 border-amber-200" },
+  denied: { label: "Denied", cls: "bg-red-50 text-red-700 border-red-200" },
+  prompt: { label: "Not asked yet", cls: "bg-slate-100 text-slate-600 border-slate-200" },
+};
+function permissionCell(d) {
+  const st = PERMISSION_STYLES[d.location_permission];
+  if (st) {
+    return { label: st.label, cls: st.cls,
+      sub: d.location_permission_at
+        ? `as of ${new Date(d.location_permission_at).toLocaleString("en-IN", { dateStyle: "short", timeStyle: "short" })}`
+        : null };
+  }
+  // No permission reported. Say why, so "—" is never a mystery.
+  if (d.last_platform === "app")
+    return { label: "Update the app", cls: "bg-slate-100 text-slate-500 border-slate-200",
+             sub: "app too old to report" };
+  if (d.last_platform === "pwa")
+    return { label: "On web (PWA)", cls: "bg-slate-100 text-slate-500 border-slate-200",
+             sub: "install the app to track" };
+  return { label: "—", cls: "bg-slate-50 text-slate-400 border-slate-200", sub: null };
+}
 const FRESHNESS_STYLES = {
   live:    { label: "Live",    dot: "bg-green-500",    bg: "bg-green-50",    text: "text-green-700",  border: "border-green-200" },
   recent:  { label: "Recent",  dot: "bg-emerald-400",  bg: "bg-emerald-50",  text: "text-emerald-700",border: "border-emerald-200" },
@@ -487,7 +512,7 @@ export default function FieldTracking() {
             <div className="overflow-x-auto">
               <table className="w-full" data-testid="devices-table">
                 <thead><tr className="bg-slate-50 border-b">
-                  {["Status", "Employee", "Role", "Last Ping", "Battery", "Interval", ""].map(h =>
+                  {["Status", "Employee", "Role", "Last Ping", "Battery", "Location Access", ""].map(h =>
                     <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>)}
                 </tr></thead>
                 <tbody>
@@ -517,7 +542,15 @@ export default function FieldTracking() {
                             </div>
                           ) : <span className="text-xs text-slate-400">—</span>}
                         </td>
-                        <td className="px-4 py-3 text-xs text-slate-500">{d.interval_seconds}s</td>
+                        <td className="px-4 py-3">
+                          {(() => { const p = permissionCell(d); return (
+                            <>
+                              <span className={`inline-flex items-center px-2 py-1 rounded-full text-[11px] font-medium border ${p.cls}`}
+                                data-testid={`device-perm-${d.employee_id}`}>{p.label}</span>
+                              {p.sub && <p className="text-[10px] text-slate-400 mt-0.5">{p.sub}</p>}
+                            </>
+                          ); })()}
+                        </td>
                         <td className="px-4 py-3">
                           <button
                             onClick={() => { setHistDate(toLocalDateStr()); setHistSelected({ employee_id: d.employee_id, name: d.name, designation: d.designation }); setTab("history"); }}
@@ -536,6 +569,10 @@ export default function FieldTracking() {
           </div>
           <div className="bg-blue-50 border border-blue-200 rounded-xl p-3 text-xs text-blue-700">
             <strong>Freshness key:</strong> Live ≤ 5 min · Recent ≤ 30 min · Stale ≤ 24 h · Silent &gt; 24 h · Never = never pinged.
+            <br /><strong>Location Access</strong> is a separate signal from freshness.
+            <span className="font-medium"> Allowed always</span> is required — the tracker only runs with the screen locked when background location is on.
+            A device can be <span className="font-medium">Allowed always</span> yet <span className="font-medium">Silent</span> (phone off, or the maker&apos;s battery saver killing the app),
+            or <span className="font-medium">Denied</span> yet <span className="font-medium">Live</span> (app left open). Read the two columns together.
           </div>
         </div>
       )}

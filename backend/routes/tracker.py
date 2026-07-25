@@ -267,7 +267,8 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
         {"employee_id": {"$in": emp_ids}},
         {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1,
          "designation": 1, "department": 1, "role": 1, "status": 1, "phone": 1,
-         "branch": 1},
+         "branch": 1, "last_platform": 1, "last_app_version": 1,
+         "location_permission": 1, "location_permission_at": 1},
     ).to_list(2000)
     emp_map = {e["employee_id"]: e for e in employees}
     now = datetime.now(timezone.utc)
@@ -308,6 +309,14 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
             "last_lon": t.get("last_lon"),
             "last_battery": t.get("last_battery"),
             "branch": emp.get("branch", ""),
+            # Permission is a SEPARATE axis from freshness: a device can be
+            # "Allowed always" and still Silent (OEM battery killer, phone off),
+            # or "Denied" and still Live (someone left the app open). HR needs
+            # both columns to tell those apart.
+            "last_platform": emp.get("last_platform"),
+            "app_version": emp.get("last_app_version"),
+            "location_permission": emp.get("location_permission"),
+            "location_permission_at": emp.get("location_permission_at"),
         })
     # Distance covered TODAY only. The Active Today tab is a live view of the day in
     # progress, so a running total from any other period would be misleading there.
@@ -812,11 +821,20 @@ async def run_odometer_reminders():
 # ══════════════════════════════════════════════════════════════════
 #  App vs PWA adoption tracking
 # ══════════════════════════════════════════════════════════════════
+# The tracker only works with background ("Allow all the time") location. These
+# are the states the app reports; anything else is ignored so junk can't land.
+_LOCATION_PERMISSION_STATES = {"always", "in_use", "denied", "prompt", "unknown"}
+
+
 class ClientInfoIn(BaseModel):
     platform: str                 # "app" | "pwa"
     os: Optional[str] = None
     standalone: Optional[bool] = None
     version: Optional[str] = None  # APK version — reported once a future APK provides it
+    # Reported by the native app only (v1.4.0+). "always" = Allow all the time,
+    # "in_use" = foreground only (tracker dies when the screen locks), "denied",
+    # "prompt" = not yet asked. Older APKs send nothing → stays unknown.
+    location_permission: Optional[str] = None
 @router.post("/client-info")
 async def record_client_info(body: ClientInfoIn, current_user: dict = Depends(get_current_user)):
     """Called by the frontend on login to record whether the employee is on the
@@ -836,6 +854,12 @@ async def record_client_info(body: ClientInfoIn, current_user: dict = Depends(ge
     }
     if platform == "app" and body.version:
         update["last_app_version"] = str(body.version)[:20]
+    # Permission is an app-only concept; a PWA login must not overwrite the last
+    # known app permission with a meaningless value, so gate on platform + range.
+    perm = (body.location_permission or "").strip().lower()
+    if platform == "app" and perm in _LOCATION_PERMISSION_STATES:
+        update["location_permission"] = perm
+        update["location_permission_at"] = now
     await db.employees.update_one({"employee_id": emp_id}, {"$set": update})
     return {"ok": True}
 @router.get("/adoption")
