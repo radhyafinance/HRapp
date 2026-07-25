@@ -59,3 +59,36 @@ export async function punchWithRetry(type, payload, { attempts = RETRYABLE_ATTEM
   }
   return { success: false, message: lastMessage, exhausted: true };
 }
+
+/**
+ * Retake the selfie for a punch whose face check failed.
+ *
+ * Not a new punch — the attendance record already exists and is untouched. This
+ * only replaces the face-check result on it, and the backend allows it once,
+ * within ten minutes, on your own record.
+ *
+ * Uses the same retry policy as a punch: a dropped connection should not cost
+ * someone their one attempt.
+ */
+export async function retakePunchPhoto(side, payload, { attempts = RETRYABLE_ATTEMPTS } = {}) {
+  let lastMessage = "Could not send the photo";
+  for (let attempt = 0; attempt <= attempts; attempt++) {
+    try {
+      const res = await API.post("/attendance/retake-photo", { ...payload, side });
+      return { success: true, ...res.data };
+    } catch (e) {
+      const status = e.response?.status;
+      const detail = e.response?.data?.detail;
+      // 4xx here is the backend explaining itself — already retaken, too late,
+      // nothing to retake. Repeating it just wastes the person's time.
+      if (status && status >= 400 && status < 500) {
+        return { success: false, message: detail || "Could not retake the photo" };
+      }
+      lastMessage = status
+        ? `Server error (${status}). Please try again.`
+        : "Could not reach the server. Check your connection and try again.";
+      if (attempt < attempts) await sleep(BACKOFF_MS[attempt] ?? 2200);
+    }
+  }
+  return { success: false, message: lastMessage, exhausted: true };
+}
