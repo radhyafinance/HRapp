@@ -7,12 +7,23 @@ import { QuickPunchCard } from "../components/dashboard/QuickPunchCard";
 import OdometerCard from "../components/dashboard/OdometerCard";
 import { toLocalDateStr } from "../utils/shiftRules";
 
-// Drilldown modal for present/absent/on-leave
-function DrilldownModal({ title, endpoint, onClose }) {
+// Drilldown modal for present/absent/on-leave, and for the personal
+// absent-days list. The today-endpoints return a bare array; the absent-days
+// one returns {items, note} because the window it counted needs explaining
+// (a mid-month joiner, say). Accept both rather than making one lie.
+function DrilldownModal({ title, endpoint, unit = "employee", onClose }) {
   const [rows, setRows] = useState([]);
+  const [note, setNote] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    API.get(endpoint).then(r => setRows(r.data)).catch(() => setRows([])).finally(() => setLoading(false));
+    API.get(endpoint)
+      .then(r => {
+        const d = r.data;
+        setRows(Array.isArray(d) ? d : (d?.items || []));
+        setNote(Array.isArray(d) ? null : (d?.note || null));
+      })
+      .catch(() => { setRows([]); setNote(null); })
+      .finally(() => setLoading(false));
   }, [endpoint]);
   const fmt = (t) => { if (!t) return "—"; const d = new Date(t); return isNaN(d) ? t : d.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" }); };
   return (
@@ -31,7 +42,7 @@ function DrilldownModal({ title, endpoint, onClose }) {
             <div key={i} className="px-5 py-3 flex items-center justify-between gap-3">
               <div>
                 <p className="text-sm font-semibold text-[#1E2A47]">{r.name || r.employee_id}</p>
-                <p className="text-xs text-slate-500">{r.designation || r.leave_type || ""}  {r.branch ? `· ${r.branch}` : ""}</p>
+                <p className="text-xs text-slate-500">{r.designation || r.detail || r.leave_type || ""}  {r.branch ? `· ${r.branch}` : ""}</p>
               </div>
               <div className="text-xs text-slate-400 text-right flex-shrink-0">
                 {r.punch_in_time ? <p>In: {fmt(r.punch_in_time)}</p> : null}
@@ -42,7 +53,8 @@ function DrilldownModal({ title, endpoint, onClose }) {
           ))}
         </div>
         <div className="px-5 py-3 border-t border-slate-100 bg-slate-50 rounded-b-xl">
-          <p className="text-xs text-slate-400">{rows.length} employee{rows.length !== 1 ? "s" : ""}</p>
+          <p className="text-xs text-slate-400">{rows.length} {unit}{rows.length !== 1 ? "s" : ""}</p>
+          {note && <p className="text-xs text-slate-500 mt-1">{note}</p>}
         </div>
       </div>
     </div>
@@ -72,6 +84,7 @@ function PersonalDashboard({ user }) {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [drilldown, setDrilldown] = useState(null);
 
   const fetchData = async () => {
     try {
@@ -101,7 +114,9 @@ function PersonalDashboard({ user }) {
 
       <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
         <StatCard label="Absent This Month" value={data?.absent_this_month ?? 0}
-          icon={CalendarX} color="bg-red-500" sub={data?.month_label} />
+          icon={CalendarX} color="bg-red-500" sub={data?.month_label}
+          onClick={() => setDrilldown({ title: "Absent Days This Month", unit: "day",
+            endpoint: "/dashboard/drilldown/my-absent-days" })} />
         <StatCard label="Pending Leaves" value={data?.pending_leaves ?? 0}
           icon={FileText} color="bg-amber-500" sub="Awaiting approval"
           onClick={() => navigate("/leaves")} />
@@ -131,6 +146,15 @@ function PersonalDashboard({ user }) {
           ))}
         </div>
       </div>
+
+      {drilldown && (
+        <DrilldownModal
+          title={drilldown.title}
+          endpoint={drilldown.endpoint}
+          unit={drilldown.unit}
+          onClose={() => setDrilldown(null)}
+        />
+      )}
     </>
   );
 }
@@ -207,6 +231,7 @@ function AdminDashboard({ user }) {
         <DrilldownModal
           title={drilldown.title}
           endpoint={drilldown.endpoint}
+          unit={drilldown.unit}
           onClose={() => setDrilldown(null)}
         />
       )}

@@ -31,7 +31,7 @@ even if total hours ≥ min.
 HR-regularised records (regularised=True) are LOCKED — auto-rule is skipped.
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from typing import Optional, Dict, Any
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -210,3 +210,32 @@ def compute_status_after_punch_out(
     return compute_status_after_punch_out_with_shift(
         None, current_status, current_reason, hours_worked
     )
+
+# ── weekly off ───────────────────────────────────────────────────────────────
+def is_non_working_saturday(d: date, sat_rule: Optional[str]) -> bool:
+    """Is this Saturday a weekly off under `sat_rule`?
+
+    Canonical copy. Mirrors isWeeklyOff() in frontend/src/utils/shiftRules.js and
+    _is_non_working_saturday() in routes/payroll.py -- those two agreed with each
+    other but the dashboard had a third, simpler rule that ignored Saturdays
+    entirely, which is what made absence counts wrong for HO staff.
+    """
+    if d.weekday() != 5:
+        return False
+    if not sat_rule or sat_rule == "all_working":
+        return False
+    if sat_rule == "all_off":
+        return True
+    week_in_month = (d.day - 1) // 7 + 1        # 1..5
+    if sat_rule == "alt_1_3_off":
+        return week_in_month in (1, 3, 5)
+    if sat_rule == "alt_2_4_off":
+        return week_in_month in (2, 4)
+    return False
+
+
+def is_working_day(d: date, sat_rule: Optional[str] = None) -> bool:
+    """Sunday is never a working day; Saturday depends on the shift's rule."""
+    if d.weekday() == 6:
+        return False
+    return not is_non_working_saturday(d, sat_rule)
