@@ -97,3 +97,51 @@ def compare_face_with_reference(
     distance = float(np.linalg.norm(sel_enc - ref_enc))
     matched = distance <= tolerance
     return matched, round(distance, 4), None
+
+# ── cached reference embeddings ──────────────────────────────────────────────
+# The passport photo never changes between punches, yet the original flow decoded
+# it, ran face detection on it and embedded it on EVERY punch -- and it is the
+# larger of the two images, so it was the more expensive half of the comparison.
+# These two functions let the caller compute that embedding once and keep it.
+MODEL_VERSION = "dlib_resnet_v1_128"    # bump if the embedding model ever changes
+
+
+def encode_reference(reference_b64: str) -> list | None:
+    """128 floats for the reference photo, JSON-safe, or None if no face is found.
+
+    Returns a plain list rather than a numpy array so it can be stored in Mongo
+    and read back without a custom codec.
+    """
+    if not reference_b64:
+        return None
+    arr = _decode_base64_image(reference_b64)
+    if arr is None:
+        return None
+    enc = _encode_face(arr)
+    return None if enc is None else [float(x) for x in enc]
+
+
+def compare_with_encoding(
+    selfie_b64: str,
+    ref_encoding: list,
+    tolerance: float = DEFAULT_TOLERANCE,
+) -> Tuple[bool, float | None, str | None]:
+    """Same contract as compare_face_with_reference, reference side precomputed.
+
+    Only the selfie is decoded and embedded here, which is the whole point: the
+    reference work has already been done and cached.
+    """
+    if not selfie_b64:
+        return False, None, "No selfie captured."
+    if not ref_encoding:
+        return False, None, "No reference photo on file."
+
+    sel_arr = _decode_base64_image(selfie_b64)
+    if sel_arr is None:
+        return False, None, "Could not read selfie image."
+    sel_enc = _encode_face(sel_arr)
+    if sel_enc is None:
+        return False, None, "No face detected in selfie. Please capture a clear front-facing photo."
+
+    distance = float(np.linalg.norm(sel_enc - np.array(ref_encoding, dtype=float)))
+    return distance <= tolerance, round(distance, 4), None

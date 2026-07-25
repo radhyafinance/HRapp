@@ -8,6 +8,7 @@ import { FaceMismatchBadge, FaceMismatchModal } from "../components/attendance/F
 import { AttendanceStatusBadge } from "../components/attendance/StatusBadge";
 import { SessionsBadge } from "../components/attendance/SessionsBadge";
 import { CameraCapture } from "../components/attendance/CameraCapture";
+import { FaceRetakePrompt } from "../components/attendance/FaceRetakePrompt";
 import { MonthlyAttendanceReport } from "../components/attendance/MonthlyAttendanceReport";
 import { AttendanceRegisterTab } from "../components/attendance/AttendanceRegisterTab";
 import { toLocalDateStr } from "../utils/shiftRules";
@@ -487,6 +488,14 @@ export default function Attendance() {
                 </div>
               </div>
             )}
+
+            {/* One retake, only when the face check actually failed. The punch is
+                already saved either way — this only clears the flag on it. */}
+            <div className="mb-4">
+              <FaceRetakePrompt result={result} employeeId={user?.employee_id}
+                side={result?.punch_out_time ? "out" : "in"}
+                onDone={fetchData} />
+            </div>
 
             <div className="grid grid-cols-2 gap-3">
               <button

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { punchWithRetry } from "../../utils/punch";
 import { LogIn, LogOut, MapPin, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
 import { CameraCapture } from "../attendance/CameraCapture";
+import { FaceRetakePrompt } from "../attendance/FaceRetakePrompt";
 
 /**
  * Compact one-click punch widget for the personal dashboard.
@@ -151,6 +152,10 @@ export function QuickPunchCard({ user, todayStatus, onPunched }) {
           <span>{result.message || (result.success ? "Punched successfully" : "Failed")}</span>
         </div>
       )}
+
+      <FaceRetakePrompt result={result} employeeId={user?.employee_id}
+        side={result?.punch_out_time ? "out" : "in"}
+        onDone={() => onPunched && onPunched()} />
 
       {showCamera && <CameraCapture onCapture={handleCapture} onClose={() => setShowCamera(false)} />}
     </div>

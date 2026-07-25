@@ -3,7 +3,8 @@ from pydantic import BaseModel
 from typing import Optional
 from database import db
 from auth_utils import get_current_user
-from services.face_match import compare_face_with_reference, DEFAULT_TOLERANCE
+from services.face_match import (compare_face_with_reference, compare_with_encoding,
+                                 encode_reference, DEFAULT_TOLERANCE, MODEL_VERSION)
 from services.shift_rules import (
     compute_punch_in_status_with_shift,
     compute_status_after_punch_out_with_shift,
@@ -237,9 +238,14 @@ async def purge_old_face_mismatch_photos() -> dict:
             "$or": [
                 {"punch_in_photo": {"$nin": [None, ""]}},
                 {"punch_out_photo": {"$nin": [None, ""]}},
+                {"punch_in_photo_original": {"$nin": [None, ""]}},
+                {"punch_out_photo_original": {"$nin": [None, ""]}},
             ],
         },
-        {"$unset": {"punch_in_photo": "", "punch_out_photo": ""}},
+        # `_original` holds the first attempt when an employee retook the photo.
+        # It ages out on the same 45-day clock as any other mismatch selfie.
+        {"$unset": {"punch_in_photo": "", "punch_out_photo": "",
+                    "punch_in_photo_original": "", "punch_out_photo_original": ""}},
     )
 
     # Per-session photos inside the sessions[] array
@@ -265,6 +271,75 @@ async def purge_old_face_mismatch_photos() -> dict:
     }
 
 
+# ──────────────────────────────────────────────────────────────
+#  Cached reference embeddings
+# ──────────────────────────────────────────────────────────────
+async def _reference_encoding(employee_id: str):
+    """Return (raw_reference_b64_or_None, cached_encoding_or_None).
+
+    The passport photo does not change between punches, but the original flow
+    re-read and re-embedded it on every single punch -- and it is the larger of
+    the two images, so it was the more expensive half of the comparison. Worse,
+    the read had no projection, so it dragged the employee's entire document
+    wallet (Aadhaar, PAN, cheque, certificates -- all base64 inline) across the
+    wire to reach one field.
+
+    The cache is keyed on the photo's own `uploaded_at`, so the common path reads
+    a single timestamp and nothing else. Re-uploading the photo changes that
+    timestamp and the embedding is recomputed on the next punch -- no stale
+    encoding can survive a photo change.
+    """
+    cached = await db.face_ref_cache.find_one({"employee_id": employee_id}, {"_id": 0}) or {}
+    meta = await db.employee_documents.find_one(
+        {"employee_id": employee_id},
+        {"_id": 0, "passport_photo.uploaded_at": 1},
+    ) or {}
+    pp = meta.get("passport_photo")
+    # Legacy records store the photo as a bare base64 string rather than a dict,
+    # in which case there is no timestamp to key on.
+    uploaded_at = pp.get("uploaded_at") if isinstance(pp, dict) else None
+
+    # `uploaded_at` must be truthy to trust the cache. Without that check a
+    # DELETED photo (uploaded_at gone -> None) would match a cache row that also
+    # had None, and the punch would verify against a photo that no longer exists.
+    if (uploaded_at
+            and cached.get("encoding")
+            and cached.get("model") == MODEL_VERSION
+            and cached.get("photo_uploaded_at") == uploaded_at):
+        return None, cached["encoding"]          # hit: the photo is never fetched
+
+    # Miss. Fetch the photo itself -- still projected, so only this one field.
+    doc = await db.employee_documents.find_one(
+        {"employee_id": employee_id}, {"_id": 0, "passport_photo": 1}) or {}
+    passport = doc.get("passport_photo")
+    reference = passport.get("data") if isinstance(passport, dict) else passport
+    if not reference:
+        return None, None
+
+    try:
+        loop = asyncio.get_running_loop()
+        enc = await asyncio.wait_for(
+            loop.run_in_executor(_FACE_EXECUTOR, encode_reference, reference), timeout=25.0)
+    except Exception as exc:
+        # Never fail a punch because the cache could not be built -- fall back to
+        # the uncached path, which decodes the reference inline as before.
+        logger.warning("[face_match] reference encode failed for %s: %s", employee_id, exc)
+        return reference, None
+
+    if enc:
+        await db.face_ref_cache.update_one(
+            {"employee_id": employee_id},
+            {"$set": {"employee_id": employee_id, "encoding": enc,
+                      "photo_uploaded_at": uploaded_at, "model": MODEL_VERSION,
+                      "computed_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+        return None, enc
+    # No face in the passport photo. Return it raw so the existing code path
+    # produces the same "no face in reference" message it always did.
+    return reference, None
+
+
 async def _verify_face(employee_id: str, selfie_b64: Optional[str]) -> dict:
     """Compare selfie against the employee's passport_photo.
 
@@ -281,13 +356,10 @@ async def _verify_face(employee_id: str, selfie_b64: Optional[str]) -> dict:
     }
     """
     strict = await _is_face_match_strict()
-    docs = await db.employee_documents.find_one({"employee_id": employee_id}) or {}
-    passport = docs.get("passport_photo")
-    # passport is stored as {"data": <base64>, "mime": ..., ...}
-    reference = passport.get("data") if isinstance(passport, dict) else passport
+    reference, ref_encoding = await _reference_encoding(employee_id)
 
     # Per requirement: block punch if no passport_photo on file.
-    if not reference:
+    if not (reference or ref_encoding):
         return {
             "ok": False,
             "matched": None,
@@ -307,14 +379,14 @@ async def _verify_face(employee_id: str, selfie_b64: Optional[str]) -> dict:
     # Run blocking dlib call in thread pool — keeps event loop free for other requests
     try:
         loop = asyncio.get_running_loop()
+        # With a cached embedding only the selfie is decoded and embedded; the
+        # reference half of the work has already been done.
+        if ref_encoding:
+            fn, ref_arg = compare_with_encoding, ref_encoding
+        else:
+            fn, ref_arg = compare_face_with_reference, reference
         matched, distance, reason = await asyncio.wait_for(
-            loop.run_in_executor(
-                _FACE_EXECUTOR,
-                compare_face_with_reference,
-                selfie_b64,
-                reference,
-                DEFAULT_TOLERANCE,
-            ),
+            loop.run_in_executor(_FACE_EXECUTOR, fn, selfie_b64, ref_arg, DEFAULT_TOLERANCE),
             timeout=25.0,
         )
     except asyncio.TimeoutError:
@@ -683,6 +755,118 @@ async def punch_out(data: PunchRequest, current_user: dict = Depends(get_current
         "face_matched": face_result.get("matched"),
         "face_distance": face_result.get("distance"),
         "face_warning": face_result.get("reason") if face_result.get("matched") == False else None,
+    }
+
+
+# ──────────────────────────────────────────────────────────────
+#  One-shot photo retake
+# ──────────────────────────────────────────────────────────────
+# Fails a face check -> asked to retake once, right then -> if it still fails,
+# the punch stands and is flagged for HR. No time window: the retake is offered
+# only in the moment (the prompt lives in transient page state, gone on refresh
+# or navigation), and it can only ever touch TODAY's record, so "immediate, one
+# retry, then flag" needs no minute-counter on top.
+class RetakeRequest(BaseModel):
+    employee_id: str
+    side: str                       # "in" | "out"
+    photo_base64: str
+
+
+@router.post("/retake-photo")
+async def retake_photo(data: RetakeRequest, current_user: dict = Depends(get_current_user)):
+    """Re-run the face check on a punch that failed it, using a fresh selfie.
+
+    The punch itself is never re-created, moved or undone -- only the face-check
+    result attached to it changes. Times, hours and status are untouched.
+
+    Deliberately narrow:
+
+    * **Only a punch whose check actually failed.** A successful check cannot be
+      replaced, or a good photo could be swapped for a different one.
+    * **Once.** A second attempt is refused, so this is a retry, not an unlimited
+      do-over.
+    * **Today's record only** (the lookup is keyed on today's date).
+    * **Your own record**, unless HR Admin.
+
+    The first photo is kept in `punch_{side}_photo_original` and ages out on the
+    same 45-day clock. If the original failure was a genuine mismatch, that image
+    is the evidence -- discarding it on a successful retake would erase exactly
+    the case worth looking at.
+    """
+    side = (data.side or "").lower()
+    if side not in ("in", "out"):
+        raise HTTPException(status_code=400, detail="side must be 'in' or 'out'")
+
+    me = current_user.get("employee_id")
+    is_admin = current_user.get("role") in ("hr_admin", "management")
+    if data.employee_id != me and not is_admin:
+        raise HTTPException(status_code=403, detail="You can only retake your own photo")
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    record = await db.attendance_records.find_one(
+        {"employee_id": data.employee_id, "date": today})
+    if not record:
+        raise HTTPException(status_code=400, detail="No attendance record for today")
+
+    if record.get(f"punch_{side}_face_matched") is not False:
+        raise HTTPException(
+            status_code=400,
+            detail="Nothing to retake — this punch's face check did not fail.")
+    if record.get(f"punch_{side}_face_retaken"):
+        raise HTTPException(
+            status_code=400,
+            detail="You have already retaken this photo once. Contact HR if it is still wrong.")
+
+    face_result = await _verify_face(data.employee_id, data.photo_base64)
+    if not face_result["ok"]:
+        # Same contract as the punch endpoints: a hard failure is reported and
+        # nothing is written, so the record keeps its original flag.
+        raise HTTPException(status_code=400, detail=face_result["reason"])
+
+    matched = face_result.get("matched")
+    now = datetime.now(timezone.utc).isoformat()
+    # Keep the new photo only if it ALSO failed, mirroring punch_in/punch_out --
+    # a verified selfie has no audit value and storing it would be gratuitous.
+    keep_photo = data.photo_base64 if matched is False else None
+
+    changes = {
+        f"punch_{side}_face_matched": matched,
+        f"punch_{side}_face_distance": face_result.get("distance"),
+        f"punch_{side}_face_warning": face_result.get("reason") if matched is False else None,
+        f"punch_{side}_photo": keep_photo,
+        f"punch_{side}_face_retaken": True,
+        f"punch_{side}_face_retaken_at": now,
+    }
+    if record.get(f"punch_{side}_photo") and not record.get(f"punch_{side}_photo_original"):
+        changes[f"punch_{side}_photo_original"] = record.get(f"punch_{side}_photo")
+
+    # Mirror onto the session the punch belongs to, so the per-session history
+    # agrees with the top-level fields instead of quietly contradicting them.
+    sessions = list(record.get("sessions") or [])
+    idx = None
+    for i in range(len(sessions) - 1, -1, -1):
+        if sessions[i].get(f"punch_{side}_time"):
+            idx = i
+            break
+    if idx is not None:
+        sessions[idx][f"punch_{side}_face_matched"] = matched
+        sessions[idx][f"punch_{side}_face_distance"] = face_result.get("distance")
+        sessions[idx][f"punch_{side}_face_warning"] = changes[f"punch_{side}_face_warning"]
+        sessions[idx][f"punch_{side}_photo"] = keep_photo
+        sessions[idx][f"punch_{side}_face_retaken"] = True
+        changes["sessions"] = sessions
+
+    await db.attendance_records.update_one({"_id": record["_id"]}, {"$set": changes})
+
+    return {
+        "success": True,
+        "side": side,
+        "face_matched": matched,
+        "face_distance": face_result.get("distance"),
+        "face_warning": changes[f"punch_{side}_face_warning"],
+        "message": ("Face verified — the flag on this punch has been cleared."
+                    if matched else
+                    "Still could not verify that photo. The punch stands and HR will review it."),
     }
 
 
