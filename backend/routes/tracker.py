@@ -441,6 +441,58 @@ async def get_my_tracker_config(current_user: dict = Depends(get_current_user)):
         "active": tracker.get("active", True),
         "should_track": _has_open_session(att),
     }
+@router.get("/my-enforcement")
+async def my_location_enforcement(current_user: dict = Depends(get_current_user)):
+    """Must this employee have "Allow all the time" location switched on?
+
+    Read by the app's PlatformGate to decide whether to hold someone on the
+    "Location access required" screen. Two properties are the whole point of
+    this endpoint existing separately, and must survive later edits:
+
+    1. READ-ONLY. It creates nothing. /my-config lazily provisions a tracker
+       row with active=True, so a gate built on that would answer "yes, block"
+       for whoever merely opened the app — the exact opposite of an opt-in.
+    2. OPT-IN. False unless HR has explicitly marked this person as field
+       staff. A missing flag, a missing employee record and an admin account
+       with no employee linked all come out False, i.e. nobody is blocked.
+    """
+    emp_id = current_user.get("employee_id")
+    if not emp_id:
+        return {"field_staff": False}
+    emp = await db.employees.find_one(
+        {"employee_id": emp_id}, {"_id": 0, "field_staff": 1})
+    return {"field_staff": bool(emp and emp.get("field_staff"))}
+
+
+@router.post("/field-staff/toggle/{employee_id}")
+async def toggle_field_staff(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Mark/unmark an employee as field staff.
+
+    This is the ONLY thing that switches location enforcement on for someone,
+    so it records who flipped it and when — a locked-out employee's first
+    question is "who decided this?".
+    """
+    if current_user.get("role") not in ("hr_admin", "management"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    # employee_id is in the projection so an existing employee with no
+    # field_staff field yet comes back as {} rather than None — see the same
+    # note on the odometer toggle below.
+    emp = await db.employees.find_one(
+        {"employee_id": employee_id},
+        {"_id": 0, "employee_id": 1, "field_staff": 1},
+    )
+    if emp is None:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    new_state = not bool(emp.get("field_staff"))
+    await db.employees.update_one(
+        {"employee_id": employee_id},
+        {"$set": {
+            "field_staff": new_state,
+            "field_staff_at": datetime.now(timezone.utc).isoformat(),
+            "field_staff_by": current_user.get("employee_id") or current_user.get("username"),
+        }},
+    )
+    return {"employee_id": employee_id, "field_staff": new_state}
 @router.post("/toggle/{employee_id}")
 async def toggle_active(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Enable or disable a tracker device without rotating the secret."""
@@ -721,18 +773,24 @@ async def my_odometer_status(current_user: dict = Depends(get_current_user)):
     }
 @router.get("/odometer/employees")
 async def odometer_employees(current_user: dict = Depends(get_current_user)):
-    """Admin list of employees with their odometer-tracking flag (for Settings)."""
+    """Admin list of employees with their per-person field flags (for Settings).
+
+    The path says "odometer" for historical reasons — it now backs the whole
+    Field Staff settings tab, odometer flag and field_staff flag together.
+    """
     if current_user.get("role") not in ("hr_admin", "management"):
         raise HTTPException(status_code=403, detail="Access denied")
     emps = await db.employees.find(
         {"status": {"$ne": "exited"}},
-        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "designation": 1, "odometer_required": 1},
+        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "designation": 1,
+         "odometer_required": 1, "field_staff": 1},
     ).sort("employee_id", 1).to_list(4000)
     return [{
         "employee_id": e["employee_id"],
         "name": f"{e.get('first_name','')} {e.get('last_name','')}".strip() or e["employee_id"],
         "designation": e.get("designation", ""),
         "odometer_required": bool(e.get("odometer_required")),
+        "field_staff": bool(e.get("field_staff")),
     } for e in emps]
 @router.post("/odometer/toggle/{employee_id}")
 async def toggle_odometer(employee_id: str, current_user: dict = Depends(get_current_user)):

@@ -116,6 +116,22 @@ export default function FieldTracking() {
       setOdoList(list => list.map(x => x.employee_id === id ? { ...x, odometer_required: res.data.odometer_required } : x));
     } catch (e) { console.error(e); }
   };
+  // Switching this ON locks the employee out of the Android app until they set
+  // location to "Allow all the time", so it asks first — every other toggle on
+  // this page is harmless and reversible from the employee's side; this one
+  // isn't. Switching OFF is the undo and needs no confirmation.
+  const toggleFieldStaff = async (e) => {
+    if (!e.field_staff && !window.confirm(
+      `Mark ${e.name} (${e.employee_id}) as field staff?\n\n` +
+      `On the Android app they will not be able to use Radhya HR — including punching in — ` +
+      `until they set location access to "Allow all the time".\n\n` +
+      `Nothing changes for them on desktop or iPhone.`
+    )) return;
+    try {
+      const res = await API.post(`/tracker/field-staff/toggle/${e.employee_id}`);
+      setOdoList(list => list.map(x => x.employee_id === e.employee_id ? { ...x, field_staff: res.data.field_staff } : x));
+    } catch (err) { console.error(err); }
+  };
   const exportDistance = async () => {
     const d = new Date(distDate + "T00:00:00");
     const pad = (n) => String(n).padStart(2, "0");
@@ -244,7 +260,7 @@ export default function FieldTracking() {
             ["live", `Active Today (${activeStaff.length})`],
             ["devices", `Tracker Devices (${devices.length})`],
             ["distance", "Distance"],
-            ["odometer", "Odometer"],
+            ["odometer", "Field staff"],
             ...(canViewOdoPhotos ? [["adoption", "App adoption"]] : []),
             ["history", "History"],
           ].map(([val, label]) => (
@@ -309,27 +325,35 @@ export default function FieldTracking() {
           </div>
         </div>
       )}
-      {/* TAB: Odometer management */}
+      {/* TAB: Field staff — the per-person opt-in flags */}
       {!selected && !histSelected && tab === "odometer" && (
         <div className="space-y-4">
           <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
             <div className="relative">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
               <input value={odoSearch} onChange={e => setOdoSearch(e.target.value)}
-                placeholder="Search employees to enable odometer tracking..."
+                placeholder="Search employees..."
                 className="w-full border border-slate-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="odo-search" />
             </div>
-            <p className="text-xs text-slate-400 mt-2">Enabled staff must photograph their odometer at start &amp; end of day. Missing readings are flagged here and to the employee.</p>
+            <p className="text-xs text-slate-400 mt-2">
+              <strong className="text-slate-500">Field staff</strong> — switch on only for people who work in the field.
+              On the Android app they must set location to &quot;Allow all the time&quot; before they can use Radhya HR at all;
+              until they do, they see a screen explaining how. Everyone left off is untouched, and desktop and iPhone are never affected.
+            </p>
+            <p className="text-xs text-slate-400 mt-1">
+              <strong className="text-slate-500">Odometer</strong> — enabled staff must photograph their odometer at start &amp; end of day.
+              Missing readings are flagged here and to the employee.
+            </p>
           </div>
           <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead><tr className="bg-slate-50 border-b">
-                  {["Employee", "Designation", "Odometer tracking"].map(h =>
+                  {["Employee", "Designation", "Field staff", "Odometer tracking"].map(h =>
                     <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>)}
                 </tr></thead>
                 <tbody>
-                  {odoLoading ? <tr><td colSpan={3} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                  {odoLoading ? <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
                   : odoList.filter(e => {
                       if (!odoSearch) return true;
                       const q = odoSearch.toLowerCase();
@@ -338,6 +362,13 @@ export default function FieldTracking() {
                     <tr key={e.employee_id} className="border-b border-slate-100 hover:bg-slate-50">
                       <td className="px-4 py-3"><p className="text-sm font-medium text-[#0F172A]">{e.name}</p><p className="text-xs text-[#E85B1E] font-mono">{e.employee_id}</p></td>
                       <td className="px-4 py-3 text-sm text-slate-600">{e.designation || "-"}</td>
+                      <td className="px-4 py-3">
+                        <button onClick={() => toggleFieldStaff(e)} data-testid={`field-staff-toggle-${e.employee_id}`}
+                          className={`relative w-11 h-6 rounded-full transition-colors ${e.field_staff ? "bg-[#E85B1E]" : "bg-slate-300"}`}>
+                          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${e.field_staff ? "translate-x-5" : ""}`} />
+                        </button>
+                        {e.field_staff && <span className="block text-[11px] text-slate-400 mt-1">location required</span>}
+                      </td>
                       <td className="px-4 py-3">
                         <button onClick={() => toggleOdo(e.employee_id)} data-testid={`odo-toggle-${e.employee_id}`}
                           className={`relative w-11 h-6 rounded-full transition-colors ${e.odometer_required ? "bg-[#12855a]" : "bg-slate-300"}`}>
