@@ -50,6 +50,10 @@ export default function Settings() {
   const [savingCompany, setSavingCompany] = useState(false);
   const [faceMatchStrict, setFaceMatchStrict] = useState(false);
   const [savingFaceMatch, setSavingFaceMatch] = useState(false);
+  const [appPolicy, setAppPolicy] = useState({ min_version: "1.4.0", enforce: false });
+  const [appPolicySaved, setAppPolicySaved] = useState({ min_version: "1.4.0", enforce: false });
+  const [savingAppPolicy, setSavingAppPolicy] = useState(false);
+  const [adoption, setAdoption] = useState(null);
   const [pwForm, setPwForm] = useState({ current_password: "", new_password: "", confirm_password: "" });
   const [pwMsg, setPwMsg] = useState(null);
   const [savingPw, setSavingPw] = useState(false);
@@ -57,11 +61,15 @@ export default function Settings() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [locRes, userRes, compRes, faceRes] = await Promise.all([
+      const [locRes, userRes, compRes, faceRes, appRes, adoptRes] = await Promise.all([
         API.get("/locations"),
         API.get("/auth/users"),
         API.get("/settings/company"),
         API.get("/settings/face-match"),
+        API.get("/settings/app-version"),
+        // Powers the "who would this lock out" preview. Non-fatal: without it
+        // the tab still works, it just can't show the impact.
+        API.get("/tracker/adoption").catch(() => null),
       ]);
       setLocations(locRes.data);
       setUsers(userRes.data);
@@ -69,6 +77,13 @@ export default function Settings() {
       setCompany(c);
       setCompanyOriginal(c);
       setFaceMatchStrict(!!faceRes.data?.strict);
+      const pol = {
+        min_version: appRes.data?.min_version || "1.4.0",
+        enforce: !!appRes.data?.enforce,
+      };
+      setAppPolicy(pol);
+      setAppPolicySaved(pol);
+      setAdoption(adoptRes?.data || null);
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
   };
@@ -130,6 +145,60 @@ export default function Settings() {
     finally { setSavingFaceMatch(false); }
   };
 
+  // ── Mobile app version policy ───────────────────────────────────────────────
+  // Same comparison the gate uses: part by part, numerically, so 1.10.0 > 1.4.0.
+  const cmpVersion = (a, b) => {
+    const pa = String(a).split("."), pb = String(b).split(".");
+    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+      const x = parseInt(pa[i], 10) || 0, y = parseInt(pb[i], 10) || 0;
+      if (x !== y) return x < y ? -1 : 1;
+    }
+    return 0;
+  };
+  const validVersion = (v) => /^\d+(\.\d+){0,3}$/.test(String(v || "").trim());
+  // Who is currently in the APK on a build below the proposed minimum. Anyone
+  // with no reported version is counted: only pre-1.4.0 builds report nothing.
+  const affectedByPolicy = (() => {
+    if (!adoption || !Array.isArray(adoption.rows) || !validVersion(appPolicy.min_version)) return null;
+    return adoption.rows.filter(
+      (r) => r.status === "app" && (!r.version || cmpVersion(r.version, appPolicy.min_version) < 0)
+    );
+  })();
+  const policyDirty = appPolicy.min_version !== appPolicySaved.min_version
+    || appPolicy.enforce !== appPolicySaved.enforce;
+
+  const saveAppPolicy = async () => {
+    if (!validVersion(appPolicy.min_version)) {
+      alert("Minimum version must look like 1.4.0 (numbers and dots only)");
+      return;
+    }
+    // Only the ON direction can strand anyone, so only that one asks.
+    if (appPolicy.enforce && !appPolicySaved.enforce) {
+      const n = affectedByPolicy ? affectedByPolicy.length : null;
+      const who = n === null
+        ? "I couldn't read the adoption list, so I can't tell you how many people this affects."
+        : n === 0
+          ? "Nobody is currently on an older build, so this should affect no one."
+          : `${n} ${n === 1 ? "person is" : "people are"} currently on an older build and will be locked out of the Android app until they update.`;
+      if (!window.confirm(
+        `Block Android apps older than ${appPolicy.min_version}?\n\n${who}\n\n` +
+        `They will not be able to use Radhya HR — including punching in — until they install the new app. ` +
+        `HR and management are never blocked.\n\nYou can switch this back off at any time.`
+      )) return;
+    }
+    setSavingAppPolicy(true);
+    try {
+      const res = await API.put("/settings/app-version", {
+        min_version: String(appPolicy.min_version).trim(),
+        enforce: !!appPolicy.enforce,
+      });
+      const pol = { min_version: res.data?.min_version, enforce: !!res.data?.enforce };
+      setAppPolicy(pol);
+      setAppPolicySaved(pol);
+    } catch (err) { alert(err.response?.data?.detail || "Failed to save"); }
+    finally { setSavingAppPolicy(false); }
+  };
+
   const [creditResult, setCreditResult] = useState(null);
   const [crediting, setCrediting] = useState(false);
   const [elCreditResult, setElCreditResult] = useState(null);
@@ -174,7 +243,7 @@ export default function Settings() {
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 border-b border-slate-200">
-        {[["locations", "Office Locations"], ["company", "Company / Bank"], ["attendance", "Attendance"], ["shifts", "Shifts"], ["leaves", "Leave Management"], ["holidays", "Holidays & Comp-Off"], ["users", "User Management"], ["security", "Security"]].map(([val, label]) => (
+        {[["locations", "Office Locations"], ["company", "Company / Bank"], ["attendance", "Attendance"], ["mobile", "Mobile App"], ["shifts", "Shifts"], ["leaves", "Leave Management"], ["holidays", "Holidays & Comp-Off"], ["users", "User Management"], ["security", "Security"]].map(([val, label]) => (
           <button key={val} onClick={() => setActiveTab(val)} data-testid={`settings-tab-${val}`}
             className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${activeTab === val ? "border-[#E85B1E] text-[#E85B1E]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             {label}
@@ -344,6 +413,90 @@ export default function Settings() {
           <p className="text-xs text-slate-500">
             Match threshold: <strong>0.40</strong> (balanced). Powered by face_recognition (dlib).
           </p>
+        </div>
+      )}
+
+      {activeTab === "mobile" && (
+        <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-6 space-y-5 max-w-3xl" data-testid="mobile-app-settings">
+          <div>
+            <h3 className="font-bold text-[#1E2A47] text-lg" style={{ fontFamily: "'Outfit', sans-serif" }}>Android App Version</h3>
+            <p className="text-slate-500 text-sm">
+              Retire old builds of the Radhya HR Android app. Staff below the minimum are asked to update;
+              turn on enforcement to stop them using the app until they do.
+            </p>
+          </div>
+
+          <div className="border border-slate-200 rounded-lg p-4 space-y-4">
+            <div className="flex flex-wrap items-end gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Minimum version</label>
+                <input value={appPolicy.min_version} data-testid="min-app-version"
+                  onChange={e => setAppPolicy(p => ({ ...p, min_version: e.target.value }))}
+                  placeholder="1.4.0"
+                  className={`w-40 border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-[#E85B1E] ${validVersion(appPolicy.min_version) ? "border-slate-300" : "border-red-400 bg-red-50"}`} />
+                {!validVersion(appPolicy.min_version) && (
+                  <p className="text-xs text-red-600 mt-1">Numbers and dots only, e.g. 1.4.0</p>
+                )}
+              </div>
+              <div className="flex-1 min-w-[240px]">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-semibold text-[#0F172A]">Block older versions</p>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {appPolicy.enforce
+                        ? "ON — older apps show a full-screen update notice and cannot be used."
+                        : "OFF — older apps show a dismissible reminder and keep working."}
+                    </p>
+                  </div>
+                  <button onClick={() => setAppPolicy(p => ({ ...p, enforce: !p.enforce }))}
+                    data-testid="toggle-enforce-app-version"
+                    className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors ${appPolicy.enforce ? "bg-[#E85B1E]" : "bg-slate-300"}`}>
+                    <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${appPolicy.enforce ? "translate-x-6" : "translate-x-1"}`} />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Who this would affect — the number that should decide whether to enforce. */}
+            {affectedByPolicy === null ? (
+              <p className="text-xs text-slate-400">Couldn't read app adoption data, so the impact below is unavailable.</p>
+            ) : affectedByPolicy.length === 0 ? (
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-800" data-testid="policy-impact">
+                Nobody is currently on an older build. Enforcing now should affect no one.
+              </div>
+            ) : (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3" data-testid="policy-impact">
+                <p className="text-sm text-amber-900">
+                  <strong>{affectedByPolicy.length}</strong> {affectedByPolicy.length === 1 ? "person is" : "people are"} on
+                  an app older than {appPolicy.min_version}
+                  {appPolicy.enforce ? " and would be locked out until they update." : " and will see the reminder."}
+                </p>
+                <p className="text-xs text-amber-800 mt-1.5">
+                  {affectedByPolicy.slice(0, 8).map(r => `${r.name} (${r.version || "no version"})`).join(", ")}
+                  {affectedByPolicy.length > 8 ? ` and ${affectedByPolicy.length - 8} more` : ""}
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-3">
+            <button onClick={saveAppPolicy} disabled={savingAppPolicy || !policyDirty || !validVersion(appPolicy.min_version)}
+              data-testid="save-app-policy"
+              className="px-6 py-2.5 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold disabled:opacity-50">
+              {savingAppPolicy ? "Saving..." : "Save"}
+            </button>
+            {policyDirty && (
+              <button onClick={() => setAppPolicy(appPolicySaved)}
+                className="px-4 py-2.5 border-2 border-slate-300 text-slate-600 rounded-lg text-sm font-medium">Reset</button>
+            )}
+          </div>
+
+          <div className="text-xs text-slate-500 space-y-1.5 border-t border-slate-100 pt-4">
+            <p><strong className="text-slate-600">HR and management are never blocked</strong> — only reminded — so you always keep a way in to switch this back off.</p>
+            <p>Only the Android app is affected. Desktop and iPhone are never blocked by this setting.</p>
+            <p>Apps before v1.4.0 don't report a version at all, so they count as older than any minimum you set.</p>
+            <p>Changes reach staff the next time they open the app. There is nothing for them to reinstall — but there IS if they need the newer APK, so make sure they can get it before enforcing.</p>
+          </div>
         </div>
       )}
 
