@@ -653,39 +653,66 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
     emp_ids_all = [r.get("employee_id") for r in all_records if r.get("employee_id")]
     emp_docs = await db.employees.find(
         {"employee_id": {"$in": emp_ids_all}},
-        {"employee_id": 1, "bank_details": 1, "_id": 0}
+        {"employee_id": 1, "bank_details": 1, "first_name": 1, "last_name": 1, "_id": 0}
     ).to_list(None)
+    # `or {}` and not .get("bank_details", {}): a document with the key present
+    # and set to null returns None from the default form, and the AttributeError
+    # is raised outside the try below — one such employee 500s the export and
+    # NOBODY gets paid that month.
     bank_verified_ids = {
         e["employee_id"] for e in emp_docs
-        if e.get("bank_details", {}).get("verified") is True
+        if (e.get("bank_details") or {}).get("verified") is True
     }
-    # Live account/IFSC, keyed by employee.
+    # Live account/IFSC/name, keyed by employee.
     #
     # The payroll record froze a COPY of the bank details when the month was
     # processed, but "is this account verified?" is read live from the employee
     # master. Those two disagree whenever HR fills in or corrects bank details
     # after processing: the employee is verified, so they pass the filter, while
     # the frozen copy is still empty — and the row reached the bank with no
-    # account number at all. Read live and keep the snapshot only as a fallback.
+    # account number at all.
+    #
+    # THE EMPLOYEE MASTER IS THE ONLY SOURCE OF PAYMENT INSTRUCTIONS. The frozen
+    # copy is history, not an instruction, and is deliberately NOT used as a
+    # fallback. Two reasons, both of which put money in the wrong account:
+    #
+    #   - Falling back FIELD BY FIELD splices a pair that never existed. A live
+    #     account number with last month's ICICI IFSC becomes an intra-ICICI
+    #     transfer with the IFSC cell blanked, so there is no routing data left
+    #     to catch the mistake.
+    #   - Clearing the account number on the master is how HR retracts a wrong
+    #     account. Reviving the frozen copy pays the very account they removed.
+    #
+    # An incomplete master pair is therefore an exclusion, reported by name.
     live_bank = {}
+    live_name = {}
     for e in emp_docs:
         bd = e.get("bank_details") or {}
         live_bank[e["employee_id"]] = (
-            (bd.get("account_number") or "").strip(),
-            (bd.get("ifsc_code") or "").strip().upper(),
+            "".join(str(bd.get("account_number") or "").split()),
+            str(bd.get("ifsc_code") or "").strip().upper(),
         )
+        live_name[e["employee_id"]] = " ".join(
+            f"{e.get('first_name') or ''} {e.get('last_name') or ''}".split())
 
     def _eid(r):
         return (r.get("employee_id") or "").strip()
 
     def _bank(r):
-        """(account, ifsc) — live where known, else whatever was frozen."""
-        acct, ifsc = live_bank.get(_eid(r), ("", ""))
-        if not acct:
-            acct = (r.get("bank_account") or "").strip()
-        if not ifsc:
-            ifsc = (r.get("ifsc_code") or "").strip().upper()
-        return acct, ifsc
+        """(account, ifsc) from the employee master, as a pair or not at all."""
+        return live_bank.get(_eid(r), ("", ""))
+
+    def _payee_name(r):
+        """Live name, so the payee cannot belong to an older state than the account."""
+        return live_name.get(_eid(r)) or r.get("employee_name", "")
+
+    def clean_name(name: str) -> str:
+        if not name:
+            return ""
+        # Allow letters and spaces only, uppercase, max 32 chars
+        cleaned = "".join(ch for ch in name.upper() if ch.isalpha() or ch == " ")
+        cleaned = " ".join(cleaned.split())
+        return cleaned[:32]
 
     held_records = [r for r in all_records if r.get("on_hold")]
     rest = [r for r in all_records if not r.get("on_hold")]
@@ -700,8 +727,35 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
     # a fourth exclusion rather than a blank cell the bank has to reject. IFSC is
     # required too: it is what identifies an ICICI account, and ICICI rows are the
     # ones where the IFSC cell is deliberately left empty further down.
-    incomplete_records = [r for r in verified_records if not all(_bank(r))]
-    records = [r for r in verified_records if all(_bank(r))]
+    # A blank beneficiary NAME is the same failure as a blank account: the bank
+    # rejects the row, and it used to be written out silently. Checked with the
+    # same cleaner the sheet uses, so what is validated is what gets sent.
+    def _payable(r):
+        return all(_bank(r)) and bool(clean_name(_payee_name(r)))
+
+    incomplete_records = [r for r in verified_records if not _payable(r)]
+    records = [r for r in verified_records if _payable(r)]
+
+    # INCLUDED, but flagged: verified with no account-holder name from the bank.
+    # A verification used to be recorded from a Perfios response that contained
+    # no verification data at all, and those look exactly like this — verified
+    # true, name blank. They are paid, not withheld, because a blank name can
+    # also be a legitimate bank response; but they are worth re-verifying before
+    # the money moves.
+    unnamed_ids = {
+        e["employee_id"] for e in emp_docs
+        if (e.get("bank_details") or {}).get("verified") is True
+        and not ((e.get("bank_details") or {}).get("verified_name") or "").strip()
+    }
+    unnamed_records = [r for r in records if _eid(r) in unnamed_ids]
+    # INCLUDED, and flagged for a different reason: a human overrode the bank
+    # check rather than Perfios confirming it. Legitimate — Perfios can refuse to
+    # answer — but it must be visible on the file that moves money.
+    manual_ids = {
+        e["employee_id"] for e in emp_docs
+        if (e.get("bank_details") or {}).get("verified_manually") is True
+    }
+    manual_records = [r for r in records if _eid(r) in manual_ids]
 
     # Reported over every non-held record, INCLUDING drafts, so a record blocked for
     # two reasons reports both at once. Reporting only the reviewed ones would mean
@@ -727,14 +781,6 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
 
     remark_full = f"Salary {period_label}"  # per-employee ID prepended inside the loop
     remark_suffix = remark_full
-
-    def clean_name(name: str) -> str:
-        if not name:
-            return ""
-        # Allow letters and spaces only, uppercase, max 32 chars
-        cleaned = "".join(ch for ch in name.upper() if ch.isalpha() or ch == " ")
-        cleaned = " ".join(cleaned.split())
-        return cleaned[:32]
 
     try:
         import openpyxl
@@ -772,7 +818,7 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
             emp_id = _eid(r)
             net_amount = round(float(r.get("net_salary", 0) or 0), 2)
             beneficiary_acct, ifsc = _bank(r)
-            name = clean_name(r.get("employee_name", ""))
+            name = clean_name(_payee_name(r))
             row_remark = f"{emp_id} {remark_suffix}"   # e.g. "RMF0001 Salary APR26"
             row_remark_client = row_remark[:21]
             row_remark_beneficiary = row_remark[:30]
@@ -813,16 +859,26 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
         filename = f"NEFT_{short_code}_{period}.xlsx"
         held_amount = round(sum(float(r.get("net_salary") or 0) for r in held_records), 2)
 
-        def _ids(rows):
+        def _ids(rows, limit=60):
             # Employee IDs, not just a count — so HR can act on the omission instead of
             # working out who is absent by reading a spreadsheet.
-            return ",".join(sorted(_eid(r) for r in rows if _eid(r)))[:3000]
+            #
+            # Truncated by WHOLE ids, never mid-identifier, and the remainder is
+            # stated rather than silently dropped: a half-written employee id is
+            # worse than an honest "+12 more". The cap also keeps the six id
+            # headers together well inside a proxy's default header buffer —
+            # blow that and the whole download 502s with no diagnosis.
+            ids = sorted(_eid(r) for r in rows if _eid(r))
+            shown, extra = ids[:limit], len(ids) - limit
+            return ",".join(shown) + (f",+{extra} more" if extra > 0 else "")
 
         _exposed = [
             "X-Payroll-Held-Count", "X-Payroll-Held-Amount", "X-Payroll-Held-Ids",
             "X-Payroll-Draft-Count", "X-Payroll-Draft-Ids",
             "X-Payroll-Unverified-Count", "X-Payroll-Unverified-Ids",
             "X-Payroll-Incomplete-Count", "X-Payroll-Incomplete-Ids",
+            "X-Payroll-Unnamed-Count", "X-Payroll-Unnamed-Ids",
+            "X-Payroll-Manual-Count", "X-Payroll-Manual-Ids",
             "X-Payroll-Included-Count",
         ]
         return Response(
@@ -839,6 +895,10 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
                 "X-Payroll-Unverified-Ids": _ids(unverified_records),
                 "X-Payroll-Incomplete-Count": str(len(incomplete_records)),
                 "X-Payroll-Incomplete-Ids": _ids(incomplete_records),
+                "X-Payroll-Unnamed-Count": str(len(unnamed_records)),
+                "X-Payroll-Unnamed-Ids": _ids(unnamed_records),
+                "X-Payroll-Manual-Count": str(len(manual_records)),
+                "X-Payroll-Manual-Ids": _ids(manual_records),
                 "X-Payroll-Included-Count": str(len(records)),
                 # Browsers hide custom headers from JS unless they are exposed.
                 "Access-Control-Expose-Headers": ", ".join(_exposed),

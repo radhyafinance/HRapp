@@ -235,12 +235,35 @@ export default function Payroll() {
           `written into the sheet as blank cells.\n  ${ids("x-payroll-incomplete-ids")}`
         );
       }
-      if (parts.length) {
+      // Included, but worth a second look before the money moves — so it is a
+      // separate warning, not one of the exclusions above.
+      const unnamed = n("x-payroll-unnamed-count");
+      const manual = n("x-payroll-manual-count");
+      const notes = [];
+      if (unnamed > 0) {
+        notes.push(
+          `• ${unnamed} verified WITHOUT the bank returning an account-holder name. ` +
+          `Re-verify these before paying — a verification could previously be recorded ` +
+          `from a reply that contained no verification data at all.\n  ${ids("x-payroll-unnamed-ids")}`
+        );
+      }
+      if (manual > 0) {
+        notes.push(
+          `• ${manual} MANUALLY marked verified by an admin, not confirmed by Perfios.\n  ` +
+          ids("x-payroll-manual-ids")
+        );
+      }
+      const warning = notes.length
+        ? `\n\nINCLUDED BUT WORTH CHECKING:\n\n${notes.join("\n\n")}` : "";
+      if (parts.length || warning) {
         alert(
           `NEFT sheet for ${months[selectedMonth-1]} ${selectedYear}: ` +
-          `${n("x-payroll-included-count")} employee(s) included.\n\n` +
-          `The following were LEFT OUT:\n\n${parts.join("\n\n")}\n\n` +
-          `All of them still appear in the Salary Register for your records.`
+          `${n("x-payroll-included-count")} employee(s) included.` +
+          (parts.length
+            ? `\n\nThe following were LEFT OUT:\n\n${parts.join("\n\n")}\n\n` +
+              `All of them still appear in the Salary Register for your records.`
+            : "") +
+          warning
         );
       }
     } catch (e) {

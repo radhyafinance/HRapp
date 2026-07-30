@@ -59,6 +59,16 @@ export function EmployeeDetailView({ emp: initialEmp }) {
   const displayUanResult = uanResult || (storedUan?.verified != null ? storedUan : null);
 
   async function handleVerifyBank() {
+    // Perfios allows only 3 SUCCESSFUL checks per account per month. Re-verifying
+    // something already verified spends one for nothing, and running out is what
+    // produces the "retry limit" lockout — so the cost is stated before the click
+    // is spent, and only when there is something to lose.
+    if (bank.verified && !window.confirm(
+      `This account is already verified${bank.verified_name ? ` (${bank.verified_name})` : ""}.\n\n` +
+      `Perfios allows only 3 successful checks per account per month, and re-verifying ` +
+      `uses one. Running out locks the account out of verification entirely.\n\n` +
+      `Only re-verify if the account number or IFSC has actually changed. Continue?`
+    )) return;
     setVerifying(true);
     setVerifyMsg(null);
     try {
@@ -86,6 +96,40 @@ export function EmployeeDetailView({ emp: initialEmp }) {
     } catch (e) {
       const msg = e.response?.data?.detail || "Could not reach verification service.";
       setVerifyMsg({ ok: false, text: msg });
+    } finally {
+      setVerifying(false);
+    }
+  }
+
+  async function handleManualVerify() {
+    const reason = window.prompt(
+      `Mark ${emp.first_name || ""} ${emp.last_name || ""}'s bank account as verified WITHOUT Perfios?\n\n` +
+      `Only do this when you have confirmed the account another way — for example on the ` +
+      `Perfios dashboard directly — and Perfios will not check it through the app.\n\n` +
+      `Your name, the time and this reason are recorded, and the account is listed ` +
+      `separately in the NEFT download.\n\nReason (at least 10 characters):`,
+      ""
+    );
+    if (reason === null) return;
+    setVerifying(true);
+    setVerifyMsg(null);
+    try {
+      const res = await API.post(`/employees/${emp.employee_id}/bank-manual-verify`, { reason });
+      const d = res.data;
+      setVerifyMsg({ ok: true, text: `Marked verified manually. Recorded against ${d.manual_verified_by}.` });
+      setEmp(prev => ({
+        ...prev,
+        bank_details: {
+          ...prev.bank_details,
+          verified: true,
+          verified_manually: true,
+          manual_verified_by: d.manual_verified_by,
+          manual_verified_at: d.manual_verified_at,
+          manual_verification_reason: d.reason,
+        },
+      }));
+    } catch (e) {
+      setVerifyMsg({ ok: false, text: e.response?.data?.detail || "Could not mark as verified." });
     } finally {
       setVerifying(false);
     }
@@ -177,6 +221,15 @@ export function EmployeeDetailView({ emp: initialEmp }) {
             </p>
           )}
 
+          {bank.verified && bank.verified_manually && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2 mb-2">
+              Marked verified manually by {bank.manual_verified_by || "an admin"}
+              {bank.manual_verified_at && ` on ${new Date(bank.manual_verified_at).toLocaleDateString("en-IN")}`}
+              {bank.manual_verification_reason && <> — “{bank.manual_verification_reason}”</>}
+              <br />Not confirmed by Perfios. Verify properly when the account can be checked again.
+            </p>
+          )}
+
           <button
             onClick={handleVerifyBank}
             disabled={verifying}
@@ -186,8 +239,26 @@ export function EmployeeDetailView({ emp: initialEmp }) {
             {verifying ? <><Loader size={13} className="animate-spin" /> Verifying...</> : <><ShieldCheck size={13} /> {bank.verified ? "Re-verify Account" : "Verify Account"}</>}
           </button>
 
+          {/* Perfios can refuse to answer for an account that is demonstrably
+              fine — most often its per-account retry limit. Without a way out,
+              the employee simply cannot be paid, so admins get an attributed
+              override rather than no option at all. */}
+          {!bank.verified && (
+            <button
+              onClick={handleManualVerify}
+              disabled={verifying}
+              data-testid="manual-verify-bank-btn"
+              className="mt-2 text-xs font-semibold text-slate-500 underline underline-offset-2 hover:text-[#1E2A47] disabled:opacity-60"
+            >
+              Perfios won't check it? Mark verified manually
+            </button>
+          )}
+
+          {/* whitespace-pre-line below: the failure messages explain the retry
+              limits over several lines, and collapsing them makes an
+              explanation unreadable at exactly the moment it is needed. */}
           {verifyMsg && (
-            <div className={`mt-2 flex items-start gap-2 text-xs p-2.5 rounded-lg ${verifyMsg.ok ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-600 border border-red-200"}`}>
+            <div className={`mt-2 flex items-start gap-2 text-xs p-2.5 rounded-lg whitespace-pre-line ${verifyMsg.ok ? "bg-green-50 text-green-700 border border-green-200" : "bg-red-50 text-red-600 border border-red-200"}`}>
               {verifyMsg.ok ? <ShieldCheck size={13} className="mt-0.5 flex-shrink-0" /> : <ShieldX size={13} className="mt-0.5 flex-shrink-0" />}
               {verifyMsg.text}
             </div>

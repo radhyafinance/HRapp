@@ -4,9 +4,10 @@ from pydantic import BaseModel
 from typing import Optional, List
 from database import db
 from auth_utils import get_current_user, hash_password
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import os
 import httpx
+import json
 
 def get_financial_year() -> int:
     d = datetime.now(timezone.utc)
@@ -435,6 +436,20 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
             bank.pop("verified_at", None)
             bank.pop("name_match_score", None)
             bank.pop("verification_raw", None)
+            # A manual override applies to the account it was granted for. Once
+            # the account number changes it is meaningless, and leaving it would
+            # let a new, unchecked account inherit someone's earlier sign-off.
+            bank.pop("verified_manually", None)
+            bank.pop("manual_verified_by", None)
+            bank.pop("manual_verified_at", None)
+            bank.pop("manual_verification_reason", None)
+            # Perfios meters per ACCOUNT NUMBER, so the attempt tally belongs to
+            # the old account, not to the employee. Carrying it over is how
+            # finding out an account is wrong (five failed checks) then locks
+            # you out of verifying the corrected one — leaving an employee
+            # unverified, out of the NEFT sheet, and unpaid.
+            bank.pop("verification_attempts", None)
+            bank.pop("last_verification_attempt", None)
         update_data["bank_details"] = bank
 
     # UAN: if UAN number changed, clear EPF verification
@@ -771,6 +786,103 @@ async def bulk_upload(file: UploadFile = File(...), current_user: dict = Depends
 PERFIOS_URL = "https://hub.perfios.com/api/kyc/v3/bankacc-verification"
 PERFIOS_EPF_URL = "https://hub.perfios.com/api/kyc/v3/epf-auth"
 
+
+# Perfios rate-limits per ACCOUNT NUMBER, and returns internal status 104 once a
+# threshold is crossed — which looks exactly like a failed verification but is
+# nothing of the kind. Published limits (per account number):
+#
+#   successful (name returned) .... 3  per month
+#   unsuccessful, functional 2xx .. 5 per day / 10 per week / 15 per month
+#   unsuccessful, 5xx ............. 10 total
+#
+# Three successes a MONTH is the one that bites: idly re-verifying an account
+# that is already verified spends a third of its yearly-ish allowance. We keep a
+# local tally and refuse before spending a call we know will come back 104.
+#
+# The tally only sees attempts made through this app — someone checking the same
+# account on the Perfios dashboard is invisible to us — so it is a guard against
+# waste, not a mirror of their counter.
+_LIMIT_SUCCESS_MONTH = 3
+_LIMIT_FAIL_DAY = 5
+_LIMIT_FAIL_WEEK = 10
+_LIMIT_FAIL_MONTH = 15
+_ATTEMPT_LOG_MAX = 40
+
+
+def _count_attempts(attempts: list, outcome: str, days: int) -> int:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    n = 0
+    for a in attempts or []:
+        # Only this module writes the log, but a malformed entry must not 500 a
+        # verification — the fallout is an unverified employee going unpaid.
+        if not isinstance(a, dict):
+            continue
+        if a.get("outcome") != outcome:
+            continue
+        try:
+            when = datetime.fromisoformat(str(a.get("at", "")).replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        if when >= cutoff:
+            n += 1
+    return n
+
+
+def _quota_block_reason(attempts: list) -> Optional[str]:
+    """Why calling Perfios right now would only earn a 104, or None to proceed."""
+    checks = [
+        ("success", _LIMIT_SUCCESS_MONTH, 30,
+         "This account has already been verified {n} times in the last 30 days. "
+         "Perfios allows {lim} successful checks per account per month and will "
+         "refuse another one. The existing verification still stands — you only "
+         "need to re-verify if the account details have actually changed."),
+        ("failure", _LIMIT_FAIL_DAY, 1,
+         "This account has had {n} failed checks in the last 24 hours. Perfios "
+         "allows {lim} per day and will refuse another. Try again tomorrow."),
+        ("failure", _LIMIT_FAIL_WEEK, 7,
+         "This account has had {n} failed checks in the last 7 days. Perfios "
+         "allows {lim} per week and will refuse another."),
+        ("failure", _LIMIT_FAIL_MONTH, 30,
+         "This account has had {n} failed checks in the last 30 days. Perfios "
+         "allows {lim} per month and will refuse another."),
+    ]
+    for outcome, limit, days, msg in checks:
+        n = _count_attempts(attempts, outcome, days)
+        if n >= limit:
+            return msg.format(n=n, lim=limit)
+    return None
+
+
+async def _record_attempt(employee_id: str, attempts: list, entry: dict) -> None:
+    """Append to the per-account attempt log, newest last, capped."""
+    await db.employees.update_one(
+        {"employee_id": employee_id},
+        {"$set": {
+            "bank_details.last_verification_attempt": entry,
+            "bank_details.verification_attempts": ([*(attempts or []), {
+                "at": entry["at"], "outcome": entry["outcome"],
+                "status_code": entry.get("status_code"),
+            }])[-_ATTEMPT_LOG_MAX:],
+        }},
+    )
+
+
+def _sent_summary(payload: dict) -> dict:
+    """The request as sent, with the account number masked to its last 4.
+
+    Echoed back on failure and stored on the employee. When one account verifies
+    and another does not, the answer is almost always a difference in what was
+    sent — a name shape, a stray character — and that is invisible unless it is
+    written down. Masked because this ends up in error text on screen.
+    """
+    out = dict(payload)
+    acct = str(out.get("accountNumber") or "")
+    out["accountNumber"] = ("*" * max(0, len(acct) - 4)) + acct[-4:]
+    out["accountNumberLength"] = len(acct)
+    return out
+
 @router.post("/{employee_id}/verify-bank")
 async def verify_bank_account(employee_id: str, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management"]:
@@ -781,16 +893,44 @@ async def verify_bank_account(employee_id: str, current_user: dict = Depends(get
         raise HTTPException(status_code=404, detail="Employee not found")
 
     bank = emp.get("bank_details") or {}
-    account_number = bank.get("account_number", "").strip()
-    ifsc_code      = bank.get("ifsc_code", "").strip().upper()
-    emp_name       = f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip()
+    # str() rather than assuming: an account number imported from a spreadsheet
+    # can land in Mongo as a number, and .strip() on an int is a 500.
+    # Internal whitespace is removed too — "1234 5678" is one account number to
+    # a human and a malformed one to the API.
+    account_number = "".join(str(bank.get("account_number") or "").split())
+    ifsc_code      = str(bank.get("ifsc_code") or "").strip().upper()
+    emp_name       = " ".join(f"{emp.get('first_name') or ''} {emp.get('last_name') or ''}".split())
 
     if not account_number or not ifsc_code:
         raise HTTPException(status_code=400, detail="Bank account number and IFSC code are required before verifying")
+    # Perfios matches the account against this name, so an empty one is a
+    # guaranteed non-answer. Say that here rather than spending an API call.
+    if not emp_name:
+        raise HTTPException(
+            status_code=400,
+            detail="This employee has no first/last name on record. Perfios matches "
+                   "the bank account against the name, so it cannot be verified until "
+                   "the name is filled in.",
+        )
 
     api_key = os.environ.get("PERFIOS_API_KEY", "")
     if not api_key:
         raise HTTPException(status_code=500, detail="Perfios API key not configured")
+
+    # Whitespace is stripped for the API call, so store the same value back:
+    # otherwise the master keeps a spaced form that was never the thing verified,
+    # and the salary register shows one number while the bank got another.
+    if account_number != str(bank.get("account_number") or ""):
+        await db.employees.update_one(
+            {"employee_id": employee_id},
+            {"$set": {"bank_details.account_number": account_number}},
+        )
+
+    # Refuse before spending a call we already know will come back 104.
+    attempts = bank.get("verification_attempts") or []
+    blocked = _quota_block_reason(attempts)
+    if blocked:
+        raise HTTPException(status_code=429, detail=blocked)
 
     payload = {
         "accountNumber":       account_number,
@@ -849,23 +989,62 @@ async def verify_bank_account(employee_id: str, current_user: dict = Depends(get
     validity = (comp.get("inputVsSource") or {}).get("validity", "")
     name_flag = ((comp.get("inputVsSource") or {}).get("flags") or {}).get("accountHolderName") or {}
 
-    # Most specific signal first. `verified` stays None when the response
-    # carries no verdict we recognise — which is a different thing from a
-    # verdict of "invalid", and is reported as an error below.
+    # A VERDICT REQUIRES VERDICT DATA. Never infer one from statusCode alone.
+    #
+    # Perfios answers an unprocessable check with a status code and an EMPTY
+    # `result`, and reading the status code as the answer went wrong in both
+    # directions at once:
+    #   101 + empty result -> marked VERIFIED with no evidence at all
+    #   104 + empty result -> marked a perfectly good account INVALID
+    # Only source.isValid or comparisionData.validity actually state a verdict;
+    # `verified` stays None otherwise and is reported as an error below.
     if is_valid is not None:
         verified = bool(is_valid)
     elif validity in ("VALID", "INVALID"):
         verified = validity == "VALID"
-    elif isinstance(raw.get("statusCode"), int):
-        verified = raw["statusCode"] == 101
     else:
         verified = None
 
     if verified is None:
+        status_code = raw.get("statusCode")
+        # 104 is Perfios's RETRY-LIMIT response, not a verdict: the account has
+        # been checked too many times and they are declining to look again. It
+        # says nothing whatsoever about whether the account is good.
+        rate_limited = status_code == 104
+        # Recorded as "blocked", deliberately NOT "failure" — counting a refusal
+        # against the failure quota would compound the very problem it reports.
+        attempt = {
+            "at": datetime.now(timezone.utc).isoformat(),
+            "outcome": "blocked" if rate_limited else "error",
+            "status_code": status_code,
+            "sent": _sent_summary(payload),
+            "response": raw,
+            "by": current_user.get("employee_id") or current_user.get("username"),
+        }
+        await _record_attempt(employee_id, attempts, attempt)
+        if rate_limited:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    "Perfios has hit its retry limit for this account number "
+                    "(status 104) and will not check it again for now. THIS DOES "
+                    "NOT MEAN THE ACCOUNT IS BAD — it means it has been checked "
+                    "too many times.\n\nTheir limits, per account number: 3 "
+                    "successful checks per month; 5 failed per day, 10 per week, "
+                    "15 per month.\n\nAny existing verification on this employee "
+                    "still stands. Stop re-trying — every attempt makes it worse. "
+                    "If you need confirmation now, check the account on the "
+                    "Perfios dashboard directly."
+                ),
+            )
         raise HTTPException(
             status_code=502,
-            detail="Perfios replied but the response contained no recognisable "
-                   f"verdict — nothing has been changed. Response: {str(raw)[:400]}",
+            detail=(
+                f"Perfios could not complete the check (statusCode {status_code}) and "
+                "returned no result. This is NOT a judgement on the account — nothing "
+                f"has been changed.\n\nWe sent: {json.dumps(attempt['sent'], sort_keys=True)}"
+                f"\n\nPerfios replied: {json.dumps(raw)[:400]}"
+            ),
         )
 
     reg_name = (
@@ -883,15 +1062,22 @@ async def verify_bank_account(employee_id: str, current_user: dict = Depends(get
         except (TypeError, ValueError):
             name_match = None
 
-    # Persist result on employee
+    # Persist result on employee. The attempt is logged with the same outcome
+    # names Perfios meters on, so the local tally tracks their counter.
+    now_iso = datetime.now(timezone.utc).isoformat()
     await db.employees.update_one(
         {"employee_id": employee_id},
         {"$set": {
             "bank_details.verified":             verified,
             "bank_details.verified_name":        reg_name,
             "bank_details.name_match_score":     name_match,
-            "bank_details.verified_at":          datetime.now(timezone.utc).isoformat(),
+            "bank_details.verified_at":          now_iso,
             "bank_details.verification_raw":     raw,
+            "bank_details.verification_attempts": ([*attempts, {
+                "at": now_iso,
+                "outcome": "success" if verified else "failure",
+                "status_code": raw.get("statusCode"),
+            }])[-_ATTEMPT_LOG_MAX:],
         }},
     )
 
@@ -900,6 +1086,92 @@ async def verify_bank_account(employee_id: str, current_user: dict = Depends(get
         "verified_name":   reg_name,
         "name_match_score": name_match,
         "raw":             raw,
+    }
+
+
+class ManualBankVerification(BaseModel):
+    reason: str
+    verified_name: Optional[str] = None
+
+
+@router.post("/{employee_id}/bank-manual-verify")
+async def manual_verify_bank_account(
+    employee_id: str,
+    data: ManualBankVerification,
+    current_user: dict = Depends(get_current_user),
+):
+    """Mark a bank account verified WITHOUT calling Perfios.
+
+    This exists because Perfios can refuse to answer — most often its
+    per-account retry limit (status 104) — while the account is demonstrably
+    fine when checked on their dashboard. Without an override the employee
+    cannot be paid at all, which is a worse outcome than a recorded, attributed
+    human decision.
+
+    It is deliberately not a quiet equivalent of the real thing:
+      - hr_admin / management only
+      - a written reason is required and stored
+      - who and when are stored
+      - the account is flagged `verified_manually`, shown as such in the UI, and
+        listed separately in the NEFT download so it is never invisible at the
+        moment money moves
+      - editing the account number or IFSC clears it, like any verification
+    """
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    reason = (data.reason or "").strip()
+    if len(reason) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Please give a reason of at least 10 characters — this is an "
+                   "override of the bank-verification check and is recorded against "
+                   "your name.",
+        )
+
+    emp = await db.employees.find_one({"employee_id": employee_id})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    bank = emp.get("bank_details") or {}
+    account_number = "".join(str(bank.get("account_number") or "").split())
+    ifsc_code = str(bank.get("ifsc_code") or "").strip().upper()
+    if not account_number or not ifsc_code:
+        raise HTTPException(
+            status_code=400,
+            detail="Bank account number and IFSC code must both be filled in before "
+                   "the account can be marked verified.",
+        )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    actor = current_user.get("employee_id") or current_user.get("username")
+    await db.employees.update_one(
+        {"employee_id": employee_id},
+        {"$set": {
+            "bank_details.verified": True,
+            "bank_details.verified_manually": True,
+            "bank_details.manual_verified_by": actor,
+            "bank_details.manual_verified_at": now_iso,
+            "bank_details.manual_verification_reason": reason,
+            "bank_details.verified_at": now_iso,
+            # Only if the admin actually has a name from the bank. Left blank
+            # otherwise, so the NEFT "verified without a name" flag still fires.
+            **({"bank_details.verified_name": data.verified_name.strip()}
+               if (data.verified_name or "").strip() else {}),
+            # Logged as "manual" — it spends no Perfios quota, so it must not
+            # count towards their limits.
+            "bank_details.verification_attempts": ([
+                *(bank.get("verification_attempts") or []),
+                {"at": now_iso, "outcome": "manual", "by": actor},
+            ])[-_ATTEMPT_LOG_MAX:],
+        }},
+    )
+    return {
+        "verified": True,
+        "verified_manually": True,
+        "manual_verified_by": actor,
+        "manual_verified_at": now_iso,
+        "reason": reason,
     }
 
 
