@@ -7,6 +7,7 @@ from services.shift_rules import resolve_shift_for
 from datetime import datetime, timezone, date, timedelta
 import calendar as _cal
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 import io
 
 router = APIRouter()
@@ -40,6 +41,11 @@ def _is_non_working_saturday(d: date, sat_rule: Optional[str]) -> bool:
 
 # Statuses whose money has not left yet, so a hold can still bite.
 _UNPAID_STATUSES = ["draft", "processed"]
+
+# The ONLY statuses that may appear in the NEFT file. An allow-list on purpose:
+# the previous test was `!= "draft"`, which quietly made `cancelled`, `reversed`,
+# an empty string and a missing status field all payable.
+_PAYABLE_STATUSES = {"processed", "paid"}
 
 
 def _hold_doc(reason: str, actor: str) -> dict:
@@ -412,15 +418,30 @@ async def process_payroll(data: ProcessPayrollRequest, current_user: dict = Depe
             "tds": 0,
             "other_deductions": 0,
             "other_additions": 0,
-            "bank_account": emp.get("bank_details", {}).get("account_number", ""),
-            "ifsc_code": emp.get("bank_details", {}).get("ifsc_code", ""),
-            "bank_name": emp.get("bank_details", {}).get("bank_name", ""),
+            "bank_account": (emp.get("bank_details") or {}).get("account_number", ""),
+            "ifsc_code": (emp.get("bank_details") or {}).get("ifsc_code", ""),
+            "bank_name": (emp.get("bank_details") or {}).get("bank_name", ""),
             "status": "draft",
             **hold,
             "processed_at": datetime.now(timezone.utc).isoformat(),
             "processed_by": current_user.get("employee_id"),
         }
-        await db.payroll_records.insert_one(record)
+        # ONE atomic operation instead of the earlier find_one-then-insert.
+        # Two clicks racing each other both passed that check and both inserted,
+        # producing two records for one month — two rows in the NEFT file and
+        # the salary paid twice. $setOnInsert writes only when nothing matched,
+        # and with the unique (employee_id, period) index the loser of the race
+        # raises DuplicateKeyError instead of creating a second record.
+        try:
+            res = await db.payroll_records.update_one(
+                {"employee_id": emp_id, "period": period},
+                {"$setOnInsert": record},
+                upsert=True,
+            )
+        except DuplicateKeyError:
+            continue          # another run got there first — not an error
+        if res.upserted_id is None:
+            continue          # a record already existed; leave it untouched
         processed.append(emp_id)
         if is_exiting:
             held.append(emp_id)
@@ -637,9 +658,35 @@ async def publish_payslips(period: str, current_user: dict = Depends(get_current
 
 
 @router.get("/export/neft")
-async def export_neft(period: str, current_user: dict = Depends(get_current_user)):
+async def export_neft(period: str, confirm_reexport: bool = False,
+                      current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
+
+    # RE-EXPORT GUARD. Downloading this sheet used to leave no trace at all, so
+    # a second download and a second upload paid the whole company twice with
+    # nothing anywhere to notice. Every export is now logged, and a repeat is
+    # refused unless the caller says explicitly that it means to do it.
+    #
+    # Enforced here rather than in the browser so a script, a retry or a second
+    # tab cannot walk around it.
+    prior = await db.payroll_exports.find({"period": period}).sort("exported_at", -1).to_list(50)
+    if prior and not confirm_reexport:
+        last = prior[0]
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"The NEFT sheet for {period} has already been exported "
+                f"{len(prior)} time(s). The last was on "
+                f"{str(last.get('exported_at', ''))[:19].replace('T', ' ')} UTC by "
+                f"{last.get('exported_by') or 'unknown'}, covering {last.get('row_count', '?')} "
+                f"employee(s) and \u20b9{last.get('total_amount', 0):,.2f}.\n\n"
+                "If that file was already sent to the bank, downloading and uploading "
+                "it again pays everyone a SECOND time. Only continue if you are sure "
+                "the earlier file was not submitted."
+            ),
+        )
+
     all_records = await db.payroll_records.find({"period": period}).to_list(1000)
 
     # This file is the only thing that actually moves money, so every exclusion from
@@ -721,7 +768,42 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
     # be wired to an actual bank transfer either. Opening the payslip and clicking
     # "Save Adjustments" moves a record to `processed` and clears this.
     draft_records = [r for r in rest if r.get("status") == "draft"]
-    reviewed = [r for r in rest if r.get("status") != "draft"]
+    # An ALLOW-LIST, not "anything except draft". The old test let `cancelled`,
+    # `reversed`, an empty string and a record with no status field at all into
+    # the bank file, because none of them are literally "draft".
+    reviewed = [r for r in rest if r.get("status") in _PAYABLE_STATUSES]
+    badstatus_records = [r for r in rest
+                         if r.get("status") != "draft" and r.get("status") not in _PAYABLE_STATUSES]
+
+    # DUPLICATES — two records for one employee in one month means the salary
+    # goes out twice. Deduplicate before anything else touches the list.
+    #
+    # Identical amounts are the normal shape of an accidental double-process, so
+    # those are collapsed to one row and reported: withholding pay over a
+    # clerical duplicate helps nobody. Records that DISAGREE on the amount are a
+    # different matter — nobody but a human can say which is right — so those are
+    # excluded and named.
+    by_emp = {}
+    for r in reviewed:
+        by_emp.setdefault(_eid(r), []).append(r)
+
+    def _net(r):
+        try:
+            return round(float(r.get("net_salary") or 0), 2)
+        except (TypeError, ValueError):
+            return None
+
+    deduped, duplicate_records, conflicting_records = [], [], []
+    for eid, group in by_emp.items():
+        if len(group) == 1:
+            deduped.append(group[0])
+            continue
+        if len({_net(r) for r in group}) == 1:
+            deduped.append(group[0])
+            duplicate_records.append(group[0])
+        else:
+            conflicting_records.extend(group)
+    reviewed = deduped
     verified_records = [r for r in reviewed if _eid(r) in bank_verified_ids]
     # A blank account number in this file is money that does not arrive, so it is
     # a fourth exclusion rather than a blank cell the bank has to reject. IFSC is
@@ -748,6 +830,10 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
         and not ((e.get("bank_details") or {}).get("verified_name") or "").strip()
     }
     unnamed_records = [r for r in records if _eid(r) in unnamed_ids]
+    # Already marked paid, yet still in this file. Legitimate if the period is
+    # published before the sheet is pulled — but it is also exactly what a
+    # re-export looks like, so HR is told rather than left to notice.
+    alreadypaid_records = [r for r in records if r.get("status") == "paid"]
     # INCLUDED, and flagged for a different reason: a human overrode the bank
     # check rather than Perfios confirming it. Legitimate — Perfios can refuse to
     # answer — but it must be visible on the file that moves money.
@@ -872,6 +958,18 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
             shown, extra = ids[:limit], len(ids) - limit
             return ",".join(shown) + (f",+{extra} more" if extra > 0 else "")
 
+        # Written only once the file is actually built, so a failed export does
+        # not leave a marker that blocks the next honest attempt.
+        await db.payroll_exports.insert_one({
+            "period": period,
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "exported_by": current_user.get("employee_id") or current_user.get("username"),
+            "row_count": len(records),
+            "total_amount": round(sum(float(r.get("net_salary") or 0) for r in records), 2),
+            "employee_ids": sorted(_eid(r) for r in records if _eid(r)),
+            "was_reexport": bool(prior),
+        })
+
         _exposed = [
             "X-Payroll-Held-Count", "X-Payroll-Held-Amount", "X-Payroll-Held-Ids",
             "X-Payroll-Draft-Count", "X-Payroll-Draft-Ids",
@@ -879,6 +977,11 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
             "X-Payroll-Incomplete-Count", "X-Payroll-Incomplete-Ids",
             "X-Payroll-Unnamed-Count", "X-Payroll-Unnamed-Ids",
             "X-Payroll-Manual-Count", "X-Payroll-Manual-Ids",
+            "X-Payroll-Duplicate-Count", "X-Payroll-Duplicate-Ids",
+            "X-Payroll-Conflicting-Count", "X-Payroll-Conflicting-Ids",
+            "X-Payroll-Badstatus-Count", "X-Payroll-Badstatus-Ids",
+            "X-Payroll-Alreadypaid-Count", "X-Payroll-Alreadypaid-Ids",
+            "X-Payroll-Previous-Exports",
             "X-Payroll-Included-Count",
         ]
         return Response(
@@ -899,6 +1002,15 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
                 "X-Payroll-Unnamed-Ids": _ids(unnamed_records),
                 "X-Payroll-Manual-Count": str(len(manual_records)),
                 "X-Payroll-Manual-Ids": _ids(manual_records),
+                "X-Payroll-Duplicate-Count": str(len(duplicate_records)),
+                "X-Payroll-Duplicate-Ids": _ids(duplicate_records),
+                "X-Payroll-Conflicting-Count": str(len(conflicting_records)),
+                "X-Payroll-Conflicting-Ids": _ids(conflicting_records),
+                "X-Payroll-Badstatus-Count": str(len(badstatus_records)),
+                "X-Payroll-Badstatus-Ids": _ids(badstatus_records),
+                "X-Payroll-Alreadypaid-Count": str(len(alreadypaid_records)),
+                "X-Payroll-Alreadypaid-Ids": _ids(alreadypaid_records),
+                "X-Payroll-Previous-Exports": str(len(prior)),
                 "X-Payroll-Included-Count": str(len(records)),
                 # Browsers hide custom headers from JS unless they are exposed.
                 "Access-Control-Expose-Headers": ", ".join(_exposed),
@@ -906,6 +1018,63 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/duplicates")
+async def payroll_duplicates(current_user: dict = Depends(get_current_user)):
+    """Employees holding more than one payroll record for the same month.
+
+    Read-only. Two records for one month is a salary paid twice, and until the
+    unique (employee_id, period) index can be built — it cannot be, while
+    duplicates exist — this is how you find and clear them.
+
+    Also reports whether the amounts agree: matching amounts are a clerical
+    double-process and the NEFT export collapses them to one row; disagreeing
+    amounts need a human to decide which is right, and the export withholds them.
+    """
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    pipeline = [
+        {"$group": {
+            "_id": {"employee_id": "$employee_id", "period": "$period"},
+            "count": {"$sum": 1},
+            "nets": {"$push": "$net_salary"},
+            "statuses": {"$push": "$status"},
+            "ids": {"$push": "$_id"},
+        }},
+        {"$match": {"count": {"$gt": 1}}},
+        {"$sort": {"_id.period": -1, "_id.employee_id": 1}},
+    ]
+    rows = await db.payroll_records.aggregate(pipeline).to_list(2000)
+    out = []
+    for r in rows:
+        nets = [round(float(n or 0), 2) for n in r.get("nets", [])]
+        out.append({
+            "employee_id": r["_id"]["employee_id"],
+            "period": r["_id"]["period"],
+            "count": r["count"],
+            "net_salaries": nets,
+            "amounts_agree": len(set(nets)) == 1,
+            "statuses": r.get("statuses", []),
+            "record_ids": [str(i) for i in r.get("ids", [])],
+            "duplicate_total": round(sum(nets) - (nets[0] if nets else 0), 2),
+        })
+    return {
+        "duplicate_groups": len(out),
+        "extra_records": sum(r["count"] - 1 for r in out),
+        "amount_at_risk": round(sum(r["duplicate_total"] for r in out), 2),
+        "rows": out,
+    }
+
+
+@router.get("/export-history")
+async def payroll_export_history(period: str = None, current_user: dict = Depends(get_current_user)):
+    """Every NEFT download, so "was this month already sent?" has an answer."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    q = {"period": period} if period else {}
+    rows = await db.payroll_exports.find(q, {"_id": 0, "employee_ids": 0}).sort("exported_at", -1).to_list(200)
+    return rows
 
 
 @router.get("/export/salary-register")

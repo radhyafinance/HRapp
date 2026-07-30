@@ -193,10 +193,11 @@ export default function Payroll() {
     }
   };
 
-  const downloadNEFT = async () => {
+  const downloadNEFT = async (confirmReexport = false) => {
     const period = `${selectedYear}-${String(selectedMonth).padStart(2, "0")}`;
     try {
-      const res = await API.get("/payroll/export/neft", { params: { period }, responseType: "blob" });
+      const params = confirmReexport ? { period, confirm_reexport: true } : { period };
+      const res = await API.get("/payroll/export/neft", { params, responseType: "blob" });
       const url = URL.createObjectURL(res.data);
       const a = document.createElement("a"); a.href = url; a.download = `NEFT_${period}.xlsx`; a.click();
       // Four things keep someone out of this sheet, and none of them may be silent —
@@ -237,8 +238,26 @@ export default function Payroll() {
       }
       // Included, but worth a second look before the money moves — so it is a
       // separate warning, not one of the exclusions above.
+      const conflicting = n("x-payroll-conflicting-count");
+      if (conflicting > 0) {
+        parts.push(
+          `• ${conflicting} DUPLICATE RECORDS THAT DISAGREE ON THE AMOUNT — withheld, ` +
+          `because only a person can say which figure is right. Resolve them, then ` +
+          `re-export.\n  ${ids("x-payroll-conflicting-ids")}`
+        );
+      }
+      const badstatus = n("x-payroll-badstatus-count");
+      if (badstatus > 0) {
+        parts.push(
+          `• ${badstatus} with a status that is not payable (cancelled, reversed, or ` +
+          `blank).\n  ${ids("x-payroll-badstatus-ids")}`
+        );
+      }
       const unnamed = n("x-payroll-unnamed-count");
       const manual = n("x-payroll-manual-count");
+      const duplicate = n("x-payroll-duplicate-count");
+      const alreadypaid = n("x-payroll-alreadypaid-count");
+      const prevExports = n("x-payroll-previous-exports");
       const notes = [];
       if (unnamed > 0) {
         notes.push(
@@ -252,6 +271,22 @@ export default function Payroll() {
           `• ${manual} MANUALLY marked verified by an admin, not confirmed by Perfios.\n  ` +
           ids("x-payroll-manual-ids")
         );
+      }
+      if (duplicate > 0) {
+        notes.push(
+          `• ${duplicate} had TWO payroll records for this month with the same amount. ` +
+          `Each is in the sheet ONCE, not twice. Clean up the extra records so this ` +
+          `stops recurring.\n  ${ids("x-payroll-duplicate-ids")}`
+        );
+      }
+      if (alreadypaid > 0) {
+        notes.push(
+          `• ${alreadypaid} are already marked PAID but are still in this sheet. If that ` +
+          `money has already left, uploading this file pays them again.\n  ${ids("x-payroll-alreadypaid-ids")}`
+        );
+      }
+      if (prevExports > 0) {
+        notes.push(`• This period has been exported ${prevExports} time(s) before.`);
       }
       const warning = notes.length
         ? `\n\nINCLUDED BUT WORTH CHECKING:\n\n${notes.join("\n\n")}` : "";
@@ -267,7 +302,24 @@ export default function Payroll() {
         );
       }
     } catch (e) {
-      alert("NEFT export failed");
+      // responseType "blob" means even the error body arrives as a Blob, so the
+      // server's explanation has to be read out of it rather than e.response.data.
+      let detail = "";
+      try {
+        const raw = e.response?.data;
+        detail = typeof raw?.text === "function" ? JSON.parse(await raw.text()).detail
+               : (raw?.detail || "");
+      } catch (_) { /* leave detail empty and fall through to the generic message */ }
+
+      // 409 = this period has been exported before. Uploading a second copy to
+      // the bank pays everyone twice, so it asks rather than silently repeating.
+      if (e.response?.status === 409 && detail) {
+        if (window.confirm(`${detail}\n\nDownload it again anyway?`)) {
+          return downloadNEFT(true);
+        }
+        return;
+      }
+      alert(detail ? `NEFT export failed.\n\n${detail}` : "NEFT export failed");
     }
   };
 

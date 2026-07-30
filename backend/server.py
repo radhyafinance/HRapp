@@ -224,6 +224,21 @@ async def startup():
     await db.attendance_records.create_index([("employee_id", 1), ("date", -1)])
     await db.leave_applications.create_index([("employee_id", 1), ("status", 1)])
     await db.payroll_records.create_index([("employee_id", 1), ("period", -1)])
+    # Two payroll records for one employee in one month means two rows in the
+    # NEFT file and the salary paid twice. A unique index is the only thing that
+    # makes the check-then-insert in /payroll/process safe against two clicks
+    # racing each other.
+    #
+    # Wrapped because creating it FAILS if duplicates already exist, and a
+    # failed index must not stop the app from booting. If it cannot be built,
+    # the duplicates are already there: GET /api/payroll/duplicates lists them,
+    # and the NEFT export refuses to pay any of them twice regardless.
+    try:
+        await db.payroll_records.create_index(
+            [("employee_id", 1), ("period", 1)], unique=True, name="uniq_employee_period")
+    except Exception as e:
+        print(f"[payroll] could not create unique (employee_id, period) index: {e}\n"
+              f"[payroll] existing duplicates must be resolved — see GET /api/payroll/duplicates")
     try:
         await db.candidate_documents.create_index("candidate_id", unique=True)
     except Exception:
