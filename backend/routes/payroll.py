@@ -643,11 +643,12 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
     all_records = await db.payroll_records.find({"period": period}).to_list(1000)
 
     # This file is the only thing that actually moves money, so every exclusion from
-    # it is reported back in a header and surfaced by the UI. Three things keep a
+    # it is reported back in a header and surfaced by the UI. Four things keep a
     # record out, and NONE of them may be silent:
     #   1. on hold      -- resignation accepted, pending exit clearance
     #   2. still draft  -- nobody has reviewed the auto-calculated figure yet
     #   3. bank account not verified
+    #   4. account number or IFSC missing -- see _bank() below
     # Nothing is written into the sheet itself; the bank parses it.
     emp_ids_all = [r.get("employee_id") for r in all_records if r.get("employee_id")]
     emp_docs = await db.employees.find(
@@ -658,9 +659,33 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
         e["employee_id"] for e in emp_docs
         if e.get("bank_details", {}).get("verified") is True
     }
+    # Live account/IFSC, keyed by employee.
+    #
+    # The payroll record froze a COPY of the bank details when the month was
+    # processed, but "is this account verified?" is read live from the employee
+    # master. Those two disagree whenever HR fills in or corrects bank details
+    # after processing: the employee is verified, so they pass the filter, while
+    # the frozen copy is still empty — and the row reached the bank with no
+    # account number at all. Read live and keep the snapshot only as a fallback.
+    live_bank = {}
+    for e in emp_docs:
+        bd = e.get("bank_details") or {}
+        live_bank[e["employee_id"]] = (
+            (bd.get("account_number") or "").strip(),
+            (bd.get("ifsc_code") or "").strip().upper(),
+        )
 
     def _eid(r):
         return (r.get("employee_id") or "").strip()
+
+    def _bank(r):
+        """(account, ifsc) — live where known, else whatever was frozen."""
+        acct, ifsc = live_bank.get(_eid(r), ("", ""))
+        if not acct:
+            acct = (r.get("bank_account") or "").strip()
+        if not ifsc:
+            ifsc = (r.get("ifsc_code") or "").strip().upper()
+        return acct, ifsc
 
     held_records = [r for r in all_records if r.get("on_hold")]
     rest = [r for r in all_records if not r.get("on_hold")]
@@ -670,7 +695,13 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
     # "Save Adjustments" moves a record to `processed` and clears this.
     draft_records = [r for r in rest if r.get("status") == "draft"]
     reviewed = [r for r in rest if r.get("status") != "draft"]
-    records = [r for r in reviewed if _eid(r) in bank_verified_ids]
+    verified_records = [r for r in reviewed if _eid(r) in bank_verified_ids]
+    # A blank account number in this file is money that does not arrive, so it is
+    # a fourth exclusion rather than a blank cell the bank has to reject. IFSC is
+    # required too: it is what identifies an ICICI account, and ICICI rows are the
+    # ones where the IFSC cell is deliberately left empty further down.
+    incomplete_records = [r for r in verified_records if not all(_bank(r))]
+    records = [r for r in verified_records if all(_bank(r))]
 
     # Reported over every non-held record, INCLUDING drafts, so a record blocked for
     # two reasons reports both at once. Reporting only the reviewed ones would mean
@@ -740,8 +771,7 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
             # `records` is already filtered: not held, not draft, bank verified.
             emp_id = _eid(r)
             net_amount = round(float(r.get("net_salary", 0) or 0), 2)
-            beneficiary_acct = (r.get("bank_account") or "").strip()
-            ifsc = (r.get("ifsc_code") or "").strip().upper()
+            beneficiary_acct, ifsc = _bank(r)
             name = clean_name(r.get("employee_name", ""))
             row_remark = f"{emp_id} {remark_suffix}"   # e.g. "RMF0001 Salary APR26"
             row_remark_client = row_remark[:21]
@@ -792,6 +822,7 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
             "X-Payroll-Held-Count", "X-Payroll-Held-Amount", "X-Payroll-Held-Ids",
             "X-Payroll-Draft-Count", "X-Payroll-Draft-Ids",
             "X-Payroll-Unverified-Count", "X-Payroll-Unverified-Ids",
+            "X-Payroll-Incomplete-Count", "X-Payroll-Incomplete-Ids",
             "X-Payroll-Included-Count",
         ]
         return Response(
@@ -806,6 +837,8 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
                 "X-Payroll-Draft-Ids": _ids(draft_records),
                 "X-Payroll-Unverified-Count": str(len(unverified_records)),
                 "X-Payroll-Unverified-Ids": _ids(unverified_records),
+                "X-Payroll-Incomplete-Count": str(len(incomplete_records)),
+                "X-Payroll-Incomplete-Ids": _ids(incomplete_records),
                 "X-Payroll-Included-Count": str(len(records)),
                 # Browsers hide custom headers from JS unless they are exposed.
                 "Access-Control-Expose-Headers": ", ".join(_exposed),

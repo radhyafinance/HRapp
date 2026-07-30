@@ -199,7 +199,7 @@ export default function Payroll() {
       const res = await API.get("/payroll/export/neft", { params: { period }, responseType: "blob" });
       const url = URL.createObjectURL(res.data);
       const a = document.createElement("a"); a.href = url; a.download = `NEFT_${period}.xlsx`; a.click();
-      // Three things keep someone out of this sheet, and none of them may be silent —
+      // Four things keep someone out of this sheet, and none of them may be silent —
       // it's the file that actually moves money. Report every exclusion, with names.
       const h = res.headers || {};
       const n = (k) => Number(h[k] || 0);
@@ -225,6 +225,14 @@ export default function Payroll() {
           `• ${unver} BANK NOT VERIFIED — cannot be paid until the account is verified ` +
           `on their employee record.\n  ${ids("x-payroll-unverified-ids")}\n  ` +
           `(someone can appear here AND above — both need fixing)`
+        );
+      }
+      const incomplete = n("x-payroll-incomplete-count");
+      if (incomplete > 0) {
+        parts.push(
+          `• ${incomplete} MISSING ACCOUNT NUMBER OR IFSC — verified, but the bank ` +
+          `details on their employee record are incomplete. Previously these were ` +
+          `written into the sheet as blank cells.\n  ${ids("x-payroll-incomplete-ids")}`
         );
       }
       if (parts.length) {

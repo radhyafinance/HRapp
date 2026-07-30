@@ -812,9 +812,28 @@ async def verify_bank_account(employee_id: str, current_user: dict = Depends(get
                 json=payload,
                 headers={"x-auth-key": api_key, "Content-Type": "application/json"},
             )
-        raw = resp.json()
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Perfios API unreachable: {e}")
+
+    # An API problem is NOT a verdict on the employee's bank account. Everything
+    # below raises rather than recording a result, because a stored
+    # `verified: false` silently drops the employee out of the next NEFT sheet —
+    # so "we could not get an answer" must never be written down as "this
+    # account is invalid".
+    if resp.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Perfios returned HTTP {resp.status_code}: {(resp.text or '')[:300]}",
+        )
+    try:
+        raw = resp.json()
+    except Exception:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Perfios returned a non-JSON response (HTTP {resp.status_code}): {(resp.text or '')[:300]}",
+        )
+    if not isinstance(raw, dict):
+        raise HTTPException(status_code=502, detail=f"Unexpected Perfios response: {str(raw)[:300]}")
 
     # Parse Perfios response structure:
     # raw.statusCode == 101 → success
@@ -824,17 +843,45 @@ async def verify_bank_account(employee_id: str, current_user: dict = Depends(get
     r = raw.get("result") or {}
     data = r.get("data") or {}
     sources = data.get("source") or []
-    src_data = sources[0].get("data") if sources else {}
-    is_valid = sources[0].get("isValid") if sources else False
+    src_data = (sources[0].get("data") if sources else None) or {}
+    is_valid = sources[0].get("isValid") if sources else None
     comp = r.get("comparisionData") or {}
     validity = (comp.get("inputVsSource") or {}).get("validity", "")
     name_flag = ((comp.get("inputVsSource") or {}).get("flags") or {}).get("accountHolderName") or {}
 
-    verified   = bool(is_valid) or validity == "VALID" or raw.get("statusCode") == 101
-    reg_name   = src_data.get("accountName") or src_data.get("registeredName") or ""
+    # Most specific signal first. `verified` stays None when the response
+    # carries no verdict we recognise — which is a different thing from a
+    # verdict of "invalid", and is reported as an error below.
+    if is_valid is not None:
+        verified = bool(is_valid)
+    elif validity in ("VALID", "INVALID"):
+        verified = validity == "VALID"
+    elif isinstance(raw.get("statusCode"), int):
+        verified = raw["statusCode"] == 101
+    else:
+        verified = None
+
+    if verified is None:
+        raise HTTPException(
+            status_code=502,
+            detail="Perfios replied but the response contained no recognisable "
+                   f"verdict — nothing has been changed. Response: {str(raw)[:400]}",
+        )
+
+    reg_name = (
+        src_data.get("accountName")
+        or src_data.get("registeredName")
+        or src_data.get("accountHolderName")
+        or src_data.get("nameAtBank")
+        or data.get("accountName")
+        or ""
+    )
     name_match = name_flag.get("score")
     if name_match is not None:
-        name_match = round(float(name_match) * 100, 1)  # convert 0-1 → 0-100
+        try:
+            name_match = round(float(name_match) * 100, 1)  # convert 0-1 → 0-100
+        except (TypeError, ValueError):
+            name_match = None
 
     # Persist result on employee
     await db.employees.update_one(
