@@ -217,6 +217,12 @@ class UndoDirectExitRequest(BaseModel):
     reason: str
 
 
+
+class ReinstateRequest(BaseModel):
+    status: str = "active"        # "active" | "probation"
+    reason: str
+
+
 # How long a direct exit stays reversible. Long enough to catch a mistake noticed
 # the next working day; short enough that it is not a way to quietly un-fire
 # someone weeks later.
@@ -1048,6 +1054,112 @@ async def undo_direct_exit(exit_id: str, data: UndoDirectExitRequest,
         "reverted_by": actor,
         "reverted_at": now,
         "reason": reason,
+    }
+
+
+@router.post("/reinstate/{employee_id}")
+async def reinstate_employee(employee_id: str, data: ReinstateRequest,
+                             current_user: dict = Depends(get_current_user)):
+    """Bring back an employee who was exited by mistake, at any time.
+
+    The 3-day undo restores a snapshot and is exact. This does not have one — it
+    exists for exits recorded before snapshots existed, and for mistakes found
+    after the window closed — so the caller states the status to restore.
+
+    It clears LAST WORKING DAY, which nothing else can. That field is the reason
+    a manual status change is not enough on its own:
+
+      - payroll counts every day after the LWD as loss of pay, so the next run
+        pays a reinstated employee close to nothing;
+      - the auto-exit job silently re-exits anyone whose status is
+        `notice_period` with an LWD in the past.
+
+    Salary holds are reported, NOT released. Releasing money is a separate,
+    deliberate decision and keeps its own audit trail.
+    """
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Only HR Admin or Management can reinstate an employee")
+    reason = (data.reason or "").strip()
+    if len(reason) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Give a reason of at least 10 characters — this reinstates an employee "
+                   "and is recorded against your name.",
+        )
+    # notice_period is deliberately not offered: combined with the LWD this would
+    # re-exit them automatically. Reinstating means back at work.
+    if data.status not in ("active", "probation"):
+        raise HTTPException(
+            status_code=422,
+            detail="Status must be 'active' or 'probation'. 'notice_period' cannot be used "
+                   "here — the auto-exit job would exit them again.",
+        )
+
+    emp = await db.employees.find_one({"employee_id": employee_id})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    # Refuse when there is nothing to undo. Without this, reinstating a perfectly
+    # healthy employee silently voids their most recent exit request — which for
+    # a rehire is a real, legitimate record of a previous stint.
+    #
+    # A status already corrected by hand still qualifies: leftover exit fields
+    # are exactly the state that pays someone zero, and clearing them is the
+    # whole reason this endpoint exists.
+    if not (emp.get("status") == "exited" or emp.get("last_working_day") or emp.get("final_exit_type")):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{employee_id} is not exited and has no leftover exit fields — "
+                   "there is nothing to reinstate.",
+        )
+
+    now = datetime.now(timezone.utc).isoformat()
+    actor = current_user.get("employee_id") or current_user.get("username")
+    was_status = emp.get("status")
+    had_lwd = emp.get("last_working_day")
+
+    await db.employees.update_one(
+        {"employee_id": employee_id},
+        {"$set": {"status": data.status,
+                  "reinstated_at": now,
+                  "reinstated_by": actor,
+                  "reinstate_reason": reason},
+         "$unset": {"last_working_day": "", "final_exit_type": ""}},
+    )
+    user_res = await db.users.update_one({"employee_id": employee_id}, {"$set": {"is_active": True}})
+
+    # Void the exit that put them out, keeping it as history.
+    voided = None
+    exit_req = await db.exit_requests.find_one(
+        {"employee_id": employee_id, "status": {"$nin": ["rejected", "reverted"]}},
+        sort=[("created_at", -1)],
+    )
+    if exit_req:
+        timeline = exit_req.get("timeline", [])
+        add_timeline_event(timeline, "reverted", current_user.get("name", "Admin"),
+                           f"Employee reinstated by HR. Reason: {reason}")
+        await db.exit_requests.update_one(
+            {"_id": exit_req["_id"]},
+            {"$set": {"status": "reverted", "reverted_at": now, "reverted_by": actor,
+                      "revert_reason": reason, "timeline": timeline, "updated_at": now}},
+        )
+        voided = str(exit_req["_id"])
+
+    # Reported so the money decision stays separate and visible.
+    held = await db.payroll_records.find(
+        {"employee_id": employee_id, "on_hold": True},
+        {"_id": 0, "period": 1, "net_salary": 1},
+    ).to_list(50)
+
+    return {
+        "employee_id": employee_id,
+        "previous_status": was_status,
+        "restored_status": data.status,
+        "cleared_last_working_day": had_lwd,
+        "login_reactivated": user_res.matched_count > 0,
+        "voided_exit_request": voided,
+        "held_payroll_records": held,
+        "reinstated_by": actor,
+        "reinstated_at": now,
     }
 
 

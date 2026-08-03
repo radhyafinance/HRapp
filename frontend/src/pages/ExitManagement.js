@@ -249,6 +249,86 @@ function ApprovalModal({ exit, onClose, onDone, currentUser }) {
 }
 
 
+// ── Reinstate Modal ──────────────────────────────────────────
+// For an exit with no undo snapshot: recorded before undo existed, or found
+// after the 3-day window. Putting the status back by hand is NOT enough — the
+// exit also left a last working day behind, and payroll counts every day after
+// it as loss of pay, so a reinstated employee working a full month is paid
+// nothing. This is the only place those fields can be cleared.
+function ReinstateModal({ exit, onClose, onDone }) {
+  const [status, setStatus] = useState("active");
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleSave = async () => {
+    if (reason.trim().length < 10) { setError("A reason of at least 10 characters is required."); return; }
+    setSaving(true);
+    try {
+      const r = await API.post(`/exit/reinstate/${exit.employee_id}`, {
+        status, reason: reason.trim(),
+      });
+      const d = r.data;
+      const held = d.held_payroll_records || [];
+      alert(
+        `${exit.employee_name} (${exit.employee_id}) reinstated as "${d.restored_status}".\n\n` +
+        (d.cleared_last_working_day
+          ? "Last working day cleared — that is what would otherwise have left them on zero pay.\n"
+          : "") +
+        (d.login_reactivated ? "Their login has been re-enabled.\n" : "No login account was found to re-enable.\n") +
+        (held.length
+          ? `\nNOTE: ${held.length} payroll record(s) are still ON HOLD from the exit ` +
+            `(${held.map(h => h.period).join(", ")}). Release them from the Payroll page if they ` +
+            `should be paid — that is a separate, deliberate step.`
+          : "")
+      );
+      onDone();
+      onClose();
+    } catch (e) { setError(e.response?.data?.detail || "Failed"); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Modal title="Reinstate Employee" onClose={onClose}>
+      <div className="space-y-4">
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+          This reverses the exit for <strong>{exit.employee_name} ({exit.employee_id})</strong>.
+          It restores their status, clears the last working day, re-enables their login, and marks
+          this exit as undone. Nothing recorded what their status was beforehand, so choose it below.
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Restore status to*</label>
+          <select value={status} onChange={e => setStatus(e.target.value)} data-testid="reinstate-status"
+            className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none bg-white">
+            <option value="active">Active</option>
+            <option value="probation">Probation</option>
+          </select>
+          <p className="text-[11px] text-slate-500 mt-1">
+            "Serving Notice Period" is not offered here — combined with the exit date it would
+            re-exit them automatically. Set it afterwards from their record if that is genuinely
+            where they should be.
+          </p>
+        </div>
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Reason* (recorded against your name)</label>
+          <textarea rows={3} value={reason} onChange={e => setReason(e.target.value)}
+            placeholder="e.g. Exited by mistake — wrong employee selected"
+            data-testid="reinstate-reason"
+            className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none resize-none" />
+        </div>
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        <div className="flex gap-3">
+          <button onClick={onClose} className="flex-1 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-600">Cancel</button>
+          <button onClick={handleSave} disabled={saving} data-testid="reinstate-save"
+            className="flex-1 py-2.5 bg-amber-600 text-white rounded-lg text-sm font-semibold disabled:opacity-60 hover:bg-amber-700">
+            {saving ? "Reinstating..." : "Reinstate Employee"}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 // ── Change Exit Type Modal ────────────────────────────────────
 function ChangeExitTypeModal({ exit, onClose, onDone }) {
   const [type, setType] = useState(exit?.final_exit_type || "exit");
@@ -598,6 +678,7 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
   const [showDocs, setShowDocs] = useState(false);
   const [showEditLwd, setShowEditLwd] = useState(false);
   const [showChangeExitType, setShowChangeExitType] = useState(false);
+  const [showReinstate, setShowReinstate] = useState(false);
   const [nocSections, setNocSections] = useState({});
   const [staff, setStaff] = useState([]);
   const [savingAssignee, setSavingAssignee] = useState(null);
@@ -769,6 +850,23 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
                     <button onClick={handleUndoDirectExit} data-testid="undo-direct-exit-btn"
                       className="flex-shrink-0 px-3 py-1.5 bg-white border-2 border-amber-400 text-amber-900 rounded-lg text-xs font-semibold hover:bg-amber-100">
                       Undo exit
+                    </button>
+                  </div>
+                )}
+                {/* Offered only when the 3-day undo is not available — otherwise
+                    two overlapping ways to do the same thing. */}
+                {isAdmin && !canUndoDirectExit && exit?.status === "completed" && (
+                  <div className="col-span-2 p-3 bg-slate-50 border border-slate-300 rounded-lg flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-bold text-slate-800">Exited by mistake?</p>
+                      <p className="text-xs text-slate-600 mt-0.5">
+                        Reinstating clears the last working day and exit type as well as the status.
+                        Correcting only the status leaves the employee on zero pay at the next payroll run.
+                      </p>
+                    </div>
+                    <button onClick={() => setShowReinstate(true)} data-testid="reinstate-btn"
+                      className="flex-shrink-0 px-3 py-1.5 bg-white border-2 border-slate-400 text-slate-800 rounded-lg text-xs font-semibold hover:bg-slate-100">
+                      Reinstate
                     </button>
                   </div>
                 )}
@@ -1056,6 +1154,7 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
       {showDocs && <FinalDocsModal exit={exit} onClose={() => setShowDocs(false)} onDone={onRefresh} />}
       {showEditLwd && <EditLWDModal exit={exit} onClose={() => setShowEditLwd(false)} onDone={onRefresh} />}
       {showChangeExitType && <ChangeExitTypeModal exit={exit} onClose={() => setShowChangeExitType(false)} onDone={onRefresh} />}
+      {showReinstate && <ReinstateModal exit={exit} onClose={() => setShowReinstate(false)} onDone={onRefresh} />}
     </div>
   );
 }
