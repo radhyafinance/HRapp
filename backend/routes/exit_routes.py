@@ -205,6 +205,22 @@ class DirectExitRequest(BaseModel):
     final_exit_type: str  # "absconding" | "terminated"
     reason: str
     last_working_day: Optional[str] = None
+    # The employee id typed a SECOND time. A direct exit has no approval chain —
+    # one click ends someone's employment and disables their login — so the
+    # confirmation is a re-typed identifier rather than another OK button,
+    # which muscle memory defeats. Enforced here as well as in the browser so a
+    # mis-aimed API call cannot exit the wrong person either.
+    confirm_employee_id: Optional[str] = None
+
+
+class UndoDirectExitRequest(BaseModel):
+    reason: str
+
+
+# How long a direct exit stays reversible. Long enough to catch a mistake noticed
+# the next working day; short enough that it is not a way to quietly un-fire
+# someone weeks later.
+_DIRECT_EXIT_UNDO_DAYS = 3
 
 
 class NOCItemUpdate(BaseModel):
@@ -258,7 +274,7 @@ async def submit_resignation(
 
     existing = await db.exit_requests.find_one({
         "employee_id": target_emp_id,
-        "status": {"$nin": ["rejected", "completed"]}
+        "status": {"$nin": ["rejected", "completed", "reverted"]}
     })
     if existing:
         raise HTTPException(status_code=400, detail="An active exit request already exists for this employee")
@@ -830,6 +846,16 @@ async def direct_exit(data: DirectExitRequest, current_user: dict = Depends(get_
     if data.final_exit_type not in ("absconding", "terminated"):
         raise HTTPException(status_code=422, detail="Direct exit type must be: absconding or terminated")
 
+    # Second confirmation: the id typed again, matched against the one being acted
+    # on. Checked before anything is read or written.
+    typed = (data.confirm_employee_id or "").strip()
+    if typed.lower() != (data.employee_id or "").strip().lower():
+        raise HTTPException(
+            status_code=400,
+            detail=("To confirm a direct exit, re-enter the employee ID exactly. "
+                    f"Expected {data.employee_id}, got {typed or '(nothing)'}."),
+        )
+
     emp = await db.employees.find_one({"employee_id": data.employee_id})
     if not emp:
         raise HTTPException(status_code=404, detail="Employee not found")
@@ -838,12 +864,26 @@ async def direct_exit(data: DirectExitRequest, current_user: dict = Depends(get_
 
     existing = await db.exit_requests.find_one({
         "employee_id": data.employee_id,
-        "status": {"$nin": ["rejected", "completed"]}
+        "status": {"$nin": ["rejected", "completed", "reverted"]}
     })
     if existing:
         raise HTTPException(status_code=400, detail="An active exit request already exists for this employee")
 
     now = datetime.now(timezone.utc).isoformat()
+    # Everything the exit is about to overwrite, captured BEFORE it is overwritten.
+    # Undo restores from this rather than guessing at sensible defaults — an
+    # employee on probation must not come back as active, and a login that was
+    # already disabled must not be re-enabled by an undo.
+    prev_user = await db.users.find_one({"employee_id": data.employee_id}, {"_id": 0, "is_active": 1})
+    undo_snapshot = {
+        "employee_status": emp.get("status"),
+        "last_working_day": emp.get("last_working_day"),
+        "final_exit_type": emp.get("final_exit_type"),
+        "had_last_working_day": "last_working_day" in emp,
+        "had_final_exit_type": "final_exit_type" in emp,
+        "user_exists": prev_user is not None,
+        "user_was_active": (prev_user or {}).get("is_active"),
+    }
     lwd = data.last_working_day or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     timeline = []
     add_timeline_event(timeline, "submitted", current_user.get("name", "Admin"),
@@ -873,7 +913,14 @@ async def direct_exit(data: DirectExitRequest, current_user: dict = Depends(get_
         "final_documents": {"fnf_sheet": None, "relieving_letter": None},
         "timeline": timeline,
         "created_at": now,
-        "updated_at": now
+        "updated_at": now,
+        # Only a DIRECT exit is reversible: it is the one that skipped every
+        # approval, so it is the one a single mistaken click can complete.
+        "is_direct_exit": True,
+        "undo_snapshot": undo_snapshot,
+        "undo_deadline": (datetime.now(timezone.utc)
+                          + timedelta(days=_DIRECT_EXIT_UNDO_DAYS)).isoformat(),
+        "created_by": current_user.get("employee_id") or current_user.get("username"),
     }
     result = await db.exit_requests.insert_one(doc)
     doc["id"] = str(result.inserted_id)
@@ -888,6 +935,120 @@ async def direct_exit(data: DirectExitRequest, current_user: dict = Depends(get_
         {"$set": {"is_active": False}}
     )
     return doc
+
+
+@router.post("/{exit_id}/undo-direct-exit")
+async def undo_direct_exit(exit_id: str, data: UndoDirectExitRequest,
+                           current_user: dict = Depends(get_current_user)):
+    """Reverse a direct exit within the undo window.
+
+    A direct exit has no approval chain: one click marks someone absconding or
+    terminated and disables their login. This puts back exactly what that click
+    overwrote, from the snapshot taken at the time — never from a guess.
+
+    The exit request is kept and marked `reverted` rather than deleted. Somebody
+    was recorded as absconding, and an audit trail that quietly loses that is
+    worse than one that shows it was undone.
+    """
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Only HR Admin or Management can undo a direct exit")
+    reason = (data.reason or "").strip()
+    if len(reason) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Give a reason of at least 10 characters — this reinstates an employee "
+                   "and is recorded against your name.",
+        )
+    try:
+        oid = ObjectId(exit_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    exit_req = await db.exit_requests.find_one({"_id": oid})
+    if not exit_req:
+        raise HTTPException(status_code=404, detail="Exit request not found")
+    if not exit_req.get("is_direct_exit"):
+        raise HTTPException(
+            status_code=400,
+            detail="Only a direct exit can be undone. This exit went through the "
+                   "resignation and approval workflow.",
+        )
+    if exit_req.get("status") == "reverted":
+        raise HTTPException(status_code=400, detail="This direct exit has already been undone")
+
+    deadline_raw = exit_req.get("undo_deadline")
+    if not deadline_raw:
+        raise HTTPException(
+            status_code=400,
+            detail="This direct exit was recorded before undo existed, so there is no "
+                   "snapshot to restore. Reinstate the employee manually from their record.",
+        )
+    try:
+        deadline = datetime.fromisoformat(str(deadline_raw).replace("Z", "+00:00"))
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="This exit has an unreadable undo deadline")
+    if datetime.now(timezone.utc) > deadline:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"The {_DIRECT_EXIT_UNDO_DAYS}-day undo window for this exit closed on "
+                    f"{str(deadline_raw)[:19].replace('T', ' ')} UTC. Reinstate the employee "
+                    "from their record instead, which leaves the exit history intact."),
+        )
+
+    snap = exit_req.get("undo_snapshot") or {}
+    emp_id = exit_req.get("employee_id")
+    now = datetime.now(timezone.utc).isoformat()
+    actor = current_user.get("employee_id") or current_user.get("username")
+
+    # Restore what the exit overwrote. Fields that did not exist beforehand are
+    # unset rather than written back as null, so the record returns to its
+    # actual previous shape.
+    set_fields = {"status": snap.get("employee_status") or "active"}
+    unset_fields = {}
+    if snap.get("had_last_working_day"):
+        set_fields["last_working_day"] = snap.get("last_working_day")
+    else:
+        unset_fields["last_working_day"] = ""
+    if snap.get("had_final_exit_type"):
+        set_fields["final_exit_type"] = snap.get("final_exit_type")
+    else:
+        unset_fields["final_exit_type"] = ""
+    update = {"$set": set_fields}
+    if unset_fields:
+        update["$unset"] = unset_fields
+    await db.employees.update_one({"employee_id": emp_id}, update)
+
+    # Only re-enable a login that the exit actually disabled. If it was already
+    # inactive, undoing the exit must not hand it back.
+    login_restored = False
+    if snap.get("user_exists") and snap.get("user_was_active") is not False:
+        await db.users.update_one({"employee_id": emp_id}, {"$set": {"is_active": True}})
+        login_restored = True
+
+    timeline = exit_req.get("timeline", [])
+    add_timeline_event(timeline, "reverted", current_user.get("name", "Admin"),
+                       f"Direct exit undone. Reason: {reason}")
+    await db.exit_requests.update_one(
+        {"_id": oid},
+        {"$set": {
+            "status": "reverted",
+            "reverted_at": now,
+            "reverted_by": actor,
+            "revert_reason": reason,
+            "timeline": timeline,
+            "updated_at": now,
+        }},
+    )
+    return {
+        "employee_id": emp_id,
+        "restored_status": set_fields["status"],
+        "login_restored": login_restored,
+        "reverted_by": actor,
+        "reverted_at": now,
+        "reason": reason,
+    }
 
 
 async def auto_exit_employees_past_lwd() -> dict:

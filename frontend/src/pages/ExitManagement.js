@@ -329,10 +329,28 @@ function DirectExitModal({ onClose, onDone }) {
   const handleSave = async () => {
     if (!matched) { setError("Enter a valid employee ID."); return; }
     if (!reason.trim()) { setError("A reason is required."); return; }
+    // A direct exit skips every approval: it ends employment and disables the
+    // login in one click. So the confirmation is the employee id typed again,
+    // not another OK button — a second identical dialog just trains people to
+    // click through both.
+    const typed = window.prompt(
+      `Mark ${matched.first_name} ${matched.last_name} (${matched.employee_id}) as ` +
+      `${exitType.toUpperCase()}?\n\n` +
+      `This ends their employment immediately and disables their login. There is no ` +
+      `approval step.\n\nIt can be undone from this exit's page for 3 days.\n\n` +
+      `Type ${matched.employee_id} to confirm:`,
+      ""
+    );
+    if (typed === null) return;
+    if (typed.trim().toLowerCase() !== matched.employee_id.toLowerCase()) {
+      setError(`Not confirmed — you typed "${typed.trim()}" instead of ${matched.employee_id}.`);
+      return;
+    }
     setSaving(true);
     try {
       await API.post("/exit/direct-exit", {
         employee_id: matched.employee_id,   // canonical stored ID
+        confirm_employee_id: typed.trim(),
         final_exit_type: exitType,
         reason,
         last_working_day: lwd || undefined
@@ -645,6 +663,39 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
     if (activeTab === "documents") loadFFS();
   }, [activeTab]);
 
+  // A direct exit is the only one a single mistaken click can complete, so it is
+  // the only one that is reversible — and only inside its window.
+  const undoDeadline = exit?.undo_deadline ? new Date(exit.undo_deadline) : null;
+  const canUndoDirectExit = Boolean(
+    isAdmin && exit?.is_direct_exit && exit?.status !== "reverted" &&
+    undoDeadline && !isNaN(undoDeadline) && undoDeadline > new Date()
+  );
+
+  const handleUndoDirectExit = async () => {
+    const who = `${exit.employee_name} (${exit.employee_id})`;
+    if (!window.confirm(
+      `Undo the direct exit for ${who}?\n\n` +
+      `They will be reinstated to the status they had before, and their login ` +
+      `re-enabled if this exit is what disabled it.\n\n` +
+      `The exit stays on record, marked as undone.`
+    )) return;
+    const reason = window.prompt(
+      `Why is this being undone? (at least 10 characters — recorded against your name)`, "");
+    if (reason === null) return;
+    if (reason.trim().length < 10) { alert("A reason of at least 10 characters is required."); return; }
+    try {
+      const r = await API.post(`/exit/${exit.id}/undo-direct-exit`, { reason: reason.trim() });
+      alert(
+        `${who} reinstated as "${r.data.restored_status}".` +
+        (r.data.login_restored ? "\nTheir login has been re-enabled."
+                               : "\nTheir login was already disabled before this exit, so it was left alone.")
+      );
+      onRefresh();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Could not undo this exit.");
+    }
+  };
+
   const handleDownload = async (docType) => {
     try {
       const response = await API.get(`/exit/${exit.id}/download/${docType}`, { responseType: "blob" });
@@ -706,6 +757,31 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
                     <p className="font-semibold text-[#1E2A47] text-sm">{value || "—"}</p>
                   </div>
                 ))}
+                {canUndoDirectExit && (
+                  <div className="col-span-2 p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-bold text-amber-900">Direct exit — undo available</p>
+                      <p className="text-xs text-amber-800 mt-0.5">
+                        This exit skipped the approval workflow. It can be undone until{" "}
+                        {undoDeadline.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}.
+                      </p>
+                    </div>
+                    <button onClick={handleUndoDirectExit} data-testid="undo-direct-exit-btn"
+                      className="flex-shrink-0 px-3 py-1.5 bg-white border-2 border-amber-400 text-amber-900 rounded-lg text-xs font-semibold hover:bg-amber-100">
+                      Undo exit
+                    </button>
+                  </div>
+                )}
+                {exit?.status === "reverted" && (
+                  <div className="col-span-2 p-3 bg-slate-100 border border-slate-300 rounded-lg">
+                    <p className="text-xs font-bold text-slate-700">This direct exit was undone</p>
+                    <p className="text-xs text-slate-600 mt-0.5">
+                      By {exit.reverted_by || "an admin"}
+                      {exit.reverted_at && ` on ${new Date(exit.reverted_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}`}
+                      {exit.revert_reason && <> — “{exit.revert_reason}”</>}
+                    </p>
+                  </div>
+                )}
                 {exit?.final_exit_type && (
                   <div className="col-span-2 flex items-center justify-between">
                     <div>
