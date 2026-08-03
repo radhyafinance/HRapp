@@ -1194,6 +1194,85 @@ async def auto_exit_employees_past_lwd() -> dict:
     return {"exited_count": len(exited), "exited_employees": exited}
 
 
+# ── Stale exit fields ────────────────────────────────────────────────────────
+# `last_working_day` on the EMPLOYEE record is invisible: no screen displays it,
+# and every "Last Working Day" in the UI comes from the exit request instead. But
+# payroll counts every day after it as loss of pay, so an employee who is back at
+# work with the field still set is paid nothing, silently, with nothing on screen
+# to explain it.
+#
+# Statuses where the field is legitimate: someone serving notice has a real last
+# working day, and an exited employee's is history.
+_LWD_EXPECTED_STATUSES = ("exited", "notice_period", "resigned")
+
+
+@router.get("/admin/stale-exit-fields")
+async def stale_exit_fields(current_user: dict = Depends(get_current_user)):
+    """Employees carrying exit fields that their status says they should not.
+
+    Read-only. This is the silent zero-pay state, and the only way to find
+    everyone already sitting in it.
+    """
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    emps = await db.employees.find(
+        {"status": {"$nin": list(_LWD_EXPECTED_STATUSES)},
+         "$or": [{"last_working_day": {"$nin": [None, ""]}},
+                 {"final_exit_type": {"$nin": [None, ""]}}]},
+        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "status": 1,
+         "designation": 1, "branch": 1, "last_working_day": 1, "final_exit_type": 1},
+    ).sort("employee_id", 1).to_list(2000)
+    return [{
+        "employee_id": e["employee_id"],
+        "name": f"{e.get('first_name','')} {e.get('last_name','')}".strip() or e["employee_id"],
+        "status": e.get("status"),
+        "designation": e.get("designation", ""),
+        "branch": e.get("branch", ""),
+        "last_working_day": e.get("last_working_day"),
+        "final_exit_type": e.get("final_exit_type"),
+    } for e in emps]
+
+
+@router.post("/admin/clear-stale-exit-fields/{employee_id}")
+async def clear_stale_exit_fields(employee_id: str, data: UndoDirectExitRequest,
+                                  current_user: dict = Depends(get_current_user)):
+    """Remove leftover exit fields from an employee who is already back at work.
+
+    Deliberately NARROWER than reinstate: it touches only the two fields, never
+    the status, the login, or any exit request. A rehired employee legitimately
+    has an old completed exit on file, and reinstate would mark that history
+    reverted — this must not.
+    """
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    reason = (data.reason or "").strip()
+    if len(reason) < 10:
+        raise HTTPException(status_code=400,
+                            detail="Give a reason of at least 10 characters — it is recorded against your name.")
+    emp = await db.employees.find_one({"employee_id": employee_id})
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    if emp.get("status") in _LWD_EXPECTED_STATUSES:
+        raise HTTPException(
+            status_code=400,
+            detail=(f"{employee_id} has status '{emp.get('status')}', where a last working day is "
+                    "expected. If they were exited by mistake, use Reinstate instead — that also "
+                    "restores their status and login."),
+        )
+    cleared = {f: emp.get(f) for f in ("last_working_day", "final_exit_type") if emp.get(f)}
+    if not cleared:
+        raise HTTPException(status_code=400,
+                            detail=f"{employee_id} has no leftover exit fields — nothing to clear.")
+    await db.employees.update_one(
+        {"employee_id": employee_id},
+        {"$unset": {"last_working_day": "", "final_exit_type": ""},
+         "$set": {"exit_fields_cleared_at": datetime.now(timezone.utc).isoformat(),
+                  "exit_fields_cleared_by": current_user.get("employee_id") or current_user.get("username"),
+                  "exit_fields_cleared_reason": reason}},
+    )
+    return {"employee_id": employee_id, "cleared": cleared, "status": emp.get("status")}
+
+
 @router.post("/admin/run-auto-exit")
 async def run_auto_exit(current_user: dict = Depends(get_current_user)):
     """Manually trigger auto-exit for all employees whose LWD has passed. HR Admin only."""

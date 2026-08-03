@@ -1243,6 +1243,7 @@ export default function ExitManagement() {
   const [showDirectExit, setShowDirectExit] = useState(false);
   const [filterStatus, setFilterStatus] = useState("all");
   const [search, setSearch] = useState("");
+  const [stale, setStale] = useState([]);
 
   const isAdmin = user?.role === "hr_admin";
   const isManagement = user?.role === "management";
@@ -1255,7 +1256,29 @@ export default function ExitManagement() {
     finally { setLoading(false); }
   }, []);
 
+  // Employees carrying exit data their status says they should not — the state
+  // that pays someone zero with nothing on screen to explain it. Admin only, and
+  // non-fatal: if it fails the rest of the page still works.
+  const fetchStale = useCallback(async () => {
+    try { const r = await API.get("/exit/admin/stale-exit-fields"); setStale(r.data || []); }
+    catch { setStale([]); }
+  }, []);
+
+  const clearStale = async (row) => {
+    const reason = window.prompt(
+      `Clear the leftover exit fields on ${row.name} (${row.employee_id})?\n\n` +
+      `Removes the last working day and exit classification only. Status, login and ` +
+      `exit history are untouched.\n\nReason (at least 10 characters):`, "");
+    if (reason === null) return;
+    if (reason.trim().length < 10) { alert("A reason of at least 10 characters is required."); return; }
+    try {
+      await API.post(`/exit/admin/clear-stale-exit-fields/${row.employee_id}`, { reason: reason.trim() });
+      fetchStale();
+    } catch (e) { alert(e.response?.data?.detail || "Could not clear these fields."); }
+  };
+
   useEffect(() => { fetchData(); }, [fetchData]);
+  useEffect(() => { if (isAdmin || isManagement) fetchStale(); }, [isAdmin, isManagement, fetchStale]);
 
   // Refresh selected item
   const refreshSelected = useCallback(async () => {
@@ -1290,6 +1313,42 @@ export default function ExitManagement() {
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-4" style={{ fontFamily: "'Work Sans', sans-serif" }} data-testid="exit-management-page">
+      {/* Employees left carrying exit data their status contradicts. Payroll counts
+          every day after a last working day as loss of pay, so this is the state
+          that pays someone nothing without anything on screen saying why. */}
+      {stale.length > 0 && (
+        <div className="mb-5 p-3 bg-red-50 border-2 border-red-300 rounded-xl" data-testid="stale-exit-banner">
+          <p className="text-sm font-bold text-red-800">
+            {stale.length} employee{stale.length > 1 ? "s are" : " is"} carrying leftover exit data
+          </p>
+          <p className="text-xs text-red-700 mt-1">
+            Their status says they are working, but an exit left a last working day on their record.
+            Payroll treats every day after it as loss of pay, so they will be paid close to nothing
+            at the next run. No other screen shows this.
+          </p>
+          <div className="mt-2 space-y-1.5">
+            {stale.map(row => (
+              <div key={row.employee_id} className="flex items-center justify-between gap-3 bg-white border border-red-200 rounded-lg px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-[#0F172A] truncate">
+                    {row.name} <span className="text-xs text-[#E85B1E] font-mono">{row.employee_id}</span>
+                  </p>
+                  <p className="text-xs text-slate-600">
+                    Status {row.status}
+                    {row.last_working_day && <> · last working day <strong>{row.last_working_day}</strong></>}
+                    {row.final_exit_type && <> · marked <strong>{row.final_exit_type}</strong></>}
+                  </p>
+                </div>
+                <button onClick={() => clearStale(row)} data-testid={`clear-stale-${row.employee_id}`}
+                  className="flex-shrink-0 px-3 py-1.5 bg-white border-2 border-red-400 text-red-800 rounded-lg text-xs font-semibold hover:bg-red-100">
+                  Clear
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-start justify-between mb-5 gap-3">
         <div>

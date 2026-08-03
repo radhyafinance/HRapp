@@ -26,6 +26,27 @@ export function EmployeeDetailView({ emp: initialEmp }) {
       .catch(() => setManagerInfo(null));
   }, [emp?.reporting_to]);
 
+  // `last_working_day` on the employee record is otherwise invisible — every
+  // "Last Working Day" elsewhere in the app comes from the exit request. Payroll
+  // counts every day after it as loss of pay, so someone back at work with it
+  // still set is paid nothing, with nothing on screen to explain why.
+  const LWD_OK = ["exited", "notice_period", "resigned"];
+  const staleExitFields = !LWD_OK.includes(emp.status) && (emp.last_working_day || emp.final_exit_type);
+
+  const clearStaleExitFields = async () => {
+    const reason = window.prompt(
+      `Clear the leftover exit fields on ${emp.first_name} ${emp.last_name} (${emp.employee_id})?\n\n` +
+      `This removes the last working day and exit classification ONLY. Their status, login and ` +
+      `exit history are untouched.\n\nReason (at least 10 characters):`, "");
+    if (reason === null) return;
+    if (reason.trim().length < 10) { alert("A reason of at least 10 characters is required."); return; }
+    try {
+      const r = await API.post(`/exit/admin/clear-stale-exit-fields/${emp.employee_id}`, { reason: reason.trim() });
+      alert(`Cleared: ${Object.entries(r.data.cleared).map(([k, v]) => `${k} (${v})`).join(", ")}`);
+      setEmp(prev => ({ ...prev, last_working_day: undefined, final_exit_type: undefined }));
+    } catch (e) { alert(e.response?.data?.detail || "Could not clear these fields."); }
+  };
+
   const addr = emp.address || {};
   const sal = emp.salary || {};
   const bank = emp.bank_details || {};
@@ -137,6 +158,25 @@ export function EmployeeDetailView({ emp: initialEmp }) {
 
   return (
     <div className="space-y-4">
+      {staleExitFields && (
+        <div className="p-3 bg-red-50 border-2 border-red-300 rounded-lg" data-testid="stale-exit-fields">
+          <p className="text-sm font-bold text-red-800">Leftover exit data on this record</p>
+          <p className="text-xs text-red-700 mt-1">
+            Status is <strong>{emp.status}</strong>, but this employee still has
+            {emp.last_working_day && <> a last working day of <strong>{emp.last_working_day}</strong></>}
+            {emp.last_working_day && emp.final_exit_type && " and"}
+            {emp.final_exit_type && <> an exit type of <strong>{emp.final_exit_type}</strong></>}.
+          </p>
+          <p className="text-xs text-red-700 mt-1">
+            Payroll treats every day after a last working day as loss of pay, so they will be paid
+            close to nothing at the next run. Nothing else in the app shows this field.
+          </p>
+          <button onClick={clearStaleExitFields} data-testid="clear-stale-exit-fields"
+            className="mt-2 px-3 py-1.5 bg-white border-2 border-red-400 text-red-800 rounded-lg text-xs font-semibold hover:bg-red-100">
+            Clear these fields
+          </button>
+        </div>
+      )}
       <div className="flex items-center gap-4 p-4 bg-slate-50 rounded-lg">
         <div className="w-16 h-16 rounded-full bg-[#1E2A47] flex items-center justify-center text-white text-2xl font-bold">
           {emp.first_name?.charAt(0)}{emp.last_name?.charAt(0)}

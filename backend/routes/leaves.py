@@ -354,15 +354,34 @@ async def apply_leave(data: LeaveApplyRequest, current_user: dict = Depends(get_
     if data.leave_type not in LEAVE_TYPES:
         raise HTTPException(status_code=400, detail=f"Invalid leave type. Allowed: {LEAVE_TYPES}")
 
+    # WHOSE leave this is — settled before anything else touches it.
+    #
+    # `is_admin_for_other` below governs admin PRIVILEGES (skipping policy and
+    # balance checks, auto-approving). It never gated the employee_id itself, so
+    # any authenticated user could name a colleague: the application was stored
+    # against that colleague, queued to their manager as an ordinary request, and
+    # nothing anywhere recorded who actually submitted it.
+    me = (current_user.get("employee_id") or "").strip()
+    emp_id = (data.employee_id or "").strip() or me
+    if not emp_id:
+        raise HTTPException(
+            status_code=400,
+            detail="No employee to apply for — this account is not linked to an employee record.",
+        )
+    if emp_id != me and current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only apply for your own leave. Only HR Admin or Management "
+                   "can apply on behalf of another employee.",
+        )
+
     # Fetch employee for joining date (Rule 6) and other checks
-    emp_id = data.employee_id or current_user.get("employee_id")
     employee = await db.employees.find_one({"employee_id": emp_id}) or {}
 
     # Detect admin applying on behalf of another employee
     is_admin_for_other = (
         current_user.get("role") in ["hr_admin", "management"]
-        and bool(data.employee_id)
-        and data.employee_id != (current_user.get("employee_id") or "")
+        and emp_id != me
     )
 
     # Skip policy validation when admin applies on behalf of an employee (admin override)
@@ -403,6 +422,9 @@ async def apply_leave(data: LeaveApplyRequest, current_user: dict = Depends(get_
         # Admin applying on behalf → auto-approved immediately
         "status": "approved" if is_admin_for_other else "pending",
         "applied_at": now_str,
+        # Always recorded, not only for admin-on-behalf. A leave application
+        # must be traceable to the person who submitted it, whoever that was.
+        "applied_by": current_user.get("employee_id") or current_user.get("username"),
         "applied_by_admin": is_admin_for_other,
         "approved_by": approver_id if is_admin_for_other else None,
         "approval_date": now_str if is_admin_for_other else None,
