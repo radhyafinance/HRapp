@@ -72,8 +72,22 @@ export default function FieldTracking() {
   const [histSelected, setHistSelected] = useState(null);
   const [histTrack, setHistTrack] = useState(null);
   const [histLoading, setHistLoading] = useState(false);
-  const isManager = ["hr_admin", "management", "managers"].includes(user?.role);
-  const canViewOdoPhotos = ["hr_admin", "management"].includes(user?.role);
+  // Access comes from the server, not from the role alone: a Risk & Credit
+  // manager can be granted read-only tracking without being made an admin.
+  // Until it answers, fall back to the role so admins see no flicker.
+  const roleIsManager = ["hr_admin", "management", "managers"].includes(user?.role);
+  const roleIsAdmin = ["hr_admin", "management"].includes(user?.role);
+  const [access, setAccess] = useState(null);
+  useEffect(() => {
+    API.get("/tracker/my-access")
+      .then(r => setAccess(r.data))
+      .catch(() => setAccess({ can_view: roleIsManager, can_admin: roleIsAdmin, via: "role" }));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const isManager = access ? access.can_view : roleIsManager;
+  const canAdmin = access ? access.can_admin : roleIsAdmin;
+  // Odometer photos are evidence of a field visit — the point of a granted
+  // viewer. Managers have never had them and are not being widened here.
+  const canViewOdoPhotos = canAdmin || access?.via === "grant";
   // Branch list is derived from who is actually punched in today, not the full
   // branch master — a filter offering branches with nobody in them is noise.
   const liveBranches = [...new Set(activeStaff.map(s => s.branch).filter(Boolean))].sort();
@@ -132,6 +146,23 @@ export default function FieldTracking() {
       setOdoList(list => list.map(x => x.employee_id === e.employee_id ? { ...x, field_staff: res.data.field_staff } : x));
     } catch (err) { console.error(err); }
   };
+  // Granting this shows one person the location history of every tracked
+  // employee, including people outside their reporting line — so it confirms,
+  // and the server records who granted it. Revoking needs no confirmation.
+  const toggleTrackingViewer = async (e) => {
+    if (!e.tracking_viewer && !window.confirm(
+      `Give ${e.name} (${e.employee_id}) read-only tracking access?\n\n` +
+      `They will be able to see live location, route history, distance reports ` +
+      `and odometer photos for EVERY tracked employee — not just their own team.\n\n` +
+      `They will not be able to change any tracking setting, disable a device, ` +
+      `or see payroll, salaries or exits.`
+    )) return;
+    try {
+      const res = await API.post(`/tracker/tracking-viewer/toggle/${e.employee_id}`);
+      setOdoList(list => list.map(x => x.employee_id === e.employee_id
+        ? { ...x, tracking_viewer: res.data.tracking_viewer } : x));
+    } catch (err) { console.error(err); }
+  };
   const exportDistance = async () => {
     const d = new Date(distDate + "T00:00:00");
     const pad = (n) => String(n).padStart(2, "0");
@@ -168,8 +199,14 @@ export default function FieldTracking() {
     try { const res = await API.get(`/attendance/location-track/${empId}`, { params: { date_str: d } }); setHistTrack(res.data); }
     catch (e) { console.error(e); } finally { setHistLoading(false); }
   };
+  // If access resolves to non-admin while an admin-only tab is open, fall back
+  // rather than firing a request that can only 403.
+  useEffect(() => {
+    if (!canAdmin && (tab === "odometer" || tab === "adoption")) setTab("live");
+  }, [canAdmin, tab]);
   useEffect(() => {
     if (!isManager) return;
+    if (tab === "odometer" || tab === "adoption") { if (!canAdmin) return; }
     if (tab === "live") fetchActive();
     else if (tab === "devices") fetchDevices();
     else if (tab === "history" && histEmployees.length === 0) fetchEmployees();
@@ -260,8 +297,10 @@ export default function FieldTracking() {
             ["live", `Active Today (${activeStaff.length})`],
             ["devices", `Tracker Devices (${devices.length})`],
             ["distance", "Distance"],
-            ["odometer", "Field staff"],
-            ...(canViewOdoPhotos ? [["adoption", "App adoption"]] : []),
+            // Both of these are backed by admin-only endpoints. Showing them to
+            // anyone else renders a tab that can only ever 403 — which is what
+            // the `managers` role got until now.
+            ...(canAdmin ? [["odometer", "Field staff"], ["adoption", "App adoption"]] : []),
             ["history", "History"],
           ].map(([val, label]) => (
             <button key={val} onClick={() => setTab(val)} data-testid={`ft-tab-${val}`}
@@ -344,16 +383,22 @@ export default function FieldTracking() {
               <strong className="text-slate-500">Odometer</strong> — enabled staff must photograph their odometer at start &amp; end of day.
               Missing readings are flagged here and to the employee.
             </p>
+            <p className="text-xs text-slate-400 mt-1">
+              <strong className="text-slate-500">Can view tracking</strong> — read-only access to live location, route
+              history, distance and odometer photos for <em>every</em> tracked employee, for someone outside their
+              reporting line (a risk or audit role). They get no toggles on this page and no payroll, salary or exit
+              access. Switch it on for as few people as possible.
+            </p>
           </div>
           <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead><tr className="bg-slate-50 border-b">
-                  {["Employee", "Designation", "Field staff", "Odometer tracking"].map(h =>
+                  {["Employee", "Designation", "Field staff", "Odometer tracking", "Can view tracking"].map(h =>
                     <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>)}
                 </tr></thead>
                 <tbody>
-                  {odoLoading ? <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                  {odoLoading ? <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
                   : odoList.filter(e => {
                       if (!odoSearch) return true;
                       const q = odoSearch.toLowerCase();
@@ -374,6 +419,17 @@ export default function FieldTracking() {
                           className={`relative w-11 h-6 rounded-full transition-colors ${e.odometer_required ? "bg-[#12855a]" : "bg-slate-300"}`}>
                           <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${e.odometer_required ? "translate-x-5" : ""}`} />
                         </button>
+                      </td>
+                      <td className="px-4 py-3">
+                        <button onClick={() => toggleTrackingViewer(e)} data-testid={`tracking-viewer-toggle-${e.employee_id}`}
+                          className={`relative w-11 h-6 rounded-full transition-colors ${e.tracking_viewer ? "bg-[#1E2A47]" : "bg-slate-300"}`}>
+                          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${e.tracking_viewer ? "translate-x-5" : ""}`} />
+                        </button>
+                        {e.tracking_viewer && (
+                          <span className="block text-[11px] text-slate-400 mt-1" data-testid={`tracking-viewer-note-${e.employee_id}`}>
+                            sees everyone{e.tracking_viewer_by ? ` · granted by ${e.tracking_viewer_by}` : ""}
+                          </span>
+                        )}
                       </td>
                     </tr>
                   ))}

@@ -17,7 +17,9 @@ const NAV_ITEMS = [
   { path: "/employees", label: "Employees", icon: Users, roles: ["hr_admin", "management", "managers"] },
   { path: "/attendance", label: "Attendance", icon: CalendarCheck, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
   { path: "/calendar", label: "Calendar", icon: Calendar, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
-  { path: "/field-tracking", label: "Field Tracking", icon: MapPin, roles: ["hr_admin", "management", "managers"] },
+  // `grant` = also shown to anyone holding the read-only tracking permission,
+  // which is a per-person flag rather than a role (see /tracker/my-access).
+  { path: "/field-tracking", label: "Field Tracking", icon: MapPin, roles: ["hr_admin", "management", "managers"], grant: "tracking" },
   { path: "/leaves", label: "Leaves", icon: FileText, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
   { path: "/payroll", label: "Payroll", icon: CreditCard, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
   { path: "/performance", label: "Performance", icon: TrendingUp, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
@@ -67,6 +69,18 @@ export default function Layout() {
     return () => clearInterval(interval);
   }, [user?.role]);
 
+  // Per-person grants that open a nav item the role alone would not. Asked for
+  // on every mount rather than read from the cached auth user, so a permission
+  // granted today does not wait for the next login to appear.
+  const [grants, setGrants] = useState({ tracking: false });
+  useEffect(() => {
+    if (!user) return;
+    if (["hr_admin", "management", "managers"].includes(user.role)) return;  // role already covers it
+    API.get("/tracker/my-access")
+      .then(r => setGrants(g => ({ ...g, tracking: !!r.data?.can_view })))
+      .catch(() => {});
+  }, [user?.role, user?.employee_id]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Load passport photo for employees
   useEffect(() => {
     if (!user?.employee_id) return;
@@ -108,6 +122,8 @@ export default function Layout() {
       // Special access: show if user's employee_id is in the list OR role matches
       return item.employeeIds.includes(user?.employee_id) || item.roles.includes(user?.role);
     }
+    // A per-person grant can open an item the role alone would not.
+    if (item.grant === "tracking" && grants.tracking) return true;
     return item.roles.includes(user?.role);
   });
 

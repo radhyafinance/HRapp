@@ -249,13 +249,11 @@ def _new_secret() -> str:
 async def list_devices(current_user: dict = Depends(get_current_user)):
     """List all configured tracker devices with freshness status.
     Works independent of attendance so admins can diagnose silent devices."""
-    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
-        raise HTTPException(status_code=403, detail="Access denied")
+    # _scope_ids carries the whole access rule — role, grant and manager scope —
+    # so the device list can never drift out of step with the distance report.
+    scope = await _scope_ids(current_user)
     tracker_q = {}
-    if current_user.get("role") == "managers":
-        from services.hierarchy import get_descendant_employee_ids
-        me_id = current_user.get("employee_id")
-        scope = list(await get_descendant_employee_ids(me_id)) if me_id else []
+    if scope is not None:
         if not scope:
             return []
         tracker_q["employee_id"] = {"$in": scope}
@@ -464,6 +462,76 @@ async def my_location_enforcement(current_user: dict = Depends(get_current_user)
     return {"field_staff": bool(emp and emp.get("field_staff"))}
 
 
+async def _is_tracking_viewer(current_user: dict) -> bool:
+    """Has this person been granted read-only tracking access?
+
+    A per-person flag on the employee record, deliberately NOT a role. Roles are
+    checked inline all over this codebase — including nine places that gate on
+    `role in ("employee", "field_agent")` to show someone their own payslip,
+    leave and attendance — so inventing a role to carry one permission would
+    silently drop that person out of their own records.
+
+    Grants READ ONLY. Every write on this router stays hr_admin/management:
+    a control function that can switch off the tracking it reviews, or rotate
+    the device secret feeding it, is not a control.
+    """
+    emp_id = current_user.get("employee_id")
+    if not emp_id:
+        return False
+    emp = await db.employees.find_one(
+        {"employee_id": emp_id}, {"_id": 0, "tracking_viewer": 1})
+    return bool(emp and emp.get("tracking_viewer"))
+
+
+@router.get("/my-access")
+async def my_tracking_access(current_user: dict = Depends(get_current_user)):
+    """What this account may see of tracking — read by the nav and the page.
+
+    Read-only and provisions nothing. `scope` is "all" for everyone tracked,
+    "team" for a manager's own reporting line, "none" for no access.
+    `can_admin` drives whether the page renders its toggles at all; the server
+    refuses them regardless, this only stops showing buttons that would 403.
+    """
+    role = current_user.get("role")
+    if role in ("hr_admin", "management"):
+        return {"can_view": True, "scope": "all", "can_admin": True, "via": "role"}
+    if await _is_tracking_viewer(current_user):
+        return {"can_view": True, "scope": "all", "can_admin": False, "via": "grant"}
+    if role == "managers":
+        return {"can_view": True, "scope": "team", "can_admin": False, "via": "role"}
+    return {"can_view": False, "scope": "none", "can_admin": False, "via": None}
+
+
+@router.post("/tracking-viewer/toggle/{employee_id}")
+async def toggle_tracking_viewer(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Grant or revoke read-only tracking access for one person.
+
+    Records who granted it and when: this opens up every field employee's
+    location history to someone outside their reporting line, so "who decided
+    this?" needs an answer that does not depend on anyone's memory.
+    """
+    if current_user.get("role") not in ("hr_admin", "management"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    # employee_id stays in the projection so an employee with no flag yet comes
+    # back as {} rather than None — the same trap as the toggles below.
+    emp = await db.employees.find_one(
+        {"employee_id": employee_id},
+        {"_id": 0, "employee_id": 1, "tracking_viewer": 1},
+    )
+    if emp is None:
+        raise HTTPException(status_code=404, detail="Employee not found")
+    new_state = not bool(emp.get("tracking_viewer"))
+    await db.employees.update_one(
+        {"employee_id": employee_id},
+        {"$set": {
+            "tracking_viewer": new_state,
+            "tracking_viewer_at": datetime.now(timezone.utc).isoformat(),
+            "tracking_viewer_by": current_user.get("employee_id") or current_user.get("username"),
+        }},
+    )
+    return {"employee_id": employee_id, "tracking_viewer": new_state}
+
+
 @router.post("/field-staff/toggle/{employee_id}")
 async def toggle_field_staff(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Mark/unmark an employee as field staff.
@@ -590,6 +658,11 @@ async def _scope_ids(current_user: dict):
     """None => sees everyone; else the list of employee_ids a manager may see."""
     role = current_user.get("role")
     if role in ("hr_admin", "management"):
+        return None
+    # A granted tracking viewer sees everyone tracked. Checked BEFORE the
+    # managers branch: the grant is the wider scope, and a manager who is also
+    # granted must not be narrowed back to their own reporting line.
+    if await _is_tracking_viewer(current_user):
         return None
     if role == "managers":
         from services.hierarchy import get_descendant_employee_ids
@@ -783,7 +856,8 @@ async def odometer_employees(current_user: dict = Depends(get_current_user)):
     emps = await db.employees.find(
         {"status": {"$ne": "exited"}},
         {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1, "designation": 1,
-         "odometer_required": 1, "field_staff": 1},
+         "odometer_required": 1, "field_staff": 1,
+         "tracking_viewer": 1, "tracking_viewer_at": 1, "tracking_viewer_by": 1},
     ).sort("employee_id", 1).to_list(4000)
     return [{
         "employee_id": e["employee_id"],
@@ -791,6 +865,9 @@ async def odometer_employees(current_user: dict = Depends(get_current_user)):
         "designation": e.get("designation", ""),
         "odometer_required": bool(e.get("odometer_required")),
         "field_staff": bool(e.get("field_staff")),
+        "tracking_viewer": bool(e.get("tracking_viewer")),
+        "tracking_viewer_at": e.get("tracking_viewer_at"),
+        "tracking_viewer_by": e.get("tracking_viewer_by"),
     } for e in emps]
 @router.post("/odometer/toggle/{employee_id}")
 async def toggle_odometer(employee_id: str, current_user: dict = Depends(get_current_user)):
@@ -810,8 +887,14 @@ async def toggle_odometer(employee_id: str, current_user: dict = Depends(get_cur
     return {"employee_id": employee_id, "odometer_required": new_state}
 @router.get("/odometer/day/{employee_id}")
 async def odometer_day(employee_id: str, date_str: str = None, current_user: dict = Depends(get_current_user)):
-    """Full odometer detail incl. photos for a day (HR/management audit view)."""
-    if current_user.get("role") not in ("hr_admin", "management"):
+    """Full odometer detail incl. photos for a day (audit view).
+
+    Admins and granted tracking viewers only — deliberately NOT the manager
+    scope, which has never had access to odometer photos and is not being
+    widened here.
+    """
+    if (current_user.get("role") not in ("hr_admin", "management")
+            and not await _is_tracking_viewer(current_user)):
         raise HTTPException(status_code=403, detail="Access denied")
     date_str = date_str or _today()
     start = await db.odometer_readings.find_one(
