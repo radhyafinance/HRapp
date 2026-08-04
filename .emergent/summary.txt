@@ -1,61 +1,62 @@
-<analysis>**original_problem_statement**: Create a comprehensive HR system for an NBFC-MFI named Radhya Micro Finance (40+ employees). PRODUCT REQUIREMENTS: Full-stack web application (FastAPI backend + React frontend). Role-based access control. Geofenced attendance. Joining Kit PDF/Word generation. Detailed payslip generation. PWA features for field tracking. Hierarchical reporting visibility. Strict Data Privacy/ACLs for salary. EPF UAN Validation using the Perfios API. Employee Exit Management workflow. 
+<analysis>**original_problem_statement**: Create a comprehensive HR system for an NBFC-MFI named Radhya Micro Finance (40+ employees). PRODUCT REQUIREMENTS: Full-stack web application (FastAPI backend + React frontend). Role-based access control. Geofenced attendance. Joining Kit PDF/Word generation. Detailed payslip generation. PWA features for field tracking. Hierarchical reporting visibility. Strict Data Privacy/ACLs for salary. EPF UAN Validation using the Perfios API. Employee Exit Management workflow. Performance Evaluation templates and modules. 
 
 **User's preferred language**: English (INSTRUCT NEXT AGENT: You MUST respond in English only)
 
-**what currently exists?**: A robust HR application with full PWA and Native Android Capacitor capabilities. Features include geofenced attendance, advanced leave management, payroll, EPF UAN verification, FCM Push Notifications, and Background GPS Field Tracking. It has a custom Odometer tracking system utilizing on-device OCR (ML Kit). The app now uses a grant ledger authoritative model for comp-off balance tracking, ensuring accurate manual date-based comp-off management.
+**what currently exists?**: A robust, heavily-customized HR application with full PWA and Native Android Capacitor capabilities. The system includes strict platform gating (blocks Android web, allows only APK/iOS/desktop), geofenced attendance with face matching and retry logic, advanced leave management, EPF UAN verification, FCM Push Notifications, Background GPS Field Tracking, complex Payroll processing, Exit Management workflows, and a Performance Management System. 
 
 **Last working item**:
-    - Last item agent was working: The agent was answering user queries regarding GitHub two-way sync and environment configuration persistence. Before this, the agent completed a massive 4-part refactoring of the Comp-Off tracking system to make the  ledger the single source of truth for balances, updating both backend logic and frontend UI, and running a one-time DB migration.
-    - Status: COMPLETED
-    - Agent Testing Done: Y
-    - Which testing method agent to use?: NA (Fully tested via  Iteration 25 with 100% frontend pass rate and 96.8% backend).
+    - Last item agent was working: Performing whole-file replacements based on user-provided artifacts (, , and ) and deploying directly to production.
+    - Status: USER VERIFICATION PENDING
+    - Agent Testing Done: N (Explicitly blocked by user via strict instructions)
+    - Which testing method agent to use? Both (Only if explicitly authorized, otherwise DO NOT test)
     - User Testing Done: N
 
 **All Pending/In progress Issue list**:
   Issue 1: Payroll recalculate button missing (P2)
-     - Attempted fixes: None.
-     - Next debug checklist: Add a Recalculate LOP/Payroll button for draft payroll records.
-     - Why fix this issue and what will be achieved with the fix?: Ease of use for HR when systemic attendance/leave changes are made after a draft is generated.
-     - Status: NOT STARTED
+     - Attempted fixes: Unverified. User has uploaded massive rewrites of  and  across multiple sessions.
+     - Next debug checklist: Verify visually if the new  includes a Recalculate LOP/Payroll button for draft payroll records.
+     - Why fix this issue and what will be achieved with the fix?: Ease of use for HR when systemic attendance/leave changes are made post-draft.
+     - Status: USER VERIFICATION PENDING
      - Is recurring issue?: N
      - Should Test frontend/backend/both after fix?: Both
 
   Issue 2: Payroll Employee Search Bar (P3)
-     - Attempted fixes: None.
-     - Next debug checklist: Implement a quick search-by-employee filter on the Payroll list UI.
+     - Attempted fixes: Unverified (potentially resolved in the user's manual file uploads).
+     - Next debug checklist: Check if the new  list UI has a quick search-by-employee filter.
      - Why fix this issue and what will be achieved with the fix?: Scrolling through 70+ records is tedious.
-     - Status: NOT STARTED
+     - Status: USER VERIFICATION PENDING
      - Is recurring issue?: N
      - Should Test frontend/backend/both after fix?: Frontend
 
   Issue 3: hr_admin self-regularisation UI (P3)
      - Attempted fixes: None.
-     - Next debug checklist: Allow hr_admin to request regularisation on themselves directly from the standard UI instead of forcing the Add Record bypass workflow.
-     - Why fix this issue and what will be achieved with the fix?: Keeps the audit trail consistent.
+     - Next debug checklist: Allow hr_admin to request regularisation on themselves directly from the standard UI instead of bypassing.
+     - Why fix this issue and what will be achieved with the fix?: Audit trail consistency.
      - Status: NOT STARTED
      - Is recurring issue?: N
      - Should Test frontend/backend/both after fix?: Both
 
 **In progress Task List**:
-  None
+  None (All progress is driven strictly by user file drops)
 
 **Upcoming and Future Tasks**
-    - Task 1: Letter Generation PDFs (P0) - Implement actual PDF generation and download for Offer Letters, Appointment Letters, Warning Letters, and Confirmation Letters.
+    - Task 1: Letter Generation PDFs (P0) - PDF generation and download for Offer Letters, Appointment Letters, Warning Letters, and Confirmation Letters.
     - Task 2: Leave Encashment Calculation (P2) - Logic to compute and disburse EL/PL encashment during payroll or exit.
     - Task 3: Employee Self-Portal for Document Upload (P2) - Allow existing employees to login and upload their own documents.
     - Task 4: Training records module (P2)
     - Task 5: Asset management integration (P2)
-    - Task 6: Document Completeness Scope Refinement (P3) - Scope  to manager's sub-tree instead of whole company.
+    - Task 6: Document Completeness Scope Refinement (P3) - Scope  to manager's sub-tree.
 
 **Completed work in this session**
-- Refactored  &  to use  ledger as the source of truth for comp-offs (DONE)
-- Added Date-based manual add/remove endpoints in  (DONE)
-- Updated Edit Balance modal in  for date-based comp-off management (DONE)
-- Executed  to auto-heal legacy comp-off override documents (DONE)
-- Responded to user support queries regarding GitHub integration capabilities (DONE)
+- Executed exact whole-file replacements for 30+ files based strictly on user artifacts.
+- Created new files: , , .
+- Replaced backend files: , , , , , , , , , , , , , , .
+- Replaced frontend files: , , , , , , , , , , , , , , , , .
+- Ran the  script on historical data.
+- Triggered the Deployer Agent 11 times to push changes directly to the live production environment.
 
 **Earlier issues found/mentioned but not fixed**
-  None
+  - High risk of regression across the entire application due to bypassing automated testing over massive multi-file replacements. 
 
 **Known issue recurrence from previous fork**
   - Issue recurrence in previous fork: None
@@ -66,68 +67,70 @@
 
 
 **Key Technical Concepts**
-Frontend: React, Tailwind, Axios, Capacitor Core & Plugins (Camera, PushNotifications, ML Kit Text Recognition, App).
-Backend: FastAPI, MongoDB, Pydantic, Background asyncio schedulers, Firebase Admin SDK.
+Frontend: React, Tailwind, Axios, Capacitor Core (Native Android vs Web routing logic).
+Backend: FastAPI, MongoDB, Background asyncio schedulers, PDF Rendering (ReportLab), Face match validation logic.
 
 **key DB schema**
-  - : Stores comp-offs (, , , , ).
-  - : Stores  delta for comp-offs instead of absolute values.
-  - , , , .
+  - , : Performance management metrics.
+  - : (, , ).
+  - : Stores KYC doc states.
+  - : Detailed salary hold/release timeline arrays.
 
 **changes in tech stack**
-  - None
+  - None.
 
-**All files of reference**
-  -  &  (Updated to pull dynamic comp-off effective balances)
-  -  (Added  and DELETE routes)
-  -  (Edit Balance Modal overhaul)
-  -  (One-time migration script)
-  -  (Updated)
+**All files of reference** 
+  - Essentially the entire codebase was manually updated by the user this session. Crucial active files include ,  (blocks Android web usage),  (network retry logic for punches), and .
 
 **Areas that need refactoring**:
-- , , and  are very large (1500+ lines) and should ideally be modularised into smaller components/services.
+- User has explicitly commanded: Do not refactor anything else. Files like  (1726 lines),  (1665 lines), and  (1513 lines) are bloated but MUST NOT be refactored by the agent.
 
 **key api endpoints**
-  - 
-  - 
-  - 
+  - Attendance Punch APIs (, )
+  - Tracker Location APIs
 
 **Critical Info for New Agent**
-  - **Environment Awareness**: The user has TWO environments (Preview/Dev vs Production). If the user reports bugs going forward, clarify which environment they are facing it on. You can only fix code in the Preview environment. Do not proactively bring up deployment unless the user mentions it.
-  - **GitHub Sync Support Constraints**: The user was informed that Emergent only supports one-way sync (pushing to GitHub). Pulling new code requires starting a new task, which resets all DB links and environment variables.
-  - **Capacitor Native Exclusivity**: Frontend logic heavily differentiates between PWA and Native. Do not break  checks when making UI changes.
+  - **ZERO TESTING & ZERO REFACTORING POLICY**: The user operates by uploading pre-written code files and commanding strict copy-paste replacements. DO NOT run testing agents, DO NOT modify, reformat, or regenerate their code, and DO NOT try to fix context unless explicitly asked.
+  - **ENVIRONMENT AWARENESS**: The application is deployed to production. There is a PREVIEW environment (your current workspace) and a PRODUCTION environment. If the user mentions a bug, **ALWAYS clarify if it is happening on Preview or Production** before attempting fixes. 
+  - **PlatformGate Constraint**:  forces Android web users to use the APK by checking . Background location permission is strictly gated. Ensure no routing bypasses this component.
 
 **documents and test reports created in this job**
-  -  (Comp-off Ledger tests)
-  - 
+  -  (Generated by running )
+  - No testing reports (Skipped via user directive).
 
-**Last 10 User Messages and any pending HUMAN messages**
- 1. *User*: Requested execution of 4 exact parts for Comp-off leave fix + date-based management.
- 2. *Agent*: Systematically applied all 4 parts, executed DB migration script, and passed testing agent with 100% frontend pass rate.
- 3. *User (System Notif)*: Added information regarding the existence of Preview and Production environments. User asked if GitHub two-way sync is supported.
- 4. *Agent*: Used support agent and informed the user that Emergent only supports one-way sync.
- 5. *User*: Asked if they would have to move all secrets and re-link the DB if they manually pull in GitHub updates.
- 6. *Agent*: Confirmed that starting a new task to pull repo updates requires reconfiguring all environment variables and secrets, advising them to keep working in Emergent instead.
- *(No pending human messages. Wait for user instruction to pick up the next backlog item, such as P0 Letter Generation).*
+**Last 10 User Messages and any pending HUMAN messages** 
+ All recent messages follow this exact pattern: User uploads files -> Commands exact replacement -> Commands deployment.
+ 1. *User*: Uploaded , , ,  and commanded replacement without redeploy.
+ 2. *Agent*: Replaced 4 files.
+ 3. *User*: Uploaded , , , ,  and commanded replacement without redeploy.
+ 4. *Agent*: Replaced 5 files.
+ 5. *User*: Uploaded ,  and commanded replacement & redeploy.
+ 6. *Agent*: Replaced 2 files and triggered deployer agent.
+ 7. *User*: Uploaded ,  and commanded replacement & redeploy.
+ 8. *Agent*: Replaced 2 files and triggered deployer agent.
+ 9. *User*: Uploaded , , ,  and commanded replacement.
+ 10. *Agent*: Replaced 4 files.
+ 11. *User*: Uploaded , ,  and commanded replacement & redeploy.
+ 12. *Agent*: Replaced 3 files and triggered deployer agent.
+*(No pending queries. Wait for the user's next file drop or bug report).*
 
 **Project Health Check:**
-Healthy. No Mocked endpoints.
+**HIGH RISK of regressions** (Broken conceptually for CI/CD). Over 30 files were entirely rewritten/replaced with no automated testing or validation.
 
-**3rd Party Integrations**
+**3rd Party Integrations** 
   - Perfios (Bank Account, DigiLocker, EPF UAN Verification API) — requires User API Key.
   - Google Gemini 2.5 Flash (Aadhaar & PAN OCR) — uses Emergent LLM Key.
   - Resend (Email OTP and Notifications) — requires User API Key.
   - Firebase Cloud Messaging (FCM) — requires User JSON Secret.
-  - Capacitor Plugins (ML Kit, PushNotifications, Camera, App) — built-in native integration.
 
 **Testing status**
-  - Testing agent used after significant changes: YES (Iteration 25)
+  - Testing agent used after significant changes: NO (Explicitly blocked by user).
   - Troubleshoot agent used after agent stuck in loop: NO
-  - Test files created: NA
-  - Known regressions: None
+  - Test files created: None
+  - Known regressions: None explicitly known, but implicitly high.
 
 **Credentials to test flow:**
   - HR Admin:  / 
 
 **What agent forgot to execute**
-- Nothing. The agent fulfilled the complex 4-part refactor successfully and accurately answered the user's support queries.</analysis>
+- The agent executed all strict commands exactly as asked. Previous backlog UI issues (Payroll search bar) were ignored as per the user's do not test, do not check context directive.</analysis>
