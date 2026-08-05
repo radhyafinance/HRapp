@@ -329,7 +329,7 @@ async def calculate_lop_days(employee_id: str, year: int, month: int, joining_da
     approved_leaves = await db.leave_applications.find({
         "employee_id": employee_id,
         "status": "approved",
-        "start_date": {"$lte": f"{last_day}\uffff"},
+        "start_date": {"$lte": f"{last_day}￿"},
         "end_date": {"$gte": f"{period}-01"},
     }).to_list(500)
     paid_leave_dates: set = set()
@@ -842,458 +842,715 @@ async def finalize_payroll(record_id: str, data: FinalizeRequest = None,
     if record.get("status") == "paid":
         raise HTTPException(status_code=409, detail="This payslip is already marked as paid.")
     # A draft has never been reviewed by anyone. Bulk publish refuses them; this
-    # single-record path must do the same — marking a draft paid bypasses the
-    # review step and silently excludes it from Recalculate LOP forever.
+    # route must too, or it becomes the way round that.
     if record.get("status") == "draft":
-        raise HTTPException(status_code=409, detail=(
-            "This record is still a draft and has not been reviewed. "
-            "Open the payslip and Save it first to move it to 'processed', "
-            "then mark it as paid."))
+        raise HTTPException(status_code=400, detail=(
+            "This payslip is still a draft — nobody has reviewed the figures. Save adjustments "
+            "to move it to Processed before marking it paid."))
+    # Nothing left the bank for a zero or negative net, so it cannot be recorded
+    # as paid — the NEFT file withholds these for the same reason.
+    if round(float(record.get("net_salary") or 0), 2) <= 0:
+        raise HTTPException(status_code=400, detail=(
+            "This payslip has a net of zero or less, so there is no payment to record. "
+            "Correct the deductions first."))
 
     data = data or FinalizeRequest()
-    payment_date = _clean_payment_date(data.reason if isinstance(data.reason, str) and
-                                       len((data.reason or "").strip()) == 10 and
-                                       data.reason.strip().count("-") == 2 else
-                                       (data.payment_date or ""))
-
-    # Was this employee in the NEFT file? If not, a reason is required.
-    export = await db.payroll_exports.find_one(
-        {"period": record.get("period"), "voided_at": {"$exists": False},
-         "employee_ids": record.get("employee_id")},
-        sort=[("exported_at", -1)],
-    )
     reason = (data.reason or "").strip()
-    if not export and not reason:
+    sent_ids, _ = await _exported_amounts(record.get("period", ""))
+    outside = record.get("employee_id") not in sent_ids
+    if outside and not reason:
         raise HTTPException(status_code=400, detail=(
-            "This employee was not in a NEFT file for this period. "
-            "Please provide a reason (e.g. 'Paid by cheque', 'Cash payment', "
-            "'Salary advance already disbursed') before marking as paid."))
+            "This employee was not in any NEFT file for this month, so the system cannot "
+            "confirm the payment. Give a reason (for example: paid by cheque, or transferred "
+            "manually) to record it anyway."))
 
     now = datetime.now(timezone.utc).isoformat()
-    actor = current_user.get("employee_id") or current_user.get("username")
-    update = {
-        "status": "paid",
-        "paid_at": payment_date or now,
-        "paid_by": actor,
-    }
-    if reason:
-        update["payment_reason"] = reason
-    if export:
-        update["paid_via_neft"] = True
-        update["neft_export_id"] = str(export.get("_id", ""))
-
-    await db.payroll_records.update_one({"_id": _oid(record_id)}, {"$set": update})
-    record = await db.payroll_records.find_one({"_id": _oid(record_id)})
-    return pay_to_dict(record)
+    res = await db.payroll_records.update_one(
+        # Re-assert the preconditions in the filter itself: the checks above are
+        # a read, and a publish or an exit hold can land between read and write.
+        {"_id": _oid(record_id), "status": {"$ne": "paid"}, "on_hold": {"$ne": True}},
+        {"$set": {"status": "paid",
+                  "paid_at": _clean_payment_date(data.payment_date) or now,
+                  "published_at": now,
+                  "published_by": current_user.get("employee_id") or current_user.get("username"),
+                  "paid_outside_neft": bool(outside),
+                  "paid_exception_reason": reason if outside else None}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=409, detail=(
+            "This payslip changed while you were marking it paid — it is now on hold or already "
+            "paid. Reopen the payslip to see its current state."))
+    return {"message": "Payroll marked as paid", "paid_outside_neft": bool(outside)}
 
 
 @router.post("/{record_id}/reopen")
-async def reopen_payroll(record_id: str, data: ReopenRequest,
+async def reopen_payslip(record_id: str, data: ReopenRequest,
                          current_user: dict = Depends(get_current_user)):
-    """Reopen a paid payroll record for editing.
+    """Take a record back out of `paid` so it can be corrected.
 
-    This undoes finalize. The record goes back to 'processed' so HR can correct
-    figures. The action is logged with who did it and why.
+    Editing a paid record used to do this silently — Save Adjustments set the
+    status back to `processed` and pulled the payslip out of the employee's view
+    with no warning. Reopening is now a deliberate act with a reason attached.
     """
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
+    reason = (data.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="Give a reason for reopening this payslip.")
     record = await db.payroll_records.find_one({"_id": _oid(record_id)})
     if not record:
         raise HTTPException(status_code=404, detail="Not found")
     if record.get("status") != "paid":
-        raise HTTPException(status_code=409, detail="Only paid records can be reopened.")
-
-    reason = (data.reason or "").strip()
-    if len(reason) < 5:
-        raise HTTPException(status_code=400, detail="Please provide a reason of at least 5 characters.")
-
-    now = datetime.now(timezone.utc).isoformat()
-    actor = current_user.get("employee_id") or current_user.get("username")
+        raise HTTPException(status_code=400, detail="This payslip is not marked as paid.")
     await db.payroll_records.update_one(
         {"_id": _oid(record_id)},
-        {"$set": {
-            "status": "processed",
-            "reopened_at": now,
-            "reopened_by": actor,
-            "reopen_reason": reason,
-        }},
+        {"$set": {"status": "processed",
+                  "reopened_at": datetime.now(timezone.utc).isoformat(),
+                  "reopened_by": current_user.get("employee_id") or current_user.get("username"),
+                  "reopen_reason": reason,
+                  "reopened_from_paid_at": record.get("paid_at")},
+         # The exception fields describe a payment that has just been withdrawn.
+         # Leaving them behind would tag a later, ordinary NEFT payment as a
+         # manual cheque.
+         "$unset": {"paid_at": "", "published_at": "",
+                    "paid_outside_neft": "", "paid_exception_reason": ""}},
     )
     record = await db.payroll_records.find_one({"_id": _oid(record_id)})
     return pay_to_dict(record)
 
 
+class ReleaseHoldRequest(BaseModel):
+    note: Optional[str] = None
+
+
 @router.post("/{record_id}/release-hold")
-async def release_salary_hold(record_id: str, current_user: dict = Depends(get_current_user)):
-    """Release a salary that was held pending exit clearance."""
+async def release_hold(record_id: str, data: ReleaseHoldRequest,
+                       current_user: dict = Depends(get_current_user)):
+    """Release a held salary so it enters the next NEFT export.
+
+    Reaching `completed` on the exit only makes a record *eligible*; nothing is
+    paid until an admin calls this. Releasing before the exit is complete is
+    allowed but recorded as an override, so the trail shows it was a judgement
+    call rather than the normal path.
+    """
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
     record = await db.payroll_records.find_one({"_id": _oid(record_id)})
     if not record:
         raise HTTPException(status_code=404, detail="Not found")
     if not record.get("on_hold"):
-        raise HTTPException(status_code=409, detail="This record is not on hold.")
+        raise HTTPException(status_code=400, detail="This salary is not on hold.")
 
-    now = datetime.now(timezone.utc).isoformat()
-    actor = current_user.get("employee_id") or current_user.get("username")
+    override = not record.get("hold_eligible_at")
+    if override and not (data.note or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="The exit is not complete yet. Give a reason to release this salary early.",
+        )
+
     await db.payroll_records.update_one(
         {"_id": _oid(record_id)},
         {"$set": {
             "on_hold": False,
-            "released_at": now,
-            "released_by": actor,
+            "released_at": datetime.now(timezone.utc).isoformat(),
+            "released_by": current_user.get("employee_id") or current_user.get("username"),
+            "release_note": (data.note or "").strip(),
+            "release_override": override,
         }},
     )
     record = await db.payroll_records.find_one({"_id": _oid(record_id)})
     return pay_to_dict(record)
 
 
-@router.post("/period/{period}/mark-all-paid")
-async def mark_all_paid(period: str, current_user: dict = Depends(get_current_user)):
-    """Mark all processed (non-held, non-draft) records as paid for a period.
+async def _exported_amounts(period: str) -> tuple:
+    """(employee_ids sent to the bank, last amount sent per employee).
 
-    Refuses if no NEFT file has been exported yet — bulk-paid without a bank
-    file means money moved but there is no record of how.
+    The UNION of every export for the period, not just the latest: someone whose
+    bank details were corrected between two downloads appears only in the second
+    file, and they were genuinely sent. Later files win on the amount.
+
+    `rows` only exists on exports taken after per-employee amounts were logged,
+    so the amount map is best-effort — membership is not.
+    """
+    exports = await db.payroll_exports.find(
+        {"period": period, "voided_at": {"$exists": False}}
+    ).sort("exported_at", 1).to_list(200)
+    ids, amounts = set(), {}
+    for ex in exports:
+        ids.update(ex.get("employee_ids") or [])
+        for row in (ex.get("rows") or []):
+            eid = row.get("employee_id")
+            if eid:
+                ids.add(eid)
+                amounts[eid] = float(row.get("net_salary") or 0)
+    return ids, amounts
+
+
+async def _score_publish(period: str) -> dict:
+    """Who would be marked paid, who would not, and why. Writes nothing.
+
+    A record is only marked paid if it was actually sent to the bank. "Paid" used
+    to mean "somebody clicked a button"; gating it on NEFT membership makes it
+    mean "was in a file HR downloaded and gave to the bank".
+    """
+    _parse_period(period)
+    sent_ids, sent_amounts = await _exported_amounts(period)
+    records = await db.payroll_records.find({"period": period}).to_list(4000)
+
+    to_pay, mismatched = [], []
+    skipped = {"held": [], "draft": [], "not_in_neft": [], "already_paid": [],
+               "nonpositive": []}
+    for r in records:
+        eid = r.get("employee_id")
+        row = {"record_id": str(r.get("_id")), "employee_id": eid,
+               "employee_name": r.get("employee_name", "") or eid,
+               "net_salary": round(float(r.get("net_salary") or 0), 2)}
+        if r.get("status") == "paid":
+            skipped["already_paid"].append(row)
+        elif r.get("on_hold"):
+            skipped["held"].append(row)
+        elif r.get("status") == "draft":
+            skipped["draft"].append(row)
+        elif row["net_salary"] <= 0:
+            skipped["nonpositive"].append(row)
+        elif eid not in sent_ids:
+            skipped["not_in_neft"].append(row)
+        else:
+            sent = sent_amounts.get(eid)
+            # Warn, never block: a changed amount is a fact to look into, and
+            # blocking would strand the record with no way forward.
+            if sent is not None and round(sent, 2) != row["net_salary"]:
+                row = {**row, "sent_amount": round(sent, 2),
+                       "difference": round(row["net_salary"] - sent, 2)}
+                mismatched.append(row)
+            to_pay.append(row)
+
+    return {
+        "period": period,
+        "any_export": bool(sent_ids),
+        "will_pay": len(to_pay),
+        "rows": to_pay,
+        "mismatched": mismatched,
+        "skipped": skipped,
+        "total_amount": round(sum(x["net_salary"] for x in to_pay), 2),
+    }
+
+
+@router.post("/approve")
+async def approve_period(period: str, current_user: dict = Depends(get_current_user)):
+    """Move a month's draft records to `processed` — approved for payment.
+
+    This step used to be done, unknowingly, by "Mark All Paid": it moved draft
+    records straight to `paid`, which is why `paid` meant nothing. Now that paid
+    means "the bank sent this", the approval it was standing in for needs to
+    exist on its own — otherwise a freshly processed month is all drafts, the
+    NEFT sheet excludes drafts, and nothing can ever be exported or paid.
+
+    Held records are approved too: a hold stops the money leaving, not the
+    figures being reviewed, and the NEFT export and publish both skip them
+    independently.
     """
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
     _parse_period(period)
-
-    export = await db.payroll_exports.find_one(
-        {"period": period, "voided_at": {"$exists": False}},
-        sort=[("exported_at", -1)],
-    )
-    if not export:
-        raise HTTPException(status_code=409, detail=(
-            f"No NEFT file has been exported for {period} yet. "
-            "Download the NEFT sheet first, then use Mark All Paid once the "
-            "bank transfer is confirmed."))
-
-    now = datetime.now(timezone.utc).isoformat()
-    actor = current_user.get("employee_id") or current_user.get("username")
-    # Only mark records that were in the NEFT file — others need a reason
-    neft_ids = export.get("employee_ids") or []
+    drafts = await db.payroll_records.find(
+        {"period": period, "status": "draft"}, {"_id": 1, "employee_id": 1}).to_list(4000)
+    if not drafts:
+        return {"period": period, "approved": 0, "employee_ids": [],
+                "message": "Nothing to approve — no draft records for this month."}
     res = await db.payroll_records.update_many(
-        {"period": period, "status": "processed", "on_hold": {"$ne": True},
-         "employee_id": {"$in": neft_ids}},
-        {"$set": {
-            "status": "paid",
-            "paid_at": now,
-            "paid_by": actor,
-            "paid_via_neft": True,
-            "neft_export_id": str(export.get("_id", "")),
-        }},
+        {"period": period, "status": "draft"},
+        {"$set": {"status": "processed",
+                  "approved_at": datetime.now(timezone.utc).isoformat(),
+                  "approved_by": current_user.get("employee_id") or current_user.get("username")}},
     )
-    return {"paid": res.modified_count, "period": period}
+    return {"period": period, "approved": res.modified_count,
+            "employee_ids": sorted(d.get("employee_id") for d in drafts if d.get("employee_id"))}
+
+
+@router.get("/publish/preview")
+async def preview_publish(period: str, current_user: dict = Depends(get_current_user)):
+    """What Mark All Paid would do. Read-only."""
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    return await _score_publish(period)
+
+
+@router.post("/publish")
+async def publish_payslips(period: str, payment_date: str = None,
+                           current_user: dict = Depends(get_current_user)):
+    """Mark as paid every `processed` record that was actually sent to the bank.
+
+    Held records are skipped — marking one paid would publish a payslip for money
+    that was never sent. Drafts are skipped too; they are already absent from the
+    NEFT sheet, so this is belt-and-braces.
+
+    Someone paid outside the bank run (no bank details, cheque, manual transfer)
+    is never in the file and is never caught here. That is deliberate: they go
+    through POST /{record_id}/finalize with a written reason, one at a time.
+    """
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    scored = await _score_publish(period)
+
+    if not scored["any_export"]:
+        raise HTTPException(status_code=409, detail=(
+            f"No NEFT file has been downloaded for {period}, so nothing can be confirmed as "
+            f"paid. Export the sheet and complete the bank transfer first. If someone was "
+            f"paid another way, mark that payslip paid individually with a reason."))
+
+    when = _clean_payment_date(payment_date) or datetime.now(timezone.utc).isoformat()
+    actor = current_user.get("employee_id") or current_user.get("username")
+    ids = [ObjectId(x["record_id"]) for x in scored["rows"]]
+    published = 0
+    if ids:
+        res = await db.payroll_records.update_many(
+            # Scoring happened before this write. Repeating the conditions here
+            # stops a record that became held or paid in between from being
+            # marked paid anyway.
+            {"_id": {"$in": ids}, "status": "processed", "on_hold": {"$ne": True}},
+            {"$set": {"status": "paid", "paid_at": when,
+                      "published_at": datetime.now(timezone.utc).isoformat(),
+                      "published_by": actor}},
+        )
+        published = res.modified_count
+    return {**scored, "published": published, "paid_at": when,
+            # kept for older callers that read this field
+            "held_skipped": len(scored["skipped"]["held"])}
 
 
 @router.get("/export/neft")
-async def export_neft(period: str, current_user: dict = Depends(get_current_user)):
-    """Generate and download the NEFT payment file for a period.
-
-    Implements a per-period export lock so two simultaneous downloads cannot
-    both claim "first export" and both log a bank-file record.
-    """
+async def export_neft(period: str, confirm_reexport: bool = False,
+                      current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
-    _parse_period(period)
 
-    # ── Acquire a per-period export lock ─────────────────────────────────────
-    # The token ties the lock to THIS download. The finally block can only
-    # release a lock it actually owns — not one from a concurrent download that
-    # happened to finish first.
-    _lock_token = str(uuid.uuid4())
-    _lock_stale_after = datetime.now(timezone.utc) - timedelta(minutes=5)
-    lock_doc = await db.payroll_export_state.find_one_and_update(
-        {"period": period,
-         "$or": [
-             {"export_in_progress": {"$ne": True}},
-             {"export_lock_acquired_at": {"$lt": _lock_stale_after.isoformat()}},
-         ]},
-        {"$set": {
-            "export_in_progress": True,
-            "export_lock_token": _lock_token,
-            "export_lock_acquired_at": datetime.now(timezone.utc).isoformat(),
-        }},
-        upsert=True,
-        return_document=ReturnDocument.AFTER,
-    )
-    if not lock_doc or lock_doc.get("export_lock_token") != _lock_token:
-        raise HTTPException(status_code=409, detail=(
-            "Another NEFT download for this period is already in progress. "
-            "Wait a moment and try again."))
-
-    try:
-        import openpyxl
-        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-        from openpyxl.styles import Protection
-
-        # ── Fetch all records for this period ────────────────────────────────
-        all_records = await db.payroll_records.find({"period": period}).to_list(2000)
-
-        # ── Categorise records that cannot go in the NEFT file ───────────────
-        held_records         = [r for r in all_records if r.get("on_hold")]
-        draft_records        = [r for r in all_records if r.get("status") == "draft" and not r.get("on_hold")]
-        alreadypaid_records  = [r for r in all_records if r.get("status") == "paid"]
-
-        candidate_records = [r for r in all_records
-                             if r.get("status") in _PAYABLE_STATUSES
-                             and not r.get("on_hold")]
-
-        # Bank verification check
-        emp_ids = [r.get("employee_id") for r in candidate_records if r.get("employee_id")]
-        emps_map = {}
-        if emp_ids:
-            emps = await db.employees.find(
-                {"employee_id": {"$in": emp_ids}},
-                {"employee_id": 1, "bank_details": 1, "_id": 0}
-            ).to_list(None)
-            emps_map = {e["employee_id"]: e for e in emps}
-
-        unverified_records   = [r for r in candidate_records
-                                if not (emps_map.get(r.get("employee_id")) or {}).get("bank_details", {}).get("verified")]
-        candidate_records    = [r for r in candidate_records
-                                if (emps_map.get(r.get("employee_id")) or {}).get("bank_details", {}).get("verified")]
-
-        def _eid(r):
-            return r.get("employee_id", "")
-
-        def _bank(r):
-            acct = str(r.get("bank_account") or "").strip()
-            ifsc = str(r.get("ifsc_code") or "").strip().upper()
-            return acct, ifsc
-
-        incomplete_records   = [r for r in candidate_records
-                                if not _bank(r)[0] or not _bank(r)[1]]
-        candidate_records    = [r for r in candidate_records
-                                if _bank(r)[0] and _bank(r)[1]]
-
-        def _payee_name(r):
-            return str(r.get("employee_name") or "").strip()
-
-        unnamed_records      = [r for r in candidate_records if not _payee_name(r)]
-        candidate_records    = [r for r in candidate_records if _payee_name(r)]
-
-        # Manual LOP records — flagged, not excluded
-        manual_records       = [r for r in candidate_records
-                                if (r.get("lop_source") or "auto") == "manual"]
-
-        # Duplicate (employee_id, period) pairs
-        seen_ids = set()
-        duplicate_records, clean_records = [], []
-        for r in candidate_records:
-            eid = _eid(r)
-            if eid in seen_ids:
-                duplicate_records.append(r)
-            else:
-                seen_ids.add(eid)
-                clean_records.append(r)
-        candidate_records = clean_records
-
-        # Conflicting amounts (same employee appears twice with different net)
-        # — already deduplicated above, so this catches pre-index duplicates
-        conflicting_records  = []
-
-        # Bad status (not in _PAYABLE_STATUSES — shouldn't happen after filters, belt+braces)
-        badstatus_records    = [r for r in candidate_records
-                                if r.get("status") not in _PAYABLE_STATUSES]
-        candidate_records    = [r for r in candidate_records
-                                if r.get("status") in _PAYABLE_STATUSES]
-
-        # Non-positive net salary
-        nonpositive_records  = [r for r in candidate_records
-                                if float(r.get("net_salary") or 0) <= 0]
-        records              = [r for r in candidate_records
-                                if float(r.get("net_salary") or 0) > 0]
-
-        # Prior exports (for the header)
-        prior = await db.payroll_exports.find(
-            {"period": period, "voided_at": {"$exists": False}}
-        ).to_list(100)
-
-        # ── Fetch company / bank settings ────────────────────────────────────
-        settings = await db.settings.find_one({"type": "company"}) or {}
-        bank_settings = settings.get("neft_bank", {}) or {}
-        debit_account = str(bank_settings.get("debit_account_number") or "").strip()
-        txn_type      = str(bank_settings.get("transaction_type") or "WIB").strip().upper()
-        short_code    = str(bank_settings.get("short_code") or "RMF0001").strip()
-
-        if not debit_account:
-            raise HTTPException(status_code=400, detail=(
-                "Debit account number is not configured. "
-                "Go to Settings → Company & Bank → NEFT Bank Details and fill in the debit account."))
-
-        # ── Period label (e.g. APR26) ─────────────────────────────────────────
-        _MONTH_SHORT = ["JAN","FEB","MAR","APR","MAY","JUN",
-                        "JUL","AUG","SEP","OCT","NOV","DEC"]
-        try:
-            y, m = period.split("-")
-            remark_suffix = f"Salary {_MONTH_SHORT[int(m)-1]}{y[2:]}"
-        except Exception:
-            remark_suffix = f"Salary {period}"
-
-        def clean_name(name: str) -> str:
-            """Strip special chars, truncate to 32, upper-case."""
-            import re
-            cleaned = re.sub(r"[^A-Za-z0-9 ]", "", name).upper().strip()
-            return cleaned[:32]
-
-        # ── Build workbook ────────────────────────────────────────────────────
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = f"NEFT {period}"
-
-        headers = [
-            "Transaction Type\n(WIB for\nNEFT (NFT)/\nRTGS (RTG)/\nIMPS (IFC))",
-            "Amount (₹)\n(Should not be more than 15 digit including decimals and paise)",
-            "Debit Account no\nShould be exactly 12 digit",
-            "IFSC (Always 11 character alphanumeric and 5th character always 0 (zero)) (For ICICI bank accounts keep it blank)",
-            "Beneficiary Account No (Max length for other bank 34 character alphanumeric and for ICICI Bank 12 digit number )",
-            "Beneficiary Name (Max length 32 Character) (No Special Character is allowed but Space is allowed)",
-            "Remarks for Client\n(should not be more than 21 characters)",
-            "Remarks for Beneficiary\n(should not be more than 30 characters)",
-        ]
-        ws.append(headers)
-        # Header styling
-        header_fill = PatternFill("solid", fgColor="1E2A47")
-        header_font = Font(bold=True, color="FFFFFF", size=10)
-        thin = Side(border_style="thin", color="CCCCCC")
-        for cell in ws[1]:
-            cell.fill = header_fill
-            cell.font = header_font
-            cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
-            cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
-        ws.row_dimensions[1].height = 90
-        widths = [22, 18, 18, 16, 26, 28, 22, 28]
-        for i, w in enumerate(widths, 1):
-            ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
-
-        for r in records:
-            # `records` is already filtered: not held, not draft, bank verified.
-            emp_id = _eid(r)
-            net_amount = round(float(r.get("net_salary", 0) or 0), 2)
-            beneficiary_acct, ifsc = _bank(r)
-            name = clean_name(_payee_name(r))
-            row_remark = f"{emp_id} {remark_suffix}"   # e.g. "RMF0001 Salary APR26"
-            row_remark_client = row_remark[:21]
-            row_remark_beneficiary = row_remark[:30]
-            # ICICI Bank: set transaction type to WIB and leave IFSC blank
-            is_icici = ifsc.startswith("ICIC")
-            ws.append([
-                "WIB" if is_icici else txn_type,
-                net_amount,
-                debit_account,
-                "" if is_icici else ifsc,
-                beneficiary_acct,
-                name,
-                row_remark_client,
-                row_remark_beneficiary,
-            ])
-        # Body styling
-        for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=8):
-            for cell in row:
-                cell.alignment = Alignment(vertical="center", wrap_text=False)
-                cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
-
-        buffer = io.BytesIO()
-        # Lock all cells — enable sheet protection so no one can tamper
-        for row in ws.iter_rows():
-            for cell in row:
-                cell.protection = Protection(locked=True)
-        ws.protection.sheet   = True
-        ws.protection.password = "RadhyaFinance"
-        ws.protection.insertRows     = True
-        ws.protection.insertColumns  = True
-        ws.protection.deleteRows     = True
-        ws.protection.deleteColumns  = True
-        ws.protection.sort           = True
-        ws.protection.autoFilter     = True
-        wb.save(buffer)
-        buffer.seek(0)
-        filename = f"NEFT_{short_code}_{period}.xlsx"
-        held_amount = round(sum(float(r.get("net_salary") or 0) for r in held_records), 2)
-
-        def _ids(rows, limit=60):
-            ids = sorted(_eid(r) for r in rows if _eid(r))
-            shown, extra = ids[:limit], len(ids) - limit
-            return ",".join(shown) + (f",+{extra} more" if extra > 0 else "")
-
-        _exposed = [
-            "X-Payroll-Held-Count", "X-Payroll-Held-Amount", "X-Payroll-Held-Ids",
-            "X-Payroll-Draft-Count", "X-Payroll-Draft-Ids",
-            "X-Payroll-Unverified-Count", "X-Payroll-Unverified-Ids",
-            "X-Payroll-Incomplete-Count", "X-Payroll-Incomplete-Ids",
-            "X-Payroll-Unnamed-Count", "X-Payroll-Unnamed-Ids",
-            "X-Payroll-Manual-Count", "X-Payroll-Manual-Ids",
-            "X-Payroll-Duplicate-Count", "X-Payroll-Duplicate-Ids",
-            "X-Payroll-Conflicting-Count", "X-Payroll-Conflicting-Ids",
-            "X-Payroll-Badstatus-Count", "X-Payroll-Badstatus-Ids",
-            "X-Payroll-Alreadypaid-Count", "X-Payroll-Alreadypaid-Ids",
-            "X-Payroll-Nonpositive-Count", "X-Payroll-Nonpositive-Ids",
-            "X-Payroll-Previous-Exports",
-            "X-Payroll-Included-Count",
-        ]
-        response = Response(
-            content=buffer.getvalue(),
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={
-                "Content-Disposition": f'attachment; filename="{filename}"',
-                "X-Payroll-Held-Count": str(len(held_records)),
-                "X-Payroll-Held-Amount": str(held_amount),
-                "X-Payroll-Held-Ids": _ids(held_records),
-                "X-Payroll-Draft-Count": str(len(draft_records)),
-                "X-Payroll-Draft-Ids": _ids(draft_records),
-                "X-Payroll-Unverified-Count": str(len(unverified_records)),
-                "X-Payroll-Unverified-Ids": _ids(unverified_records),
-                "X-Payroll-Incomplete-Count": str(len(incomplete_records)),
-                "X-Payroll-Incomplete-Ids": _ids(incomplete_records),
-                "X-Payroll-Unnamed-Count": str(len(unnamed_records)),
-                "X-Payroll-Unnamed-Ids": _ids(unnamed_records),
-                "X-Payroll-Manual-Count": str(len(manual_records)),
-                "X-Payroll-Manual-Ids": _ids(manual_records),
-                "X-Payroll-Duplicate-Count": str(len(duplicate_records)),
-                "X-Payroll-Duplicate-Ids": _ids(duplicate_records),
-                "X-Payroll-Conflicting-Count": str(len(conflicting_records)),
-                "X-Payroll-Conflicting-Ids": _ids(conflicting_records),
-                "X-Payroll-Badstatus-Count": str(len(badstatus_records)),
-                "X-Payroll-Badstatus-Ids": _ids(badstatus_records),
-                "X-Payroll-Alreadypaid-Count": str(len(alreadypaid_records)),
-                "X-Payroll-Alreadypaid-Ids": _ids(alreadypaid_records),
-                "X-Payroll-Nonpositive-Count": str(len(nonpositive_records)),
-                "X-Payroll-Nonpositive-Ids": _ids(nonpositive_records),
-                "X-Payroll-Previous-Exports": str(len(prior)),
-                "X-Payroll-Included-Count": str(len(records)),
-                # Browsers hide custom headers from JS unless they are exposed.
-                "Access-Control-Expose-Headers": ", ".join(_exposed),
-            },
+    # RE-EXPORT GUARD. Downloading this sheet used to leave no trace at all, so
+    # a second download and a second upload paid the whole company twice with
+    # nothing anywhere to notice. Every export is now logged, and a repeat is
+    # refused unless the caller says explicitly that it means to do it.
+    #
+    # Enforced here rather than in the browser so a script, a retry or a second
+    # tab cannot walk around it.
+    prior = await db.payroll_exports.find(
+        {"period": period, "voided_at": {"$exists": False}}
+    ).sort("exported_at", -1).to_list(50)
+    if prior and not confirm_reexport:
+        last = prior[0]
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"The NEFT sheet for {period} has already been exported "
+                f"{len(prior)} time(s). The last was on "
+                f"{str(last.get('exported_at', ''))[:19].replace('T', ' ')} UTC by "
+                f"{last.get('exported_by') or 'unknown'}, covering {last.get('row_count', '?')} "
+                f"employee(s) and \u20b9{last.get('total_amount', 0):,.2f}.\n\n"
+                "If that file was already sent to the bank, downloading and uploading "
+                "it again pays everyone a SECOND time. Only continue if you are sure "
+                "the earlier file was not submitted."
+            ),
         )
 
-        # Logged only once the response object exists — header construction can
-        # itself fail, and a marker written before that would claim a bank file
-        # was delivered when the download 500'd and produced nothing.
+    # The check above is a READ. Two downloads firing together both passed it and
+    # both walked away with a full file — the precise "download twice, upload
+    # twice, pay everyone twice" case the guard exists to prevent.
+    #
+    # Take an exclusive lock on the period for the duration of the build. The
+    # filter matches only when the lock is free (or gone stale after a crash);
+    # when it is held the filter matches nothing, the upsert tries to insert a
+    # second row for the period, and the unique index in server.py turns that
+    # into a DuplicateKeyError — which is the loser being refused.
+    _lock_now = datetime.now(timezone.utc)
+    _stale_before = (_lock_now - timedelta(minutes=5)).isoformat()
+    # A token unique to THIS claim. Releasing on the period alone meant a slow
+    # export whose lock had gone stale would, on finishing, clear the lock of
+    # whoever had taken it over — and a third export could then walk in while
+    # the second was still building.
+    _lock_token = f"{_lock_now.isoformat()}|{uuid.uuid4().hex}"
+    try:
+        await db.payroll_export_state.find_one_and_update(
+            {"period": period,
+             "$or": [{"export_in_progress": {"$ne": True}},
+                     {"export_claimed_at": {"$lt": _stale_before}}]},
+            {"$set": {"period": period,
+                      "export_in_progress": True,
+                      "export_claimed_at": _lock_now.isoformat(),
+                      "export_lock_token": _lock_token,
+                      "export_claimed_by": current_user.get("employee_id") or current_user.get("username")}},
+            upsert=True, return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail=(
+            f"Another export of {period} is being prepared right now. Wait for it to finish, "
+            f"then check whether that file was sent before downloading again — only one of "
+            f"them is the file to give the bank."))
+
+    # Everything from here to the release runs under the lock. The heaviest
+    # database work in this route sits in this stretch, so a client abort or a
+    # Mongo blip here used to leak the lock and jam the period for five minutes.
+    try:
+        all_records = await db.payroll_records.find({"period": period}).to_list(1000)
+
+        # This file is the only thing that actually moves money, so every exclusion from
+        # it is reported back in a header and surfaced by the UI. Four things keep a
+        # record out, and NONE of them may be silent:
+        #   1. on hold      -- resignation accepted, pending exit clearance
+        #   2. still draft  -- nobody has reviewed the auto-calculated figure yet
+        #   3. bank account not verified
+        #   4. account number or IFSC missing -- see _bank() below
+        # Nothing is written into the sheet itself; the bank parses it.
+        emp_ids_all = [r.get("employee_id") for r in all_records if r.get("employee_id")]
+        emp_docs = await db.employees.find(
+            {"employee_id": {"$in": emp_ids_all}},
+            {"employee_id": 1, "bank_details": 1, "first_name": 1, "last_name": 1, "_id": 0}
+        ).to_list(None)
+        # `or {}` and not .get("bank_details", {}): a document with the key present
+        # and set to null returns None from the default form, and the AttributeError
+        # is raised outside the try below — one such employee 500s the export and
+        # NOBODY gets paid that month.
+        bank_verified_ids = {
+            e["employee_id"] for e in emp_docs
+            if (e.get("bank_details") or {}).get("verified") is True
+        }
+        # Live account/IFSC/name, keyed by employee.
         #
-        # An export with no rows sent nothing to anyone either. Logging that
-        # would tell `Mark All Paid` a bank file exists for the period, and would
-        # 409 the next genuine export as a re-export.
-        if records:
-            await db.payroll_exports.insert_one({
-                "period": period,
-                "exported_at": datetime.now(timezone.utc).isoformat(),
-                "exported_by": current_user.get("employee_id") or current_user.get("username"),
-                "row_count": len(records),
-                "total_amount": round(sum(float(r.get("net_salary") or 0) for r in records), 2),
-                "employee_ids": sorted(_eid(r) for r in records if _eid(r)),
-                # Per-employee amounts as SENT. Without these, "was this employee
-                # in the file?" is answerable but "does the record still say what
-                # the bank was told?" is not — and a recalculation after export
-                # makes exactly that go out of step.
-                "rows": [{"employee_id": _eid(r),
-                          "net_salary": round(float(r.get("net_salary") or 0), 2)}
-                         for r in records if _eid(r)],
-                "was_reexport": bool(prior),
-            })
-        return response
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # The payroll record froze a COPY of the bank details when the month was
+        # processed, but "is this account verified?" is read live from the employee
+        # master. Those two disagree whenever HR fills in or corrects bank details
+        # after processing: the employee is verified, so they pass the filter, while
+        # the frozen copy is still empty — and the row reached the bank with no
+        # account number at all.
+        #
+        # THE EMPLOYEE MASTER IS THE ONLY SOURCE OF PAYMENT INSTRUCTIONS. The frozen
+        # copy is history, not an instruction, and is deliberately NOT used as a
+        # fallback. Two reasons, both of which put money in the wrong account:
+        #
+        #   - Falling back FIELD BY FIELD splices a pair that never existed. A live
+        #     account number with last month's ICICI IFSC becomes an intra-ICICI
+        #     transfer with the IFSC cell blanked, so there is no routing data left
+        #     to catch the mistake.
+        #   - Clearing the account number on the master is how HR retracts a wrong
+        #     account. Reviving the frozen copy pays the very account they removed.
+        #
+        # An incomplete master pair is therefore an exclusion, reported by name.
+        live_bank = {}
+        live_name = {}
+        for e in emp_docs:
+            bd = e.get("bank_details") or {}
+            live_bank[e["employee_id"]] = (
+                "".join(str(bd.get("account_number") or "").split()),
+                str(bd.get("ifsc_code") or "").strip().upper(),
+            )
+            live_name[e["employee_id"]] = " ".join(
+                f"{e.get('first_name') or ''} {e.get('last_name') or ''}".split())
+
+        def _eid(r):
+            return (r.get("employee_id") or "").strip()
+
+        def _bank(r):
+            """(account, ifsc) from the employee master, as a pair or not at all."""
+            return live_bank.get(_eid(r), ("", ""))
+
+        def _payee_name(r):
+            """Live name, so the payee cannot belong to an older state than the account."""
+            return live_name.get(_eid(r)) or r.get("employee_name", "")
+
+        def clean_name(name: str) -> str:
+            if not name:
+                return ""
+            # Allow letters and spaces only, uppercase, max 32 chars
+            cleaned = "".join(ch for ch in name.upper() if ch.isalpha() or ch == " ")
+            cleaned = " ".join(cleaned.split())
+            return cleaned[:32]
+
+        held_records = [r for r in all_records if r.get("on_hold")]
+        rest = [r for r in all_records if not r.get("on_hold")]
+        # `draft` means the figure came straight out of the auto-calculation and no human
+        # has checked it. The app already refuses to mark a draft as *paid*; it must not
+        # be wired to an actual bank transfer either. Opening the payslip and clicking
+        # "Save Adjustments" moves a record to `processed` and clears this.
+        draft_records = [r for r in rest if r.get("status") == "draft"]
+        # An ALLOW-LIST, not "anything except draft". The old test let `cancelled`,
+        # `reversed`, an empty string and a record with no status field at all into
+        # the bank file, because none of them are literally "draft".
+        reviewed = [r for r in rest if r.get("status") in _PAYABLE_STATUSES]
+        badstatus_records = [r for r in rest
+                             if r.get("status") != "draft" and r.get("status") not in _PAYABLE_STATUSES]
+
+        # DUPLICATES — two records for one employee in one month means the salary
+        # goes out twice. Deduplicate before anything else touches the list.
+        #
+        # Identical amounts are the normal shape of an accidental double-process, so
+        # those are collapsed to one row and reported: withholding pay over a
+        # clerical duplicate helps nobody. Records that DISAGREE on the amount are a
+        # different matter — nobody but a human can say which is right — so those are
+        # excluded and named.
+        by_emp = {}
+        for r in reviewed:
+            by_emp.setdefault(_eid(r), []).append(r)
+
+        def _net(r):
+            try:
+                return round(float(r.get("net_salary") or 0), 2)
+            except (TypeError, ValueError):
+                return None
+
+        deduped, duplicate_records, conflicting_records = [], [], []
+        for eid, group in by_emp.items():
+            if len(group) == 1:
+                deduped.append(group[0])
+                continue
+            if len({_net(r) for r in group}) == 1:
+                deduped.append(group[0])
+                duplicate_records.append(group[0])
+            else:
+                conflicting_records.extend(group)
+        reviewed = deduped
+        verified_records = [r for r in reviewed if _eid(r) in bank_verified_ids]
+        # A blank account number in this file is money that does not arrive, so it is
+        # a fourth exclusion rather than a blank cell the bank has to reject. IFSC is
+        # required too: it is what identifies an ICICI account, and ICICI rows are the
+        # ones where the IFSC cell is deliberately left empty further down.
+        # A blank beneficiary NAME is the same failure as a blank account: the bank
+        # rejects the row, and it used to be written out silently. Checked with the
+        # same cleaner the sheet uses, so what is validated is what gets sent.
+        def _payable(r):
+            return all(_bank(r)) and bool(clean_name(_payee_name(r)))
+
+        incomplete_records = [r for r in verified_records if not _payable(r)]
+        payable_records = [r for r in verified_records if _payable(r)]
+
+        # WITHHELD: a net at or below zero. Deductions can legitimately exceed a
+        # month's salary (an advance being recovered), but a zero row wastes a bank
+        # transaction and a NEGATIVE row instructs the bank to take money OUT of the
+        # employee's account. Neither belongs in a salary file — the excess has to be
+        # carried to the next month by a human, so this is reported, never sent.
+        def _net(r):
+            try:
+                return round(float(r.get("net_salary") or 0), 2)
+            except (TypeError, ValueError):
+                return 0.0
+
+        nonpositive_records = [r for r in payable_records if _net(r) <= 0]
+        records = [r for r in payable_records if _net(r) > 0]
+
+        # INCLUDED, but flagged: verified with no account-holder name from the bank.
+        # A verification used to be recorded from a Perfios response that contained
+        # no verification data at all, and those look exactly like this — verified
+        # true, name blank. They are paid, not withheld, because a blank name can
+        # also be a legitimate bank response; but they are worth re-verifying before
+        # the money moves.
+        unnamed_ids = {
+            e["employee_id"] for e in emp_docs
+            if (e.get("bank_details") or {}).get("verified") is True
+            and not ((e.get("bank_details") or {}).get("verified_name") or "").strip()
+        }
+        unnamed_records = [r for r in records if _eid(r) in unnamed_ids]
+        # Already marked paid, yet still in this file. Legitimate if the period is
+        # published before the sheet is pulled — but it is also exactly what a
+        # re-export looks like, so HR is told rather than left to notice.
+        alreadypaid_records = [r for r in records if r.get("status") == "paid"]
+        # INCLUDED, and flagged for a different reason: a human overrode the bank
+        # check rather than Perfios confirming it. Legitimate — Perfios can refuse to
+        # answer — but it must be visible on the file that moves money.
+        manual_ids = {
+            e["employee_id"] for e in emp_docs
+            if (e.get("bank_details") or {}).get("verified_manually") is True
+        }
+        manual_records = [r for r in records if _eid(r) in manual_ids]
+
+        # Reported over every non-held record, INCLUDING drafts, so a record blocked for
+        # two reasons reports both at once. Reporting only the reviewed ones would mean
+        # fixing the draft, re-downloading, and only then learning the bank is unverified.
+        # This overlaps `draft_records` on purpose -- both problems are real and both
+        # need fixing.
+        unverified_records = [r for r in rest if _eid(r) not in bank_verified_ids]
+
+        settings_doc = await db.app_settings.find_one({"key": "company"}) or {}
+        # NEFT debit account is fixed by company policy — always use 019005008108
+        debit_account = "019005008108"
+        txn_type = (settings_doc.get("transaction_type") or "NFT").strip()
+        short_code = (settings_doc.get("company_short_code") or "RMF0001").strip()
+
+        # Period -> "Apr26" (locale-independent)
+        _MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        try:
+            y, m = period.split("-")
+            month_short = _MONTHS[int(m) - 1]
+            period_label = f"{month_short.upper()}{y[-2:]}"  # e.g. "APR26" (uppercase, 2-digit year)
+        except Exception:
+            period_label = period
+
+        remark_full = f"Salary {period_label}"  # per-employee ID prepended inside the loop
+        remark_suffix = remark_full
+
+        try:
+            import openpyxl
+            from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+            wb = openpyxl.Workbook()
+            ws = wb.active
+            ws.title = f"NEFT_{period}"
+            headers = [
+                "Transaction type \n(Within Bank (WIB)/\nNEFT (NFT)/\nRTGS (RTG)/\nIMPS (IFC))",
+                "Amount (\u20b9)\n(Should not be more than 15 digit including decimals and paise)",
+                "Debit Account no\nShould be exactly 12 digit",
+                "IFSC (Always 11 character alphanumeric and 5th character always 0 (zero)) (For ICICI bank accounts keep it blank)",
+                "Beneficiary Account No (Max length for other bank 34 character alphanumeric and for ICICI Bank 12 digit number )",
+                "Beneficiary Name (Max length 32 Character) (No Special Character is allowed but Space is allowed)",
+                "Remarks for Client\n(should not be more than 21 characters)",
+                "Remarks for Beneficiary\n(should not be more than 30 characters)",
+            ]
+            ws.append(headers)
+            # Header styling
+            header_fill = PatternFill("solid", fgColor="1E2A47")
+            header_font = Font(bold=True, color="FFFFFF", size=10)
+            thin = Side(border_style="thin", color="CCCCCC")
+            for cell in ws[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(wrap_text=True, vertical="center", horizontal="center")
+                cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            ws.row_dimensions[1].height = 90
+            widths = [22, 18, 18, 16, 26, 28, 22, 28]
+            for i, w in enumerate(widths, 1):
+                ws.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+
+            for r in records:
+                # `records` is already filtered: not held, not draft, bank verified.
+                emp_id = _eid(r)
+                net_amount = round(float(r.get("net_salary", 0) or 0), 2)
+                beneficiary_acct, ifsc = _bank(r)
+                name = clean_name(_payee_name(r))
+                row_remark = f"{emp_id} {remark_suffix}"   # e.g. "RMF0001 Salary APR26"
+                row_remark_client = row_remark[:21]
+                row_remark_beneficiary = row_remark[:30]
+                # ICICI Bank: set transaction type to WIB and leave IFSC blank
+                is_icici = ifsc.startswith("ICIC")
+                ws.append([
+                    "WIB" if is_icici else txn_type,
+                    net_amount,
+                    debit_account,
+                    "" if is_icici else ifsc,
+                    beneficiary_acct,
+                    name,
+                    row_remark_client,
+                    row_remark_beneficiary,
+                ])
+            # Body styling
+            for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=8):
+                for cell in row:
+                    cell.alignment = Alignment(vertical="center", wrap_text=False)
+                    cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+            buffer = io.BytesIO()
+            # Lock all cells — enable sheet protection so no one can tamper
+            from openpyxl.styles import Protection
+            for row in ws.iter_rows():
+                for cell in row:
+                    cell.protection = Protection(locked=True)
+            ws.protection.sheet   = True
+            ws.protection.password = "RadhyaFinance"
+            ws.protection.insertRows     = True
+            ws.protection.insertColumns  = True
+            ws.protection.deleteRows     = True
+            ws.protection.deleteColumns  = True
+            ws.protection.sort           = True
+            ws.protection.autoFilter     = True
+            wb.save(buffer)
+            buffer.seek(0)
+            filename = f"NEFT_{short_code}_{period}.xlsx"
+            held_amount = round(sum(float(r.get("net_salary") or 0) for r in held_records), 2)
+
+            def _ids(rows, limit=60):
+                # Employee IDs, not just a count — so HR can act on the omission instead of
+                # working out who is absent by reading a spreadsheet.
+                #
+                # Truncated by WHOLE ids, never mid-identifier, and the remainder is
+                # stated rather than silently dropped: a half-written employee id is
+                # worse than an honest "+12 more". The cap also keeps the six id
+                # headers together well inside a proxy's default header buffer —
+                # blow that and the whole download 502s with no diagnosis.
+                ids = sorted(_eid(r) for r in rows if _eid(r))
+                shown, extra = ids[:limit], len(ids) - limit
+                return ",".join(shown) + (f",+{extra} more" if extra > 0 else "")
+
+            _exposed = [
+                "X-Payroll-Held-Count", "X-Payroll-Held-Amount", "X-Payroll-Held-Ids",
+                "X-Payroll-Draft-Count", "X-Payroll-Draft-Ids",
+                "X-Payroll-Unverified-Count", "X-Payroll-Unverified-Ids",
+                "X-Payroll-Incomplete-Count", "X-Payroll-Incomplete-Ids",
+                "X-Payroll-Unnamed-Count", "X-Payroll-Unnamed-Ids",
+                "X-Payroll-Manual-Count", "X-Payroll-Manual-Ids",
+                "X-Payroll-Duplicate-Count", "X-Payroll-Duplicate-Ids",
+                "X-Payroll-Conflicting-Count", "X-Payroll-Conflicting-Ids",
+                "X-Payroll-Badstatus-Count", "X-Payroll-Badstatus-Ids",
+                "X-Payroll-Alreadypaid-Count", "X-Payroll-Alreadypaid-Ids",
+                "X-Payroll-Nonpositive-Count", "X-Payroll-Nonpositive-Ids",
+                "X-Payroll-Previous-Exports",
+                "X-Payroll-Included-Count",
+            ]
+            response = Response(
+                content=buffer.getvalue(),
+                media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"',
+                    "X-Payroll-Held-Count": str(len(held_records)),
+                    "X-Payroll-Held-Amount": str(held_amount),
+                    "X-Payroll-Held-Ids": _ids(held_records),
+                    "X-Payroll-Draft-Count": str(len(draft_records)),
+                    "X-Payroll-Draft-Ids": _ids(draft_records),
+                    "X-Payroll-Unverified-Count": str(len(unverified_records)),
+                    "X-Payroll-Unverified-Ids": _ids(unverified_records),
+                    "X-Payroll-Incomplete-Count": str(len(incomplete_records)),
+                    "X-Payroll-Incomplete-Ids": _ids(incomplete_records),
+                    "X-Payroll-Unnamed-Count": str(len(unnamed_records)),
+                    "X-Payroll-Unnamed-Ids": _ids(unnamed_records),
+                    "X-Payroll-Manual-Count": str(len(manual_records)),
+                    "X-Payroll-Manual-Ids": _ids(manual_records),
+                    "X-Payroll-Duplicate-Count": str(len(duplicate_records)),
+                    "X-Payroll-Duplicate-Ids": _ids(duplicate_records),
+                    "X-Payroll-Conflicting-Count": str(len(conflicting_records)),
+                    "X-Payroll-Conflicting-Ids": _ids(conflicting_records),
+                    "X-Payroll-Badstatus-Count": str(len(badstatus_records)),
+                    "X-Payroll-Badstatus-Ids": _ids(badstatus_records),
+                    "X-Payroll-Alreadypaid-Count": str(len(alreadypaid_records)),
+                    "X-Payroll-Alreadypaid-Ids": _ids(alreadypaid_records),
+                    "X-Payroll-Nonpositive-Count": str(len(nonpositive_records)),
+                    "X-Payroll-Nonpositive-Ids": _ids(nonpositive_records),
+                    "X-Payroll-Previous-Exports": str(len(prior)),
+                    "X-Payroll-Included-Count": str(len(records)),
+                    # Browsers hide custom headers from JS unless they are exposed.
+                    "Access-Control-Expose-Headers": ", ".join(_exposed),
+                },
+            )
+
+            # Logged only once the response object exists — header construction can
+            # itself fail, and a marker written before that would claim a bank file
+            # was delivered when the download 500'd and produced nothing.
+            #
+            # An export with no rows sent nothing to anyone either. Logging that
+            # would tell `Mark All Paid` a bank file exists for the period, and would
+            # 409 the next genuine export as a re-export.
+            if records:
+                await db.payroll_exports.insert_one({
+                    "period": period,
+                    "exported_at": datetime.now(timezone.utc).isoformat(),
+                    "exported_by": current_user.get("employee_id") or current_user.get("username"),
+                    "row_count": len(records),
+                    "total_amount": round(sum(float(r.get("net_salary") or 0) for r in records), 2),
+                    "employee_ids": sorted(_eid(r) for r in records if _eid(r)),
+                    # Per-employee amounts as SENT. Without these, "was this employee
+                    # in the file?" is answerable but "does the record still say what
+                    # the bank was told?" is not — and a recalculation after export
+                    # makes exactly that go out of step.
+                    "rows": [{"employee_id": _eid(r),
+                              "net_salary": round(float(r.get("net_salary") or 0), 2)}
+                             for r in records if _eid(r)],
+                    "was_reexport": bool(prior),
+                })
+            return response
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
     finally:
         # Always released, including on a 500 or a client disconnect — otherwise
         # one failed download blocks the period until the lock goes stale. The
@@ -1305,7 +1562,16 @@ async def export_neft(period: str, current_user: dict = Depends(get_current_user
 
 @router.get("/duplicates")
 async def payroll_duplicates(current_user: dict = Depends(get_current_user)):
-    """Employees holding more than one payroll record for the same month."""
+    """Employees holding more than one payroll record for the same month.
+
+    Read-only. Two records for one month is a salary paid twice, and until the
+    unique (employee_id, period) index can be built — it cannot be, while
+    duplicates exist — this is how you find and clear them.
+
+    Also reports whether the amounts agree: matching amounts are a clerical
+    double-process and the NEFT export collapses them to one row; disagreeing
+    amounts need a human to decide which is right, and the export withholds them.
+    """
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
     pipeline = [
@@ -1342,7 +1608,18 @@ async def payroll_duplicates(current_user: dict = Depends(get_current_user)):
 
 
 async def _score_lop_recalc(period: str) -> dict:
-    """Re-run the LOP calculation for a period and report what WOULD change."""
+    """Re-run the LOP calculation for a period and report what WOULD change.
+
+    Pure scoring — writes nothing. Both the preview and the apply call this, so
+    the numbers HR confirms are by construction the numbers that get written.
+
+    Skips, and says so rather than silently dropping:
+      * `paid` records — the money is gone; rewriting the record would only make
+        it disagree with the bank.
+      * records whose LOP was set by hand (`lop_source == "manual"`) — HR made a
+        deliberate decision and this must not quietly undo it.
+    Held records ARE rescored: they are unpaid and still owed.
+    """
     year, month = _parse_period(period)
     days_in_month = _cal.monthrange(year, month)[1]
     records = await db.payroll_records.find({"period": period}).to_list(4000)
@@ -1365,6 +1642,9 @@ async def _score_lop_recalc(period: str) -> dict:
         joining = emp.get("joining_date") or f"{period}-01"
         lwd = emp.get("last_working_day") or None
         lop_new, non_emp_new = await calculate_lop_days(eid, year, month, joining, lwd)
+        # Price against the salary the month was RUN on. Falling back to the live
+        # master is only for records processed before salary_basis existed; those
+        # are flagged so HR can see which rows are being re-rated at today's pay.
         basis = r.get("salary_basis")
         priced_on = "run" if basis else "current"
         emp_for_pricing = {"designation": r.get("designation") or emp.get("designation"),
@@ -1376,6 +1656,9 @@ async def _score_lop_recalc(period: str) -> dict:
         other_add = float(r.get("other_additions") or 0)
         net_new = round(comp["gross_payable"] - comp["epf_employee"]
                         - comp["esic_employee"] - tds - other_ded + other_add)
+        # The same rule PUT enforces: a negative salary is never written. More
+        # LOP on a record already carrying a large deduction can reach one, and
+        # this path writes net_salary directly.
         if net_new < 0:
             net_new = 0
             negative_clamped.append(eid)
@@ -1402,6 +1685,8 @@ async def _score_lop_recalc(period: str) -> dict:
                                                   + tds + other_ded, 2)},
         })
 
+    # Has money already gone out for this period? If so a recalculation cannot
+    # recover anything — it only reveals what was overpaid or underpaid.
     export = await db.payroll_exports.find_one(
         {"period": period, "voided_at": {"$exists": False}}, sort=[("exported_at", -1)])
     overpaid = round(sum(-x["delta"] for x in rows if x["delta"] < 0), 2)
@@ -1439,7 +1724,13 @@ async def preview_lop_recalc(period: str, current_user: dict = Depends(get_curre
 @router.post("/recalculate-lop")
 async def apply_lop_recalc(period: str, confirm_after_export: bool = False,
                            current_user: dict = Depends(get_current_user)):
-    """Apply the recalculation to every unpaid, non-manual record in the period."""
+    """Apply the recalculation to every unpaid, non-manual record in the period.
+
+    Refuses once a NEFT file has been exported unless explicitly confirmed. At
+    that point the money is with the bank, so rewriting the records does not
+    recover a rupee — it makes the payroll disagree with what was actually sent.
+    That can be the right call, but it has to be a decision, not a side effect.
+    """
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
     scored = await _score_lop_recalc(period)
@@ -1457,6 +1748,8 @@ async def apply_lop_recalc(period: str, confirm_after_export: bool = False,
     actor = current_user.get("employee_id") or current_user.get("username")
     applied = 0
     for row in scored["rows"]:
+        # Conditions repeated from the scoring: between preview and apply a
+        # record can be paid or hand-edited, and it must not be clobbered.
         res = await db.payroll_records.update_one(
             {"_id": _oid(row["record_id"]), "status": {"$ne": "paid"},
              "lop_source": {"$ne": "manual"}},
@@ -1469,7 +1762,21 @@ async def apply_lop_recalc(period: str, confirm_after_export: bool = False,
 
 @router.get("/epf-shortfall")
 async def payroll_epf_shortfall(period: str = None, current_user: dict = Depends(get_current_user)):
-    """Existing payroll records whose EPF was computed under the old rule."""
+    """Existing payroll records whose EPF was computed under the old rule.
+
+    Read-only — nothing is recalculated or written. Every record is re-scored
+    against the correct rule (12% of the basic actually earned, capped at 1,800
+    on the contribution) using the record's OWN stored basic, not the employee
+    master, so a salary revision since the run cannot distort the comparison.
+
+    Only records that are genuinely wrong appear. Full-attendance months are
+    unaffected, and so is anyone whose master held the true uncapped 12% — for
+    them the old formula already produced the right number.
+
+    The error is one-directional: the old rule capped an already-capped figure,
+    so it always UNDER-deducted. Every row here is money short-remitted to EPFO
+    on both the employee and the employer side.
+    """
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -1479,6 +1786,7 @@ async def payroll_epf_shortfall(period: str = None, current_user: dict = Depends
     rows = []
     for r in records:
         stored = round(float(r.get("epf_employee") or 0), 2)
+        # 0 means the employee was exempt at process time — not a shortfall.
         if stored <= 0:
             continue
         basic_paid = float(r.get("basic") or 0)
@@ -1497,6 +1805,7 @@ async def payroll_epf_shortfall(period: str = None, current_user: dict = Depends
             "epf_charged": stored,
             "epf_correct": correct,
             "shortfall_employee": round(correct - stored, 2),
+            # employer mirrors the employee side, so the remittance gap is double
             "shortfall_total": round((correct - stored) * 2, 2),
         })
 
@@ -1529,7 +1838,11 @@ async def payroll_export_history(period: str = None, current_user: dict = Depend
 
 @router.get("/export/salary-register")
 async def export_salary_register(period: str, current_user: dict = Depends(get_current_user)):
-    """Master Monthly Salary Register — comprehensive multi-column Excel summary."""
+    """Master Monthly Salary Register — comprehensive multi-column Excel summary
+    of every processed payroll record for the period (YYYY-MM).
+    Includes: Employee details, Paid/Leave days, Earnings breakup, Gross,
+    Deductions breakup, Net Salary, Employer Contributions, Monthly CTC,
+    and Bank details. A totals row is appended at the bottom."""
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -1537,6 +1850,7 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
     if not records:
         raise HTTPException(status_code=404, detail=f"No payroll records found for period {period}.")
 
+    # Enrich with employee master data (joining date, PAN, UAN, ESI)
     emp_ids = [r.get("employee_id") for r in records if r.get("employee_id")]
     employees = await db.employees.find(
         {"employee_id": {"$in": emp_ids}},
@@ -1559,6 +1873,7 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
     ws = wb.active
     ws.title = f"Salary Register {period}"
 
+    # Styling helpers
     navy_fill = PatternFill("solid", fgColor="1E2A47")
     orange_fill = PatternFill("solid", fgColor="E85B1E")
     grey_fill = PatternFill("solid", fgColor="F1F5F9")
@@ -1572,6 +1887,22 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
     medium = Side(border_style="medium", color="1E2A47")
     border = Border(top=thin, bottom=thin, left=thin, right=thin)
 
+    # Column layout (grouped):
+    # Identity (1-7): Sr, Emp ID, Name, Designation, Department, DOJ, Status
+    # Attendance (8-11): Working Days, Paid Days, LOP, Not Employed
+    # Earnings (12-17): Basic, HRA, Special, Canteen, Conveyance, Other Add
+    # Gross (18): Gross Salary
+    # Deductions (19-23): EPF Emp, ESIC Emp, TDS, Other Ded, Total Ded
+    # Net (24): Net Salary
+    # Employer (25-27): EPF Empr, ESIC Empr, Gratuity
+    # CTC (28): Monthly CTC
+    # Statutory (29-31): PAN, UAN, ESI No
+    # Bank (32-34): Bank Name, A/c No, IFSC
+    #
+    # "Not Employed" is separate from LOP so the row adds up: Working − LOP −
+    # Not Employed = Paid. A joiner shows 26 not-employed and 0 LOP, never
+    # 26 LOP — the register is a compliance record, and the difference between
+    # "not on the rolls" and "absent without leave" is not cosmetic.
     group_headers = [
         ("Identity", 1, 7, navy_fill),
         ("Attendance", 8, 11, orange_fill),
@@ -1600,6 +1931,7 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
     ]
     n_cols = len(col_headers)  # 35
 
+    # Title rows
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=n_cols)
     ws.cell(row=1, column=1, value=f"RADHYA MICRO FINANCE PRIVATE LIMITED — Monthly Salary Register").font = title_font
     ws.cell(row=1, column=1).alignment = Alignment(horizontal="center", vertical="center")
@@ -1612,6 +1944,7 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
     ws.cell(row=2, column=1, value=f"Period: {period_label}  |  Generated: {datetime.now(timezone.utc).strftime('%d %b %Y %H:%M UTC')}  |  {len(records)} employees{held_note}").font = subtitle_font
     ws.cell(row=2, column=1).alignment = Alignment(horizontal="center", vertical="center")
 
+    # Group header row (row 3)
     for label, start, end, fill in group_headers:
         if start == end:
             cell = ws.cell(row=3, column=start, value=label)
@@ -1624,6 +1957,7 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
         cell.border = border
     ws.row_dimensions[3].height = 20
 
+    # Column header row (row 4)
     for i, h in enumerate(col_headers, 1):
         c = ws.cell(row=4, column=i, value=h)
         c.fill = grey_fill
@@ -1632,17 +1966,22 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
         c.border = border
     ws.row_dimensions[4].height = 30
 
+    # Totals accumulator (money columns + the two day columns)
     money_cols = [12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28]
-    DAY_COLS = {10: "lop", 11: "non_employed"}
+    DAY_COLS = {10: "lop", 11: "non_employed"}   # formatted 0.## and totalled
     totals = {c: 0.0 for c in money_cols}
     day_totals = {c: 0.0 for c in DAY_COLS}
 
+    # Data rows start at row 5
     r_idx = 5
     for sr, rec in enumerate(records, 1):
         emp = emp_map.get(rec.get("employee_id"), {})
         working = rec.get("working_days", 26) or 26
         paid = rec.get("present_days", working) or working
         non_emp = float(rec.get("non_employed_days") or 0)
+        # Prefer stored lop_days (set explicitly by HR — supports half days);
+        # fall back to derived value if missing. The fallback nets off
+        # non-employed days so a joiner is never back-filled as absent.
         if rec.get("lop_days") is not None:
             lop = float(rec.get("lop_days"))
         else:
@@ -1661,6 +2000,9 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
         ctc = float(rec.get("ctc_monthly") or 0)
 
         bank = emp.get("bank_details", {}) or {}
+        # Held rows stay in the register — this is the compliance record of what was
+        # earned, and totals below are the full liability. The column is what tells
+        # you the money didn't actually go out.
         if rec.get("on_hold"):
             pay_status = "HELD — ready to release" if rec.get("hold_eligible_at") else "HELD — exit in progress"
         elif rec.get("released_at"):
@@ -1704,12 +2046,13 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
             if col_idx in money_cols:
                 c.number_format = '#,##0'
                 totals[col_idx] = round(totals.get(col_idx, 0) + float(val or 0), 2)
-            elif col_idx in DAY_COLS:
+            elif col_idx in DAY_COLS:  # day counts — show 0.5/1.5 when fractional
                 c.number_format = '0.##'
                 c.alignment = Alignment(vertical="center", horizontal="right")
                 day_totals[col_idx] += float(val or 0)
         r_idx += 1
 
+    # Totals row
     totals_row = r_idx
     for col_idx in range(1, n_cols + 1):
         c = ws.cell(row=totals_row, column=col_idx)
@@ -1729,22 +2072,24 @@ async def export_salary_register(period: str, current_user: dict = Depends(get_c
             c.alignment = Alignment(horizontal="right", vertical="center")
     ws.row_dimensions[totals_row].height = 22
 
+    # Column widths
     widths = [
-        4, 12, 26, 20, 18, 12, 14,
-        9, 9, 7, 13,
-        11, 10, 13, 11, 12, 11,
-        12,
-        11, 11, 10, 11, 11,
-        12,
-        11, 11, 10,
-        13,
-        13, 14, 14,
-        18, 18, 13,
-        24,
+        4, 12, 26, 20, 18, 12, 14,         # Identity
+        9, 9, 7, 13,                        # Attendance
+        11, 10, 13, 11, 12, 11,             # Earnings
+        12,                                 # Gross
+        11, 11, 10, 11, 11,                 # Deductions
+        12,                                 # Net
+        11, 11, 10,                         # Employer
+        13,                                 # CTC
+        13, 14, 14,                         # Statutory IDs
+        18, 18, 13,                         # Bank
+        24,                                 # Payment Status
     ]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
+    # Freeze panes at data start
     ws.freeze_panes = "C5"
 
     buffer = io.BytesIO()
@@ -1763,9 +2108,11 @@ async def download_payslip_pdf(record_id: str, current_user: dict = Depends(get_
     record = await db.payroll_records.find_one({"_id": _oid(record_id)})
     if not record:
         raise HTTPException(status_code=404, detail="Payroll record not found")
+    # Permission: HR/management can download any; everyone else (managers, employee, field_agent) only their own
     if current_user.get("role") not in ["hr_admin", "management"]:
         if record.get("employee_id") != current_user.get("employee_id"):
             raise HTTPException(status_code=403, detail="Access denied")
+        # Gate: only after processing AND month-end
         if not _is_payslip_visible_to_employee(record):
             raise HTTPException(
                 status_code=403,
@@ -1774,6 +2121,7 @@ async def download_payslip_pdf(record_id: str, current_user: dict = Depends(get_
     employee = await db.employees.find_one({"employee_id": record.get("employee_id")})
     if not employee:
         raise HTTPException(status_code=404, detail="Employee not found")
+    # Remove MongoDB _id before passing to PDF builder
     record.pop("_id", None)
     employee.pop("_id", None)
     try:
