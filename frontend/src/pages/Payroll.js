@@ -1,7 +1,82 @@
 import React, { useEffect, useState, useMemo } from "react";
 import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
-import { Play, Download, Eye, X, FileText, Save, CheckCircle2, Trash2, Send, Lock, Unlock, AlertTriangle } from "lucide-react";
+import { Play, Download, Eye, X, FileText, Save, CheckCircle2, Trash2, Send, Lock, Unlock, AlertTriangle, RefreshCw } from "lucide-react";
+
+// The monthly run is a fixed sequence and the order matters: marking paid is
+// what freezes a record, so doing it early loses the ability to correct. Rather
+// than expecting HR to remember that, the page shows where the selected month
+// actually is and what to do next.
+const STEPS = [
+  { n: 1, label: "Process Payroll",
+    doing: "Creates a draft payslip for every active employee this month." },
+  { n: 2, label: "Approve for Payment",
+    doing: "Moves the drafts to Processed. Nothing is in the bank sheet until this is done." },
+  { n: 3, label: "NEFT Sheet",
+    doing: "Download the bank file and complete the transfer. Anyone left out is listed for you." },
+  { n: 4, label: "Recalculate LOP",
+    doing: "Only if attendance or leave changed since the run. Do it BEFORE marking paid." },
+  { n: 5, label: "Mark All Paid",
+    doing: "Once the money has actually gone. This locks the payslips — do it last. "
+         + "Anyone held, or paid by cheque outside the bank file, must be marked on their own payslip." },
+];
+
+function WorkflowStrip({ counts, exportCount, monthLabel }) {
+  const { total, draft, unpaid, paid } = counts;
+  // Which step the selected month is genuinely at, derived from its records.
+  let current = 1;
+  if (total === 0) current = 1;
+  else if (draft > 0) current = 2;
+  else if (exportCount === 0) current = 3;
+  else if (unpaid > 0) current = 5;
+  else current = 6;                                   // nothing left to do
+
+  const state = (n) => n < current ? "done" : n === current ? "now" : "next";
+  const cls = { done: "bg-green-50 border-green-300 text-green-800",
+                now: "bg-[#E85B1E] border-[#E85B1E] text-white shadow-sm",
+                next: "bg-white border-slate-200 text-slate-400" };
+  const here =
+    current === 1 ? `No payslips exist for ${monthLabel} yet.`
+    : current === 2 ? `${draft} payslip(s) are still Draft — they are NOT in the bank sheet.`
+    : current === 3 ? `${total} payslip(s) approved. No NEFT file has been downloaded yet.`
+    : current === 5 ? `Bank file downloaded. ${unpaid} payslip(s) not yet paid.`
+    : `All ${paid} payslip(s) for ${monthLabel} are marked paid. Nothing left to do.`;
+
+  return (
+    <div className="mb-4 rounded-xl border border-slate-200 bg-white p-4" data-testid="workflow-strip">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs font-bold uppercase tracking-wider text-slate-500">
+          Monthly payroll — {monthLabel}
+        </p>
+        <p className="text-xs text-slate-500" data-testid="workflow-here">{here}</p>
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {STEPS.map((s, i) => (
+          <React.Fragment key={s.n}>
+            <div data-testid={`workflow-step-${s.n}`} data-state={state(s.n)}
+              title={s.doing}
+              className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold ${cls[state(s.n)]}`}>
+              <span className={`w-4 h-4 rounded-full grid place-items-center text-[10px] ${
+                state(s.n) === "done" ? "bg-green-600 text-white"
+                : state(s.n) === "now" ? "bg-white text-[#E85B1E]" : "bg-slate-200 text-slate-500"}`}>
+                {state(s.n) === "done" ? "✓" : s.n}
+              </span>
+              {s.label}
+              {s.n === 4 && <span className="font-normal opacity-70">(if needed)</span>}
+            </div>
+            {i < STEPS.length - 1 && <span className="text-slate-300 text-xs">›</span>}
+          </React.Fragment>
+        ))}
+      </div>
+      {current <= 5 && (
+        <p className="text-xs text-slate-600 mt-2.5" data-testid="workflow-next">
+          <strong className="text-[#E85B1E]">Next:</strong>{" "}
+          {STEPS.find(s => s.n === current)?.doing}
+        </p>
+      )}
+    </div>
+  );
+}
 
 function Modal({ title, onClose, children }) {
   return (
@@ -46,6 +121,21 @@ export default function Payroll() {
   const [publishing, setPublishing] = useState(false);
   const [releaseNote, setReleaseNote] = useState("");
   const [releasing, setReleasing] = useState(false);
+  const [recalc, setRecalc] = useState(null);        // preview payload, null = closed
+  const [recalcLoading, setRecalcLoading] = useState(false);
+  const [recalcApplying, setRecalcApplying] = useState(false);
+  const [recalcConfirmed, setRecalcConfirmed] = useState(false);
+  const [payPreview, setPayPreview] = useState(null);   // publish preview, null = closed
+  const [payApplying, setPayApplying] = useState(false);
+  const [payDate, setPayDate] = useState("");
+  const [reopening, setReopening] = useState(false);
+  const [approving, setApproving] = useState(false);
+  // How many NEFT files exist for the selected month — the workflow strip needs
+  // it to tell "approved but not sent" from "sent, waiting to be marked paid".
+  const [exportCount, setExportCount] = useState(null);
+  // Downloading the sheet changes no record, so the effect below would not
+  // re-run and the workflow strip would sit on "not downloaded yet".
+  const [exportBump, setExportBump] = useState(0);
   const isManager = ["hr_admin", "management"].includes(user?.role);
 
   // Build dynamic period list: 2025-01 up to current month
@@ -116,6 +206,10 @@ export default function Payroll() {
       });
       setShowSlip(res.data);
       setRecords(prev => prev.map(r => r.id === res.data.id ? res.data : r));
+      // LOP entered on a month that already excludes non-employed days deducts
+      // them twice. The save still goes through — HR may have meant it — but it
+      // must not pass silently.
+      if (res.data.warning) alert(res.data.warning);
     } catch (e) {
       alert(e.response?.data?.detail || "Failed to save changes");
     } finally {
@@ -123,41 +217,173 @@ export default function Payroll() {
     }
   };
 
-  const markPaid = async () => {
+  // The exception path. If the employee was in a NEFT file this behaves as
+  // before; if not, the server demands a reason, so ask for one and resend.
+  const markPaid = async (reason) => {
     if (!showSlip) return;
-    if (!window.confirm(`Mark payroll for ${showSlip.employee_name} (${showSlip.period}) as PAID?\n\nThis is final — the record will be locked.`)) return;
+    if (reason === undefined &&
+        !window.confirm(`Mark payroll for ${showSlip.employee_name} (${showSlip.period}) as PAID?\n\nThe record is locked once paid — reopening it later needs a reason.`)) return;
     setFinalizing(true);
     try {
-      await API.post(`/payroll/${showSlip.id}/finalize`);
-      const updated = { ...showSlip, status: "paid" };
+      const res = await API.post(`/payroll/${showSlip.id}/finalize`,
+        reason ? { reason } : {});
+      const updated = { ...showSlip, status: "paid",
+                        paid_outside_neft: res.data?.paid_outside_neft };
       setShowSlip(updated);
       setRecords(prev => prev.map(r => r.id === updated.id ? updated : r));
     } catch (e) {
-      alert(e.response?.data?.detail || "Failed to mark as paid");
+      const detail = e.response?.data?.detail || "Failed to mark as paid";
+      // 400 with "not in any NEFT file" — this is the cheque / manual-transfer
+      // case. Collect the reason rather than dead-ending. `reason === undefined`
+      // means this is the FIRST attempt: without that guard a server that keeps
+      // refusing would prompt in an endless loop.
+      if (reason === undefined && e.response?.status === 400 && /not in any NEFT file/.test(detail)) {
+        const why = window.prompt(
+          `${showSlip.employee_name} was not in any NEFT file for ${showSlip.period}, so the ` +
+          `system cannot confirm this payment.\n\nHow were they paid? (e.g. cheque no. 12345, ` +
+          `manual transfer on 31 Jul)`);
+        if (why === null) return;
+        if (!why.trim()) { alert("A reason is required to record this payment."); return; }
+        setFinalizing(false);
+        return markPaid(why.trim());
+      }
+      alert(detail);
     } finally {
       setFinalizing(false);
     }
   };
 
-  const publishPayslips = async () => {
-    const p = `${selectedYear}-${String(selectedMonth).padStart(2, "0")}`;
-    if (!window.confirm(`Mark all unpaid payslips as Paid for ${months[selectedMonth-1]} ${selectedYear}?\n\nEmployees will be able to view their payslips immediately.`)) return;
-    setPublishing(true);
+  // Nothing is written until Apply. The preview and the apply run the SAME
+  // scoring on the server, so what HR confirms is what gets saved.
+  const openRecalc = async () => {
+    setRecalcLoading(true);
+    setRecalcConfirmed(false);
     try {
-      const res = await API.post(`/payroll/publish?period=${p}`);
-      const skipped = res.data.held_skipped
-        ? `\n\n${res.data.held_skipped} salary(s) on hold were SKIPPED — they stay unpaid and hidden from the employee until released.`
-        : "";
-      if (res.data.published === 0) {
-        alert(`No payslips to publish for ${months[selectedMonth-1]} ${selectedYear}.${skipped || " They are already marked as Paid."}`);
+      const p = `${selectedYear}-${String(selectedMonth).padStart(2, "0")}`;
+      const res = await API.get(`/payroll/recalculate-lop/preview?period=${p}`);
+      setRecalc(res.data);
+    } catch (e) {
+      alert(e.response?.data?.detail || "Could not read the recalculation preview");
+    } finally {
+      setRecalcLoading(false);
+    }
+  };
+
+  const applyRecalc = async () => {
+    if (!recalc) return;
+    setRecalcApplying(true);
+    try {
+      // From the preview, NOT the dropdown: changing the month behind an open
+      // modal would otherwise rewrite a period nobody previewed — and carry this
+      // month's after-export consent across to it.
+      const p = recalc.period;
+      const q = recalc.already_exported ? "&confirm_after_export=true" : "";
+      const res = await API.post(`/payroll/recalculate-lop?period=${p}${q}`);
+      alert(`${res.data.applied} record(s) updated for ${p}.`);
+      setRecalc(null);
+      fetchRecords();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Recalculation failed");
+    } finally {
+      setRecalcApplying(false);
+    }
+  };
+
+  // "Mark All Paid" used to double as the approval step by moving drafts
+  // straight to paid. Now that paid means "the bank sent this", approval needs
+  // its own action or a fresh month can never reach the bank file.
+  const approvePeriod = async () => {
+    const p = `${selectedYear}-${String(selectedMonth).padStart(2, "0")}`;
+    const label = `${months[selectedMonth-1]} ${selectedYear}`;
+    // Count only THIS period's drafts. The table below is filtered separately
+    // (it defaults to All Periods), so counting every loaded record made the
+    // button claim drafts existed for a month that had none.
+    const known = records.filter(r => r.period === p);
+    const draftCount = known.filter(r => r.status === "draft").length;
+    // Only trust a zero when we actually loaded that period; if the table is
+    // filtered to a different month we have no local view of it, so ask the
+    // server rather than refusing on missing data.
+    if (known.length > 0 && draftCount === 0) {
+      alert(`Nothing to approve for ${label} — none of its payslips are still in Draft.`);
+      return;
+    }
+    if (!window.confirm(
+      (draftCount ? `Approve ${draftCount} draft payslip(s) for ${label}?`
+                  : `Approve all draft payslips for ${label}?`) + `\n\n` +
+      `They move to Processed, which is what puts them in the NEFT sheet. No money moves ` +
+      `and nothing is marked paid.`)) return;
+    setApproving(true);
+    try {
+      const res = await API.post(`/payroll/approve?period=${p}`);
+      if (!res.data.approved) {
+        alert(`Nothing was approved — ${label} has no payslips in Draft.\n\n` +
+              `Check the month selector at the top of the page: it is set to ${label}, ` +
+              `which is what this button acts on, not the period filter below.`);
       } else {
-        alert(`${res.data.published} payslip(s) for ${months[selectedMonth-1]} ${selectedYear} marked as Paid. Employees can now view them.${skipped}`);
+        alert(`${res.data.approved} payslip(s) approved for payment in ${label}. ` +
+              `Download the NEFT sheet next.`);
       }
       fetchRecords();
     } catch (e) {
-      alert(e.response?.data?.detail || "Publish failed");
+      alert(e.response?.data?.detail || "Could not approve this month");
+    } finally {
+      setApproving(false);
+    }
+  };
+
+  // Preview first — the valuable output is who is NOT going to be marked paid.
+  // Period is passed explicitly so the "Release <month>" banner buttons go
+  // through this same preview instead of posting straight to /publish.
+  const openPublish = async (y = selectedYear, m = selectedMonth) => {
+    setPublishing(true);
+    try {
+      const p = `${y}-${String(m).padStart(2, "0")}`;
+      const res = await API.get(`/payroll/publish/preview?period=${p}`);
+      setPayPreview(res.data);
+      setPayDate(new Date().toISOString().slice(0, 10));
+    } catch (e) {
+      alert(e.response?.data?.detail || "Could not read the payment preview");
     } finally {
       setPublishing(false);
+    }
+  };
+
+  const applyPublish = async () => {
+    if (!payPreview) return;
+    setPayApplying(true);
+    try {
+      // From the preview itself, so the banner path can't apply to a different
+      // month than the one it previewed.
+      const p = payPreview.period;
+      const d = payDate ? `&payment_date=${payDate}` : "";
+      const res = await API.post(`/payroll/publish?period=${p}${d}`);
+      alert(`${res.data.published} payslip(s) for ${p} marked as paid.`);
+      setPayPreview(null);
+      fetchRecords();
+    } catch (e) {
+      alert(e.response?.data?.detail || "Could not mark as paid");
+    } finally {
+      setPayApplying(false);
+    }
+  };
+
+  const reopenSlip = async () => {
+    if (!showSlip || reopening) return;
+    const reason = window.prompt(
+      `Reopen ${showSlip.employee_name}'s payslip for ${showSlip.period}?\n\n` +
+      `It goes back to Processed and disappears from their view until it is marked paid again.\n\n` +
+      `Reason:`);
+    if (reason === null) return;
+    if (!reason.trim()) { alert("A reason is required to reopen a paid payslip."); return; }
+    setReopening(true);
+    try {
+      const res = await API.post(`/payroll/${showSlip.id}/reopen`, { reason: reason.trim() });
+      setShowSlip(res.data);
+      setRecords(prev => prev.map(r => r.id === res.data.id ? res.data : r));
+    } catch (e) {
+      alert(e.response?.data?.detail || "Could not reopen this payslip");
+    } finally {
+      setReopening(false);
     }
   };
 
@@ -176,6 +402,16 @@ export default function Payroll() {
   };
 
   useEffect(() => { fetchRecords(); }, [filterPeriod]);
+
+  useEffect(() => {
+    if (!isManager) return;
+    const p = `${selectedYear}-${String(selectedMonth).padStart(2, "0")}`;
+    let stale = false;
+    API.get(`/payroll/export-history?period=${p}`)
+      .then(r => { if (!stale) setExportCount(Array.isArray(r.data) ? r.data.length : 0); })
+      .catch(() => { if (!stale) setExportCount(null); });
+    return () => { stale = true; };
+  }, [isManager, selectedMonth, selectedYear, records, exportBump]);
 
   const handleProcess = async () => {
     setProcessing(true);
@@ -202,13 +438,23 @@ export default function Payroll() {
       const a = document.createElement("a"); a.href = url; a.download = `NEFT_${period}.xlsx`; a.click();
       // Four things keep someone out of this sheet, and none of them may be silent —
       // it's the file that actually moves money. Report every exclusion, with names.
+      setExportBump((b) => b + 1);
       const h = res.headers || {};
       const n = (k) => Number(h[k] || 0);
       const ids = (k) => (h[k] || "").split(",").filter(Boolean).join(", ");
       const held = n("x-payroll-held-count");
       const drafts = n("x-payroll-draft-count");
       const unver = n("x-payroll-unverified-count");
+      const nonpos = n("x-payroll-nonpositive-count");
       const parts = [];
+      if (nonpos > 0) {
+        parts.push(
+          `• ${nonpos} NOT PAID — net salary is zero or less, usually deductions larger ` +
+          `than the month's pay. A negative amount would tell the bank to take money OUT ` +
+          `of the employee's account, so these are withheld. Reduce the deduction and ` +
+          `recover the balance over the following months.\n  ${ids("x-payroll-nonpositive-ids")}`
+        );
+      }
       if (held > 0) {
         parts.push(
           `• ${held} ON HOLD — ₹${n("x-payroll-held-amount").toLocaleString("en-IN")} withheld ` +
@@ -406,12 +652,25 @@ export default function Payroll() {
               className="flex items-center gap-2 px-4 py-2 bg-[#1E2A47] text-white rounded-lg text-sm font-semibold hover:bg-[#2A3A5E] disabled:opacity-60 transition-colors">
               <Play size={14} /> {processing ? "Processing..." : "Process Payroll"}
             </button>
-            <button onClick={publishPayslips} disabled={publishing} data-testid="publish-payslips-btn"
+            <button onClick={approvePeriod} disabled={approving} data-testid="approve-period-btn"
+              title="Move this month's draft payslips to Processed so they appear in the NEFT sheet. No money moves."
+              className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-300 text-[#1E2A47] rounded-lg text-sm font-semibold hover:bg-slate-50 disabled:opacity-60 transition-colors">
+              <CheckCircle2 size={14} /> {approving ? "Approving..." : "Approve for Payment"}
+            </button>
+            <button onClick={openRecalc} disabled={recalcLoading} data-testid="recalc-lop-btn"
+              title="Re-run the LOP calculation for this month using the latest attendance and leave approvals"
+              className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-300 text-[#1E2A47] rounded-lg text-sm font-semibold hover:bg-slate-50 disabled:opacity-60 transition-colors">
+              <RefreshCw size={14} /> {recalcLoading ? "Checking..." : "Recalculate LOP"}
+            </button>
+            <button onClick={() => openPublish()} disabled={publishing} data-testid="publish-payslips-btn"
               title="Mark all unpaid payslips as Paid for this month — makes them visible to employees"
               className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-semibold hover:bg-indigo-700 disabled:opacity-60 transition-colors">
               <Send size={14} /> {publishing ? "Publishing..." : "Mark All Paid"}
             </button>
-            <button onClick={downloadNEFT} data-testid="download-neft-btn"
+            {/* Arrow-wrapped deliberately: onClick={downloadNEFT} would pass the
+                click Event as `confirmReexport`, which is truthy — every download
+                would silently override the re-export guard. */}
+            <button onClick={() => downloadNEFT()} data-testid="download-neft-btn"
               className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 transition-colors">
               <Download size={14} /> NEFT Sheet
             </button>
@@ -429,6 +688,24 @@ export default function Payroll() {
           </div>
         )}
       </div>
+
+      {/* Where this month actually is in the run, and what to do next. */}
+      {isManager && (() => {
+        const p = `${selectedYear}-${String(selectedMonth).padStart(2, "0")}`;
+        const rs = records.filter(r => r.period === p);
+        return (
+          <WorkflowStrip
+            monthLabel={`${months[selectedMonth-1]} ${selectedYear}`}
+            exportCount={exportCount}
+            counts={{
+              total: rs.length,
+              draft: rs.filter(r => r.status === "draft").length,
+              unpaid: rs.filter(r => r.status !== "paid").length,
+              paid: rs.filter(r => r.status === "paid").length,
+            }}
+          />
+        );
+      })()}
 
       {/* Filter — manager only */}
       {isManager && (
@@ -475,16 +752,8 @@ export default function Payroll() {
               {unpaidPeriods.map(([p]) => {
                 const [y, m] = p.split("-").map(Number);
                 return (
-                  <button key={p} onClick={async () => {
-                    if (!window.confirm(`Mark all payslips for ${months[m-1]} ${y} as Paid?\nEmployees will be able to view their payslips immediately.`)) return;
-                    setPublishing(true);
-                    try {
-                      const res = await API.post(`/payroll/publish?period=${p}`);
-                      alert(`${res.data.published} payslip(s) for ${months[m-1]} ${y} are now visible to employees.`);
-                      fetchRecords();
-                    } catch (e) { alert(e.response?.data?.detail || "Publish failed"); }
-                    finally { setPublishing(false); }
-                  }} disabled={publishing}
+                  <button key={p} onClick={() => openPublish(y, m)} disabled={publishing}
+                    data-testid={`release-period-${p}`}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-xs font-semibold rounded-lg disabled:opacity-60 transition-colors whitespace-nowrap">
                     <Send size={11} /> Release {months[m-1]}
                   </button>
@@ -694,6 +963,219 @@ export default function Payroll() {
         </div>
       )}
 
+      {payPreview && (
+        <Modal title={`Mark as Paid — ${payPreview.period}`} onClose={() => setPayPreview(null)}>
+          <div className="space-y-4" data-testid="publish-modal">
+            {!payPreview.any_export ? (
+              <div className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm" data-testid="publish-no-export">
+                <p className="font-bold text-red-900 flex items-center gap-2">
+                  <AlertTriangle size={15} /> No NEFT file has been downloaded for this month.
+                </p>
+                <p className="text-red-800 mt-1">
+                  Nothing can be confirmed as paid until the bank sheet has been exported and the
+                  transfer completed. If someone was paid another way, open their payslip and mark
+                  it paid individually with a reason.
+                </p>
+              </div>
+            ) : (
+              <>
+                <p className="text-sm text-slate-600">
+                  <strong>{payPreview.will_pay}</strong> payslip(s) will be marked paid,
+                  totalling <strong>₹{(payPreview.total_amount || 0).toLocaleString("en-IN")}</strong>.
+                  Only employees who were actually in a NEFT file for this month are included.
+                </p>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1">Payment date</label>
+                  <input type="date" value={payDate} onChange={e => setPayDate(e.target.value)}
+                    data-testid="publish-date"
+                    className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    The date the money actually left, not today's date.
+                  </p>
+                </div>
+
+                {(payPreview.mismatched?.length || 0) > 0 && (
+                  <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm" data-testid="publish-mismatch">
+                    <p className="font-bold text-amber-900 flex items-center gap-2">
+                      <AlertTriangle size={15} /> {payPreview.mismatched.length} record(s) changed
+                      since the bank file was sent.
+                    </p>
+                    <p className="text-amber-800 mt-1">
+                      These will still be marked paid, but the payslip no longer matches what the
+                      bank was told:
+                    </p>
+                    <ul className="mt-1 text-amber-900">
+                      {(payPreview.mismatched || []).map(r => (
+                        <li key={r.record_id}>
+                          {r.employee_id} — sent ₹{(r.sent_amount || 0).toLocaleString("en-IN")},
+                          record now ₹{(r.net_salary || 0).toLocaleString("en-IN")}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {(payPreview.skipped?.not_in_neft?.length || 0) > 0 && (
+                  <p className="text-xs text-slate-600" data-testid="publish-skipped-notneft">
+                    <strong>{payPreview.skipped['not_in_neft'].length} employee(s) were never in a NEFT
+                    file</strong> and will NOT be marked paid: {payPreview.skipped['not_in_neft'].map(r => r.employee_id).join(", ")}.
+                    If they were paid another way, mark those payslips individually with a reason.
+                  </p>
+                )}
+                {(payPreview.skipped?.nonpositive?.length || 0) > 0 && (
+                  <p className="text-xs text-slate-600" data-testid="publish-skipped-nonpositive">
+                    <strong>{payPreview.skipped['nonpositive'].length} payslip(s) have a net of zero
+                    or less</strong> and will NOT be marked paid — nothing was sent for
+                    them: {payPreview.skipped['nonpositive'].map(r => r.employee_id).join(", ")}.
+                    Correct the deductions, then approve and export again.
+                  </p>
+                )}
+                {(payPreview.skipped?.held?.length || 0) > 0 && (
+                  <p className="text-xs text-slate-500" data-testid="publish-skipped-held">
+                    {payPreview.skipped['held'].length} salary(s) on hold are skipped and stay hidden
+                    until released: {payPreview.skipped['held'].map(r => r.employee_id).join(", ")}.
+                  </p>
+                )}
+                {(payPreview.skipped?.draft?.length || 0) > 0 && (
+                  <p className="text-xs text-slate-500" data-testid="publish-skipped-draft">
+                    {payPreview.skipped['draft'].length} record(s) are still draft and were never
+                    exported: {payPreview.skipped['draft'].map(r => r.employee_id).join(", ")}.
+                  </p>
+                )}
+                {(payPreview.skipped?.already_paid?.length || 0) > 0 && (
+                  <p className="text-xs text-slate-500" data-testid="publish-skipped-paid">
+                    {payPreview.skipped['already_paid'].length} already marked paid.
+                  </p>
+                )}
+                <p className="text-[11px] text-slate-400 italic">
+                  Employees can view a payslip once it is paid <em>and</em> the month has ended —
+                  not before.
+                </p>
+              </>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => setPayPreview(null)} data-testid="publish-cancel"
+                className="px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-600 hover:bg-slate-50">
+                Cancel
+              </button>
+              <button onClick={applyPublish} data-testid="publish-apply"
+                disabled={payApplying || !payPreview.any_export || payPreview.will_pay === 0}
+                className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm font-semibold hover:bg-green-700 disabled:opacity-50">
+                {payApplying ? "Marking..." : `Mark ${payPreview.will_pay} as paid`}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {recalc && (
+        <Modal title={`Recalculate LOP — ${months[selectedMonth-1]} ${selectedYear}`} onClose={() => setRecalc(null)}>
+          <div className="space-y-4" data-testid="recalc-modal">
+            {/* Money already with the bank cannot be recovered by editing a
+                record. Say that first, before any numbers. */}
+            {recalc.already_exported && (
+              <div className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm" data-testid="recalc-exported-warning">
+                <p className="font-bold text-amber-900 flex items-center gap-2">
+                  <AlertTriangle size={15} /> A NEFT file for this month was already exported
+                  {recalc.exported_at ? ` on ${String(recalc.exported_at).slice(0, 10)}` : ""}.
+                </p>
+                <p className="text-amber-800 mt-1">
+                  Recalculating now recovers nothing — the money has gone. It only changes the
+                  records so they no longer match what was sent. Treat the figures below as a
+                  finding, not a correction.
+                </p>
+                {((recalc.overpaid_total || 0) > 0 || (recalc.underpaid_total || 0) > 0) && (
+                  <p className="text-amber-900 mt-2 font-semibold" data-testid="recalc-recover">
+                    Overpaid ₹{(recalc.overpaid_total || 0).toLocaleString("en-IN")}
+                    {" · "}Underpaid ₹{(recalc.underpaid_total || 0).toLocaleString("en-IN")}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {recalc.changed === 0 ? (
+              <p className="text-slate-500 text-sm" data-testid="recalc-nothing">
+                Nothing would change — every record already matches the current attendance and
+                leave approvals.
+              </p>
+            ) : (
+              <>
+                <p className="text-sm text-slate-600">
+                  <strong>{recalc.changed}</strong> record(s) would change.
+                  Net movement <strong>{(recalc.net_delta || 0) >= 0 ? "+" : "−"}₹
+                  {Math.abs(recalc.net_delta || 0).toLocaleString("en-IN")}</strong>.
+                </p>
+                <div className="border border-slate-200 rounded-lg overflow-x-auto max-h-72 overflow-y-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 sticky top-0">
+                      <tr>{["Employee", "LOP", "Not employed", "Net", "Change"].map(h => (
+                        <th key={h} className="px-3 py-2 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
+                      ))}</tr>
+                    </thead>
+                    <tbody>
+                      {(recalc.rows || []).map(r => (
+                        <tr key={r.record_id} className="border-t border-slate-100" data-testid={`recalc-row-${r.employee_id}`}>
+                          <td className="px-3 py-2">
+                            <p className="font-medium text-[#0F172A]">{r.employee_name}</p>
+                            <p className="text-xs text-[#E85B1E] font-mono">{r.employee_id}</p>
+                          </td>
+                          <td className="px-3 py-2 text-slate-600">{r.lop_before} → <strong>{r.lop_after}</strong></td>
+                          <td className="px-3 py-2 text-slate-600">{r.non_employed_before} → <strong>{r.non_employed_after}</strong></td>
+                          <td className="px-3 py-2 text-slate-600">
+                            ₹{(r.net_before || 0).toLocaleString("en-IN")} → <strong>₹{(r.net_after || 0).toLocaleString("en-IN")}</strong>
+                          </td>
+                          <td className={`px-3 py-2 font-semibold ${(r.delta || 0) < 0 ? "text-red-600" : "text-green-700"}`}>
+                            {(r.delta || 0) >= 0 ? "+" : "−"}₹{Math.abs(r.delta || 0).toLocaleString("en-IN")}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+
+            {/* Anything deliberately left alone is named, never silently dropped. */}
+            {(recalc.skipped_manual?.length || 0) > 0 && (
+              <p className="text-xs text-slate-500" data-testid="recalc-skipped-manual">
+                <strong className="text-slate-600">{recalc.skipped_manual.length} record(s) skipped</strong> — LOP
+                was set by hand and is left untouched: {recalc.skipped_manual.map(s => s.employee_id).join(", ")}.
+                Edit the payslip directly to change those.
+              </p>
+            )}
+            {(recalc.skipped_paid?.length || 0) > 0 && (
+              <p className="text-xs text-slate-500" data-testid="recalc-skipped-paid">
+                <strong className="text-slate-600">{recalc.skipped_paid.length} record(s) already marked paid</strong> and
+                are never rewritten: {recalc.skipped_paid.map(s => s.employee_id).join(", ")}.
+              </p>
+            )}
+
+            {recalc.changed > 0 && recalc.already_exported && (
+              <label className="flex items-start gap-2 text-sm text-slate-700">
+                <input type="checkbox" checked={recalcConfirmed} data-testid="recalc-confirm-box"
+                  onChange={e => setRecalcConfirmed(e.target.checked)} className="mt-0.5" />
+                <span>I understand the money for this month has already been sent, and I want the
+                  records changed anyway.</span>
+              </label>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button onClick={() => setRecalc(null)} data-testid="recalc-cancel"
+                className="px-4 py-2 rounded-lg border border-slate-300 text-sm font-semibold text-slate-600 hover:bg-slate-50">
+                Cancel
+              </button>
+              <button onClick={applyRecalc} data-testid="recalc-apply"
+                disabled={recalcApplying || recalc.changed === 0 || (recalc.already_exported && !recalcConfirmed)}
+                className="px-4 py-2 rounded-lg bg-[#1E2A47] text-white text-sm font-semibold hover:bg-[#2A3A5E] disabled:opacity-50">
+                {recalcApplying ? "Applying..." : `Apply to ${recalc.changed} record(s)`}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {showSlip && (
         <Modal title={`Payslip — ${showSlip.employee_name}`} onClose={() => setShowSlip(null)}>
           <div className="space-y-4" data-testid="payslip-modal">
@@ -716,19 +1198,38 @@ export default function Payroll() {
               </button>
             </div>
 
-            {/* Attendance info */}
-            <div className="grid grid-cols-3 gap-3">
+            {/* Attendance info — "Not Employed" only appears when it applies, so a
+                normal payslip keeps its three tiles. Days before joining or after
+                the last working day are unpaid but are NOT absence, and must never
+                be shown as LOP on a document the employee reads. */}
+            <div className={`grid gap-3 ${Number(showSlip.non_employed_days) > 0 ? "grid-cols-4" : "grid-cols-3"}`}>
               {[
                 ["Days in Month", daysInPeriod(showSlip.period)],
                 ["LOP Days",      showSlip.lop_days != null ? showSlip.lop_days : 0],
-                ["Payable Days",  daysInPeriod(showSlip.period) - (showSlip.lop_days != null ? Number(showSlip.lop_days) : 0)],
+                ...(Number(showSlip.non_employed_days) > 0
+                  ? [["Not Employed", Number(showSlip.non_employed_days)]]
+                  : []),
+                ["Payable Days",  showSlip.present_days != null
+                  ? Number(showSlip.present_days)
+                  : Math.max(0, daysInPeriod(showSlip.period)
+                      - (showSlip.lop_days != null ? Number(showSlip.lop_days) : 0)
+                      - Number(showSlip.non_employed_days || 0))],
               ].map(([label, val]) => (
                 <div key={label} className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-center">
                   <p className="text-xs text-slate-500">{label}</p>
-                  <p className={`text-lg font-bold ${label === "LOP Days" && Number(val) > 0 ? "text-red-600" : "text-[#1E2A47]"}`}>{val}</p>
+                  <p className={`text-lg font-bold ${label === "LOP Days" && Number(val) > 0 ? "text-red-600" : label === "Not Employed" ? "text-slate-600" : "text-[#1E2A47]"}`}>{val}</p>
                 </div>
               ))}
             </div>
+
+            {Number(showSlip.non_employed_days) > 0 && (
+              <p className="text-[11px] text-slate-500 italic" data-testid="slip-non-employed-note">
+                {showSlip.non_employed_days} day(s) this month fall outside the employment
+                period (before joining or after the last working day) and are already
+                excluded from pay. Enter LOP below only for days the employee was on the
+                rolls and absent.
+              </p>
+            )}
 
             {/* Earnings */}
             <div className="space-y-1.5">
@@ -852,7 +1353,7 @@ export default function Payroll() {
                   className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-[#1E2A47] text-white rounded-lg text-sm font-semibold hover:bg-[#2A3A5E] disabled:opacity-50">
                   {savingEdits ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Saving...</> : <><Save size={14} /> Save Adjustments</>}
                 </button>
-                <button onClick={markPaid} disabled={finalizing || showSlip.status === "draft" || showSlip.on_hold} data-testid="mark-paid-btn"
+                <button onClick={() => markPaid()} disabled={finalizing || showSlip.status === "draft" || showSlip.on_hold} data-testid="mark-paid-btn"
                   title={showSlip.on_hold
                     ? "This salary is on hold. Release it before marking as paid."
                     : showSlip.status === "draft" ? "Save adjustments first to move record to Processed before marking as paid" : ""}
@@ -862,9 +1363,26 @@ export default function Payroll() {
               </div>
             )}
             {showSlip.status === "paid" && (
-              <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm flex items-center gap-2 text-green-800">
-                <CheckCircle2 size={16} className="text-green-600" />
-                <span><strong>Paid.</strong> This payroll record is finalized and locked.</span>
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-sm space-y-2 text-green-800">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 size={16} className="text-green-600" />
+                  <span>
+                    <strong>Paid{showSlip.paid_at ? ` on ${String(showSlip.paid_at).slice(0, 10)}` : ""}.</strong>{" "}
+                    Locked — the figures cannot be edited, and Recalculate LOP will not touch it.
+                  </span>
+                </div>
+                {showSlip.paid_outside_neft && (
+                  <p className="text-xs text-green-700" data-testid="slip-paid-outside">
+                    Recorded manually — this employee was not in a NEFT file for this month.
+                    {showSlip.paid_exception_reason ? ` Reason: ${showSlip.paid_exception_reason}` : ""}
+                  </p>
+                )}
+                {isManager && (
+                  <button onClick={reopenSlip} disabled={reopening} data-testid="reopen-slip-btn"
+                    className="flex items-center gap-2 px-3 py-1.5 bg-white border border-green-300 text-green-800 rounded-lg text-xs font-semibold hover:bg-green-100">
+                    <Unlock size={12} /> Reopen payslip
+                  </button>
+                )}
               </div>
             )}
 

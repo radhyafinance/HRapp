@@ -16,16 +16,20 @@ export function SalaryBreakupForm({ form, onChange }) {
   const special  = parseFloat(form.special_allowance) || 0;
   const canteen  = parseFloat(form.canteen_allowance) || 0;
   const conv     = parseFloat(form.conveyance_allowance) || 0;
+  // EPF is 12% of Basic capped at ₹1,800 — the typed field only decides whether
+  // the employee is enrolled at all (>0 enrolled, blank/0 exempt). Its value is
+  // NOT the deduction; payroll derives the amount from Basic so the two can
+  // never disagree. See calc_payroll_components in backend/routes/payroll.py.
   const EPF_CAP    = 1800;
   const epfRaw     = form.epf_employee;
   const epfExempt  = epfRaw === null || epfRaw === undefined || epfRaw === "" || parseFloat(epfRaw) === 0;
-  const epf        = epfExempt ? 0 : Math.min(parseFloat(epfRaw) || 0, EPF_CAP);
+  const epf        = epfExempt ? 0 : Math.min(basic > 0 ? Math.round(basic * 0.12) : 0, EPF_CAP);
 
   const gross          = basic + hra + special + canteen + conv;
   const esicApplicable = basic > 0 && basic <= 21000;
   const esicEmp        = esicApplicable ? Math.round(basic * 0.0075) : 0;
   const esicEr         = esicApplicable ? Math.round(basic * 0.0325) : 0;
-  const epfEr          = epfExempt ? 0 : Math.min(basic > 0 ? Math.round(basic * 0.12) : 0, EPF_CAP);
+  const epfEr          = epf;  // employer matches the employee side
   const gratuity       = basic > 0 ? Math.round((basic * 15) / 26 / 12) : 0;
   const totalDeduction = epf + esicEmp;
   const netTakeHome    = Math.round(gross - totalDeduction);
@@ -62,6 +66,12 @@ export function SalaryBreakupForm({ form, onChange }) {
         {F("epf_employee",         "EPF (Employee share)")}
       </div>
 
+      <p className="text-[10px] text-slate-500 italic -mt-2" data-testid="sal-epf-note">
+        EPF enrolment: any value above 0 enrols the employee. The deduction itself is
+        always computed as 12% of Basic capped at ₹1,800 — and pro-rated for LOP —
+        so the figure typed here does not change what is deducted.
+      </p>
+
       {/* Auto-computed summary — only show when at least basic is entered */}
       {gross > 0 && (
         <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm space-y-2">
@@ -76,7 +86,14 @@ export function SalaryBreakupForm({ form, onChange }) {
 
           <div className="space-y-1.5">
             <div className="flex justify-between">
-              <span className="text-slate-500">EPF — Employer (12% of Basic)</span>
+              <span className="text-slate-500">EPF — Employee (12% of Basic, max ₹1,800)</span>
+              <span className={`font-medium ${epfExempt ? "text-slate-400 italic" : "text-red-600"}`}
+                    data-testid="sal-epf-employee-computed">
+                {epfExempt ? "Exempt" : `-₹${epf.toLocaleString("en-IN")}`}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-500">EPF — Employer (12% of Basic, max ₹1,800)</span>
               <span className={`font-medium ${epfExempt ? "text-slate-400 italic" : "text-orange-600"}`}>
                 {epfExempt ? "Exempt" : `₹${epfEr.toLocaleString("en-IN")}`}
               </span>

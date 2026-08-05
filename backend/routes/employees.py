@@ -436,18 +436,10 @@ async def update_employee(employee_id: str, data: EmployeeUpdate, current_user: 
             bank.pop("verified_at", None)
             bank.pop("name_match_score", None)
             bank.pop("verification_raw", None)
-            # A manual override applies to the account it was granted for. Once
-            # the account number changes it is meaningless, and leaving it would
-            # let a new, unchecked account inherit someone's earlier sign-off.
             bank.pop("verified_manually", None)
             bank.pop("manual_verified_by", None)
             bank.pop("manual_verified_at", None)
             bank.pop("manual_verification_reason", None)
-            # Perfios meters per ACCOUNT NUMBER, so the attempt tally belongs to
-            # the old account, not to the employee. Carrying it over is how
-            # finding out an account is wrong (five failed checks) then locks
-            # you out of verifying the corrected one — leaving an employee
-            # unverified, out of the NEFT sheet, and unpaid.
             bank.pop("verification_attempts", None)
             bank.pop("last_verification_attempt", None)
         update_data["bank_details"] = bank
@@ -632,7 +624,9 @@ async def download_template(current_user: dict = Depends(get_current_user)):
         "3. Department, Designation, Role and Status use dropdowns — click the cell to pick.",
         "4. Leave 'Employee ID' blank to auto-assign the next RMF number.",
         "5. Salary values are per month unless otherwise stated.",
-        "6. 'EPF Employee' is the monthly employee-side PF contribution (usually 12% of Basic, capped).",
+        "6. 'EPF Employee' enrols the employee in PF — enter any amount above 0 to enrol, 0 or blank if exempt.",
+        "   The deduction itself is always computed as 12% of Basic (max ₹1,800), so the figure you enter here",
+        "   does not change what is deducted.",
         "7. ESIC (both sides) and Gratuity are auto-computed by the system — do not fill them here.",
         "8. UAN = 12-digit Universal Account Number. ESI = 17-digit ESIC number. Leave blank if not yet issued.",
         "9. Save as .xlsx and upload on the Employees page.",
@@ -673,9 +667,7 @@ async def bulk_upload(file: UploadFile = File(...), current_user: dict = Depends
     if filename.endswith(".xlsx"):
         wb = load_workbook(filename=io.BytesIO(content), data_only=True)
         ws = wb["Employees"] if "Employees" in wb.sheetnames else wb.active
-        # We assume the template order. Map by column key.
         col_keys = [k for k, _ in EMPLOYEE_TEMPLATE_COLUMNS]
-        # Skip header row (row 1); if the first real row equals the sample, we still attempt to import it
         for row in ws.iter_rows(min_row=2, values_only=True):
             if not any(row):
                 continue
@@ -688,7 +680,6 @@ async def bulk_upload(file: UploadFile = File(...), current_user: dict = Depends
 
     created, skipped, errors = 0, 0, []
     for row in rows:
-        # Normalise all values to strings/floats as expected
         email = str(row.get("email") or "").lower().strip()
         if not email:
             continue
@@ -786,22 +777,6 @@ async def bulk_upload(file: UploadFile = File(...), current_user: dict = Depends
 PERFIOS_URL = "https://hub.perfios.com/api/kyc/v3/bankacc-verification"
 PERFIOS_EPF_URL = "https://hub.perfios.com/api/kyc/v3/epf-auth"
 
-
-# Perfios rate-limits per ACCOUNT NUMBER, and returns internal status 104 once a
-# threshold is crossed — which looks exactly like a failed verification but is
-# nothing of the kind. Published limits (per account number):
-#
-#   successful (name returned) .... 3  per month
-#   unsuccessful, functional 2xx .. 5 per day / 10 per week / 15 per month
-#   unsuccessful, 5xx ............. 10 total
-#
-# Three successes a MONTH is the one that bites: idly re-verifying an account
-# that is already verified spends a third of its yearly-ish allowance. We keep a
-# local tally and refuse before spending a call we know will come back 104.
-#
-# The tally only sees attempts made through this app — someone checking the same
-# account on the Perfios dashboard is invisible to us — so it is a guard against
-# waste, not a mirror of their counter.
 _LIMIT_SUCCESS_MONTH = 3
 _LIMIT_FAIL_DAY = 5
 _LIMIT_FAIL_WEEK = 10
@@ -813,8 +788,6 @@ def _count_attempts(attempts: list, outcome: str, days: int) -> int:
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     n = 0
     for a in attempts or []:
-        # Only this module writes the log, but a malformed entry must not 500 a
-        # verification — the fallout is an unverified employee going unpaid.
         if not isinstance(a, dict):
             continue
         if a.get("outcome") != outcome:
@@ -870,13 +843,7 @@ async def _record_attempt(employee_id: str, attempts: list, entry: dict) -> None
 
 
 def _sent_summary(payload: dict) -> dict:
-    """The request as sent, with the account number masked to its last 4.
-
-    Echoed back on failure and stored on the employee. When one account verifies
-    and another does not, the answer is almost always a difference in what was
-    sent — a name shape, a stray character — and that is invisible unless it is
-    written down. Masked because this ends up in error text on screen.
-    """
+    """The request as sent, with the account number masked to its last 4."""
     out = dict(payload)
     acct = str(out.get("accountNumber") or "")
     out["accountNumber"] = ("*" * max(0, len(acct) - 4)) + acct[-4:]
@@ -893,18 +860,12 @@ async def verify_bank_account(employee_id: str, current_user: dict = Depends(get
         raise HTTPException(status_code=404, detail="Employee not found")
 
     bank = emp.get("bank_details") or {}
-    # str() rather than assuming: an account number imported from a spreadsheet
-    # can land in Mongo as a number, and .strip() on an int is a 500.
-    # Internal whitespace is removed too — "1234 5678" is one account number to
-    # a human and a malformed one to the API.
     account_number = "".join(str(bank.get("account_number") or "").split())
     ifsc_code      = str(bank.get("ifsc_code") or "").strip().upper()
     emp_name       = " ".join(f"{emp.get('first_name') or ''} {emp.get('last_name') or ''}".split())
 
     if not account_number or not ifsc_code:
         raise HTTPException(status_code=400, detail="Bank account number and IFSC code are required before verifying")
-    # Perfios matches the account against this name, so an empty one is a
-    # guaranteed non-answer. Say that here rather than spending an API call.
     if not emp_name:
         raise HTTPException(
             status_code=400,
@@ -917,16 +878,12 @@ async def verify_bank_account(employee_id: str, current_user: dict = Depends(get
     if not api_key:
         raise HTTPException(status_code=500, detail="Perfios API key not configured")
 
-    # Whitespace is stripped for the API call, so store the same value back:
-    # otherwise the master keeps a spaced form that was never the thing verified,
-    # and the salary register shows one number while the bank got another.
     if account_number != str(bank.get("account_number") or ""):
         await db.employees.update_one(
             {"employee_id": employee_id},
             {"$set": {"bank_details.account_number": account_number}},
         )
 
-    # Refuse before spending a call we already know will come back 104.
     attempts = bank.get("verification_attempts") or []
     blocked = _quota_block_reason(attempts)
     if blocked:
@@ -955,11 +912,6 @@ async def verify_bank_account(employee_id: str, current_user: dict = Depends(get
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Perfios API unreachable: {e}")
 
-    # An API problem is NOT a verdict on the employee's bank account. Everything
-    # below raises rather than recording a result, because a stored
-    # `verified: false` silently drops the employee out of the next NEFT sheet —
-    # so "we could not get an answer" must never be written down as "this
-    # account is invalid".
     if resp.status_code >= 400:
         raise HTTPException(
             status_code=502,
@@ -975,11 +927,6 @@ async def verify_bank_account(employee_id: str, current_user: dict = Depends(get
     if not isinstance(raw, dict):
         raise HTTPException(status_code=502, detail=f"Unexpected Perfios response: {str(raw)[:300]}")
 
-    # Parse Perfios response structure:
-    # raw.statusCode == 101 → success
-    # raw.result.data.source[0].data.accountName → registered name
-    # raw.result.data.source[0].isValid → account valid
-    # raw.result.comparisionData.inputVsSource.flags.accountHolderName.score → name match
     r = raw.get("result") or {}
     data = r.get("data") or {}
     sources = data.get("source") or []
@@ -989,15 +936,6 @@ async def verify_bank_account(employee_id: str, current_user: dict = Depends(get
     validity = (comp.get("inputVsSource") or {}).get("validity", "")
     name_flag = ((comp.get("inputVsSource") or {}).get("flags") or {}).get("accountHolderName") or {}
 
-    # A VERDICT REQUIRES VERDICT DATA. Never infer one from statusCode alone.
-    #
-    # Perfios answers an unprocessable check with a status code and an EMPTY
-    # `result`, and reading the status code as the answer went wrong in both
-    # directions at once:
-    #   101 + empty result -> marked VERIFIED with no evidence at all
-    #   104 + empty result -> marked a perfectly good account INVALID
-    # Only source.isValid or comparisionData.validity actually state a verdict;
-    # `verified` stays None otherwise and is reported as an error below.
     if is_valid is not None:
         verified = bool(is_valid)
     elif validity in ("VALID", "INVALID"):
@@ -1007,12 +945,7 @@ async def verify_bank_account(employee_id: str, current_user: dict = Depends(get
 
     if verified is None:
         status_code = raw.get("statusCode")
-        # 104 is Perfios's RETRY-LIMIT response, not a verdict: the account has
-        # been checked too many times and they are declining to look again. It
-        # says nothing whatsoever about whether the account is good.
         rate_limited = status_code == 104
-        # Recorded as "blocked", deliberately NOT "failure" — counting a refusal
-        # against the failure quota would compound the very problem it reports.
         attempt = {
             "at": datetime.now(timezone.utc).isoformat(),
             "outcome": "blocked" if rate_limited else "error",
@@ -1058,12 +991,10 @@ async def verify_bank_account(employee_id: str, current_user: dict = Depends(get
     name_match = name_flag.get("score")
     if name_match is not None:
         try:
-            name_match = round(float(name_match) * 100, 1)  # convert 0-1 → 0-100
+            name_match = round(float(name_match) * 100, 1)
         except (TypeError, ValueError):
             name_match = None
 
-    # Persist result on employee. The attempt is logged with the same outcome
-    # names Perfios meters on, so the local tally tracks their counter.
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.employees.update_one(
         {"employee_id": employee_id},
@@ -1100,23 +1031,7 @@ async def manual_verify_bank_account(
     data: ManualBankVerification,
     current_user: dict = Depends(get_current_user),
 ):
-    """Mark a bank account verified WITHOUT calling Perfios.
-
-    This exists because Perfios can refuse to answer — most often its
-    per-account retry limit (status 104) — while the account is demonstrably
-    fine when checked on their dashboard. Without an override the employee
-    cannot be paid at all, which is a worse outcome than a recorded, attributed
-    human decision.
-
-    It is deliberately not a quiet equivalent of the real thing:
-      - hr_admin / management only
-      - a written reason is required and stored
-      - who and when are stored
-      - the account is flagged `verified_manually`, shown as such in the UI, and
-        listed separately in the NEFT download so it is never invisible at the
-        moment money moves
-      - editing the account number or IFSC clears it, like any verification
-    """
+    """Mark a bank account verified WITHOUT calling Perfios."""
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
 
@@ -1154,12 +1069,8 @@ async def manual_verify_bank_account(
             "bank_details.manual_verified_at": now_iso,
             "bank_details.manual_verification_reason": reason,
             "bank_details.verified_at": now_iso,
-            # Only if the admin actually has a name from the bank. Left blank
-            # otherwise, so the NEFT "verified without a name" flag still fires.
-            **({"bank_details.verified_name": data.verified_name.strip()}
+            **({("bank_details.verified_name"): data.verified_name.strip()}
                if (data.verified_name or "").strip() else {}),
-            # Logged as "manual" — it spends no Perfios quota, so it must not
-            # count towards their limits.
             "bank_details.verification_attempts": ([
                 *(bank.get("verification_attempts") or []),
                 {"at": now_iso, "outcome": "manual", "by": actor},
@@ -1181,7 +1092,6 @@ def _normalise_epf_history(items: list) -> list:
     for item in (items or []):
         if not isinstance(item, dict):
             continue
-        # Perfios actual shape: establishmentName, memberId, startMonthYear, lastMonthYear, address
         addr = item.get("address") or {}
         city = addr.get("city") or addr.get("district") or ""
         state = addr.get("state") or ""
@@ -1248,27 +1158,15 @@ async def verify_uan(employee_id: str, current_user: dict = Depends(get_current_
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Perfios EPF API unreachable: {e}")
 
-    # ── Parse Perfios EPF response ──────────────────────────────────────────
-    # Actual Perfios shape:
-    # {
-    #   "statusCode": 101,
-    #   "result": {
-    #     "personalDetails": { "name": "...", "fatherOrHusbandName": "..." },
-    #     "employers": [ { establishmentName, memberId, startMonthYear, lastMonthYear, address, status } ],
-    #     "summary": { ... }
-    #   }
-    # }
     is_valid = raw.get("statusCode") == 101
     result_block = raw.get("result") or {}
     personal = result_block.get("personalDetails") or {}
     registered_name = (
         personal.get("name") or
-        # fallback to other shapes just in case
         (result_block.get("data") or {}).get("name") or
         raw.get("name")
     )
 
-    # Employment history — primary path: result.employers
     employers_list = (
         result_block.get("employers") or
         result_block.get("employment_history") or
@@ -1278,7 +1176,6 @@ async def verify_uan(employee_id: str, current_user: dict = Depends(get_current_
     )
     employment_history = _normalise_epf_history(employers_list)
 
-    # Name match check (first-name-in-registered heuristic — EPFO names are often in ALL CAPS)
     emp_name = f"{emp.get('first_name', '')} {emp.get('last_name', '')}".strip().upper()
     reg_name_upper = (registered_name or "").upper().strip()
     name_matched = False
@@ -1290,7 +1187,6 @@ async def verify_uan(employee_id: str, current_user: dict = Depends(get_current_
             emp_name in reg_name_upper
         )
 
-    # Persist result on employee
     await db.employees.update_one(
         {"employee_id": employee_id},
         {"$set": {
@@ -1332,7 +1228,6 @@ SALARY_COLUMNS = [
     ("ctc_monthly",          "CTC Monthly (₹)"),
 ]
 
-# Columns that are editable (others are reference-only)
 SALARY_EDITABLE = {"basic", "hra", "special_allowance", "canteen_allowance", "conveyance_allowance", "epf_employee", "ctc_monthly"}
 
 
@@ -1351,17 +1246,15 @@ async def bulk_salary_template(current_user: dict = Depends(get_current_user)):
     ws = wb.active
     ws.title = "Salary Revision"
 
-    # Styles
     hdr_fill   = PatternFill("solid", fgColor="1E2A47")
-    lock_fill  = PatternFill("solid", fgColor="F1F5F9")   # locked reference cols
-    edit_fill  = PatternFill("solid", fgColor="FFF5F0")   # editable salary cols
+    lock_fill  = PatternFill("solid", fgColor="F1F5F9")
+    edit_fill  = PatternFill("solid", fgColor="FFF5F0")
     hdr_font   = Font(color="FFFFFF", bold=True, size=10)
     lock_font  = Font(color="64748B", size=10)
     edit_font  = Font(color="1E2A47", size=10)
     thin       = Side(border_style="thin", color="CBD5E1")
     border     = Border(left=thin, right=thin, top=thin, bottom=thin)
 
-    # Write headers
     for ci, (key, label) in enumerate(SALARY_COLUMNS, start=1):
         cell = ws.cell(row=1, column=ci, value=label)
         cell.fill  = hdr_fill
@@ -1370,9 +1263,8 @@ async def bulk_salary_template(current_user: dict = Depends(get_current_user)):
         cell.border = border
         ws.column_dimensions[get_column_letter(ci)].width = max(16, len(label) + 4)
     ws.row_dimensions[1].height = 36
-    ws.freeze_panes = "F2"  # freeze up to (and including) Status column
+    ws.freeze_panes = "F2"
 
-    # Write employee rows
     for ri, emp in enumerate(employees, start=2):
         sal = emp.get("salary") or {}
         row_vals = {
@@ -1401,7 +1293,6 @@ async def bulk_salary_template(current_user: dict = Depends(get_current_user)):
                 cell.font = lock_font
                 cell.alignment = Alignment(horizontal="left")
 
-    # Legend sheet
     ws2 = wb.create_sheet("Instructions")
     ws2["A1"] = "Radhya Micro Finance — Bulk Salary Revision"
     ws2["A1"].font = Font(bold=True, size=13, color="E85B1E")
@@ -1412,7 +1303,8 @@ async def bulk_salary_template(current_user: dict = Depends(get_current_user)):
         "2. Do NOT change Employee ID or Name — they are used to match records.",
         "3. Leave a cell blank / 0 to keep the existing value unchanged.",
         "4. CTC Monthly: if left blank, the system will auto-compute it from gross salary.",
-        "5. EPF Employee: monthly employee-side PF contribution (typically 12% of Basic, capped at ₹1,800).",
+        "5. EPF Employee: PF enrolment only — any value above 0 enrols, 0 or blank means exempt. The deduction",
+        "   is always computed as 12% of Basic (max ₹1,800), so this figure does not change what is deducted.",
         "6. Save as .xlsx and upload via 'Upload Salary Revision' on the Employees page.",
     ]
     for i, line in enumerate(notes, start=2):

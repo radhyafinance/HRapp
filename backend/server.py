@@ -239,6 +239,17 @@ async def startup():
     except Exception as e:
         print(f"[payroll] could not create unique (employee_id, period) index: {e}\n"
               f"[payroll] existing duplicates must be resolved — see GET /api/payroll/duplicates")
+    # One row per payroll period, holding the NEFT export counter. The uniqueness
+    # is what makes the export claim atomic: two downloads racing to take the
+    # first export of a month both attempt an upsert, and exactly one wins — the
+    # other is refused instead of walking away with a second copy of the bank
+    # file. Without this index both could insert and both could pay.
+    try:
+        await db.payroll_export_state.create_index(
+            "period", unique=True, name="uniq_export_state_period")
+    except Exception as e:
+        print(f"[payroll] could not create unique payroll_export_state.period index: {e}\n"
+              f"[payroll] concurrent NEFT downloads may not be refused")
     try:
         await db.candidate_documents.create_index("candidate_id", unique=True)
     except Exception:
