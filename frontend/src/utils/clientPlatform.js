@@ -63,6 +63,40 @@ async function detectLocationPermission(isApp) {
   }
 }
 
+/**
+ * Tracker health, or null if the app can't tell us (PWA, or any APK before
+ * v1.5.0 — the method simply doesn't exist there and the call throws).
+ *
+ * Separate from permission because the two fail independently, and the Devices
+ * tab was misleading without it: "Allow all the time" and 90% battery is what a
+ * phone shows when an OEM cleaner has been killing the tracker all morning.
+ */
+async function detectTrackerHealth(isApp) {
+  if (!isApp) return null;
+  try {
+    if (!RadhyaTracker || typeof RadhyaTracker.getHealth !== "function") return null;
+    const h = await RadhyaTracker.getHealth();
+    if (!h) return null;
+    // Report ONLY what the phone actually measured. Coercing an absent field to
+    // its healthy value would be worse than saying nothing: the backend stamps
+    // tracker_health_at as soon as any field arrives, and the Devices tab then
+    // shows a green "No blockers" — an affirmative all-clear for a state that
+    // was never checked. Leaving it undefined keeps it out of the payload, and
+    // the backend's `is not None` test treats that as "not reported".
+    const out = {};
+    if (typeof h.batteryOptimised === "boolean") out.battery_optimised = h.batteryOptimised;
+    if (typeof h.exactAlarms === "boolean") out.exact_alarms = h.exactAlarms;
+    // Only a fault while tracking is supposed to be ON. A service that isn't
+    // running because the employee has punched out is working as designed.
+    if (typeof h.serviceRunning === "boolean") out.service_dead = !!h.active && !h.serviceRunning;
+    // Fixes buffered offline and still waiting to upload.
+    if (Number.isFinite(Number(h.queued))) out.queued_pings = Number(h.queued);
+    return Object.keys(out).length ? out : null;
+  } catch (e) {
+    return null;
+  }
+}
+
 function detectBase() {
   const native = isNativeApp();
   const ua = (navigator.userAgent || "");
@@ -104,12 +138,28 @@ export async function reportClientPlatform() {
     const isApp = base.platform === "app";
     const version = await detectVersion(isApp);
     const permission = await detectLocationPermission(isApp);
+    const health = await detectTrackerHealth(isApp);
     const info = { ...base };
     if (version) info.version = version;
     if (permission) info.location_permission = permission;
+    if (health) Object.assign(info, health);
     // Permission is in the signature so a revocation re-reports on the next call
     // instead of waiting out the 6h throttle. (The APK should call this on resume.)
-    const sig = `${base.platform}|${version || ""}|${permission || ""}`;
+    // Health joins the signature for the same reason permission did: a tracker
+    // that just died should show up on the Devices tab now, not in six hours.
+    // The queue depth is deliberately reduced to "buffering or not" here. The
+    // exact count changes with every ping, and putting it in the signature
+    // would report on each one; the bucket still makes "started buffering" and
+    // "finished draining" show up promptly.
+    const healthSig = health
+      ? `${health.battery_optimised ? 1 : 0}${health.exact_alarms === false ? 1 : 0}${health.service_dead ? 1 : 0}${health.queued_pings > 0 ? 1 : 0}`
+      : "";
+    // The session tag scopes the throttle to the logged-in user. Without it,
+    // on a shared field phone the second employee to log in within 6h matches
+    // the first one's signature, the POST is skipped, and they show as "never
+    // seen" on Adoption with no permission or health of their own.
+    const session = (localStorage.getItem("auth_token") || "").slice(-24);
+    const sig = `${session}|${base.platform}|${version || ""}|${permission || ""}|${healthSig}`;
     const lastSig = localStorage.getItem("rmf_client_sig");
     const lastT = Number(localStorage.getItem("rmf_client_at") || 0);
     if (lastSig === sig && (Date.now() - lastT) < 6 * 60 * 60 * 1000) return;

@@ -29,6 +29,38 @@ function permissionCell(d) {
              sub: "install the app to track" };
   return { label: "—", cls: "bg-slate-50 text-slate-400 border-slate-200", sub: null };
 }
+/**
+ * Concrete, fixable reasons a device goes quiet while its permission column
+ * looks perfectly healthy. Reported by the v1.5.0+ app.
+ *
+ * This column exists because "Allowed always" plus 90% battery was all HR could
+ * see, and that is exactly what a phone shows when the maker's cleaner has been
+ * killing the tracker all morning — so every stale device looked like a mystery
+ * or a network problem. Each chip names the setting that fixes it.
+ *
+ * Strict === comparisons throughout: undefined means the app never reported the
+ * field (any build before v1.5.0), which must not be shown as either good or bad.
+ */
+const HEALTH_TONES = {
+  bad: "bg-red-50 text-red-700 border-red-200",
+  warn: "bg-amber-50 text-amber-700 border-amber-200",
+};
+function healthIssues(d) {
+  const out = [];
+  if (d.battery_optimised === true)
+    out.push({ label: "Battery optimised", tone: "bad", fix: "Phone Settings → Apps → Radhya HR → Battery → Unrestricted" });
+  if (d.exact_alarms === false)
+    out.push({ label: "Alarms restricted", tone: "bad", fix: "Phone Settings → Apps → Radhya HR → Alarms & reminders → Allow" });
+  if (d.service_dead === true)
+    out.push({ label: "Service killed", tone: "bad", fix: "Enable Autostart for Radhya HR and lock it in the recents screen" });
+  // Amber, not red: buffering is the phone working correctly through a coverage
+  // gap, and it clears itself. It earns a chip only so a catching-up device is
+  // not mistaken for a broken one.
+  if (d.queued_pings > 0)
+    out.push({ label: `${d.queued_pings} buffered`, tone: "warn",
+               fix: "Fixes taken with no coverage, held on the phone. They upload by themselves once it has a connection — no action needed." });
+  return out;
+}
 const FRESHNESS_STYLES = {
   live:    { label: "Live",    dot: "bg-green-500",    bg: "bg-green-50",    text: "text-green-700",  border: "border-green-200" },
   recent:  { label: "Recent",  dot: "bg-emerald-400",  bg: "bg-emerald-50",  text: "text-emerald-700",border: "border-emerald-200" },
@@ -56,6 +88,7 @@ export default function FieldTracking() {
   const [trackLoading, setTrackLoading] = useState(false);
   const [date, setDate] = useState(toLocalDateStr());
   const [devFilter, setDevFilter] = useState("");
+  const [devBranch, setDevBranch] = useState("");
   const [distDate, setDistDate] = useState(toLocalDateStr());
   const [distData, setDistData] = useState(null);
   const [distLoading, setDistLoading] = useState(false);
@@ -238,7 +271,14 @@ export default function FieldTracking() {
   const locations = trackData?.locations || [];
   const histStops = histTrack?.stops || [];
   const histLocations = histTrack?.locations || [];
-  const filteredDevices = devices.filter(d => {
+  // Derived from the devices actually returned, not the branch master — a
+  // branch with nobody tracked in it is noise in the dropdown.
+  const deviceBranches = [...new Set(devices.map(d => d.branch).filter(Boolean))].sort();
+  // Branch narrows first, and the freshness chip counts are taken from HERE, so
+  // "Stale (4)" always means four rows in the table below rather than four
+  // somewhere in the company.
+  const branchDevices = devBranch ? devices.filter(d => d.branch === devBranch) : devices;
+  const filteredDevices = branchDevices.filter(d => {
     if (!devFilter) return true;
     const q = devFilter.toLowerCase();
     return d.employee_id.toLowerCase().includes(q) || (d.name || "").toLowerCase().includes(q) || (d.designation || "").toLowerCase().includes(q) || d.freshness === devFilter;
@@ -582,12 +622,18 @@ export default function FieldTracking() {
                 placeholder="Filter by ID, name, or freshness (live/stale/silent)..."
                 className="w-full border border-slate-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" data-testid="device-filter-input" />
             </div>
+            <select value={devBranch} onChange={e => setDevBranch(e.target.value)}
+              data-testid="devices-branch-filter"
+              className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none">
+              <option value="">All branches</option>
+              {deviceBranches.map(b => <option key={b} value={b}>{b}</option>)}
+            </select>
             {["live","recent","stale","silent","never"].map(k => (
               <button key={k} onClick={() => setDevFilter(devFilter === k ? "" : k)}
                 className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${devFilter === k ? FRESHNESS_STYLES[k].bg + " " + FRESHNESS_STYLES[k].text + " " + FRESHNESS_STYLES[k].border : "bg-white border-slate-200 text-slate-500"}`}
                 data-testid={`filter-chip-${k}`}>
                 <span className={`w-2 h-2 rounded-full ${FRESHNESS_STYLES[k].dot}`} />
-                {FRESHNESS_STYLES[k].label} ({devices.filter(d => d.freshness === k).length})
+                {FRESHNESS_STYLES[k].label} ({branchDevices.filter(d => d.freshness === k).length})
               </button>
             ))}
             <button onClick={fetchDevices} data-testid="refresh-devices-btn"
@@ -599,12 +645,12 @@ export default function FieldTracking() {
             <div className="overflow-x-auto">
               <table className="w-full" data-testid="devices-table">
                 <thead><tr className="bg-slate-50 border-b">
-                  {["Status", "Employee", "Role", "Last Ping", "Battery", "Location Access", ""].map(h =>
+                  {["Status", "Employee", "Branch", "Role", "Last Ping", "Battery", "Location Access", "Blockers", ""].map(h =>
                     <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>)}
                 </tr></thead>
                 <tbody>
-                  {loading ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
-                  : filteredDevices.length === 0 ? <tr><td colSpan={7} className="px-4 py-12 text-center text-slate-400">No tracker devices yet.</td></tr>
+                  {loading ? <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                  : filteredDevices.length === 0 ? <tr><td colSpan={9} className="px-4 py-12 text-center text-slate-400">No tracker devices yet.</td></tr>
                   : filteredDevices.map(d => {
                     const style = FRESHNESS_STYLES[d.freshness] || FRESHNESS_STYLES.never;
                     return (
@@ -616,6 +662,7 @@ export default function FieldTracking() {
                           </span>
                         </td>
                         <td className="px-4 py-3"><p className="text-sm font-medium text-[#0F172A]">{d.name}</p><p className="text-xs text-[#E85B1E] font-mono">{d.employee_id}</p></td>
+                        <td className="px-4 py-3 text-sm text-slate-600" data-testid={`device-branch-${d.employee_id}`}>{d.branch || "-"}</td>
                         <td className="px-4 py-3 text-sm text-slate-600">{d.designation || "-"}</td>
                         <td className="px-4 py-3">
                           <div className="flex items-center gap-1.5"><Clock size={12} className="text-slate-400" /><span className="text-sm text-slate-700">{minsAgoLabel(d.minutes_ago)}</span></div>
@@ -639,6 +686,28 @@ export default function FieldTracking() {
                           ); })()}
                         </td>
                         <td className="px-4 py-3">
+                          {(() => {
+                            const issues = healthIssues(d);
+                            if (issues.length) return (
+                              <div className="space-y-1" data-testid={`device-health-${d.employee_id}`}>
+                                {issues.map(i => (
+                                  <span key={i.label} title={i.fix}
+                                        className={`block w-fit px-2 py-1 rounded-full text-[11px] font-medium border cursor-help ${HEALTH_TONES[i.tone] || HEALTH_TONES.bad}`}>
+                                    {i.label}
+                                  </span>
+                                ))}
+                              </div>
+                            );
+                            // Reported and clean is a real, useful answer: it rules
+                            // out the phone and points at coverage or a punch-out.
+                            if (d.health_at) return (
+                              <span className="inline-flex px-2 py-1 rounded-full text-[11px] font-medium border bg-green-50 text-green-700 border-green-200"
+                                    data-testid={`device-health-${d.employee_id}`}>None</span>
+                            );
+                            return <span className="text-xs text-slate-400" data-testid={`device-health-${d.employee_id}`}>—</span>;
+                          })()}
+                        </td>
+                        <td className="px-4 py-3">
                           <button
                             onClick={() => { setHistDate(toLocalDateStr()); setHistSelected({ employee_id: d.employee_id, name: d.name, designation: d.designation }); setTab("history"); }}
                             data-testid={`device-route-${d.employee_id}`}
@@ -660,6 +729,9 @@ export default function FieldTracking() {
             <span className="font-medium"> Allowed always</span> is required — the tracker only runs with the screen locked when background location is on.
             A device can be <span className="font-medium">Allowed always</span> yet <span className="font-medium">Silent</span> (phone off, or the maker&apos;s battery saver killing the app),
             or <span className="font-medium">Denied</span> yet <span className="font-medium">Live</span> (app left open). Read the two columns together.
+            <br /><strong>Blockers</strong> are phone settings that stop the tracker even when location access is correct — hover a chip for the exact setting to change.
+            <span className="font-medium"> None</span> means the phone reported no blockers, so look at coverage or whether they punched out.
+            <span className="font-medium"> —</span> means the app is older than v1.5.0 and cannot report them yet.
           </div>
         </div>
       )}

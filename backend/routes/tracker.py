@@ -202,8 +202,29 @@ async def _process_ping(qp: dict, request: Request):
                 ts = datetime.fromtimestamp(float(raw_ts), tz=timezone.utc)
             else:
                 ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
-    except (ValueError, TypeError):
-        pass
+    # OverflowError/OSError matter as much as ValueError here: a garbage
+    # timestamp that escapes this block 500s the endpoint, and the app treats a
+    # non-2xx as "still offline" and re-queues. Since the queue stops at its
+    # first failure, one poisoned ping at the head would block that phone's
+    # entire backlog until it aged out seven days later.
+    except (ValueError, TypeError, OverflowError, OSError):
+        ts = datetime.now(timezone.utc)
+    # Normalise, then refuse the future. Both matter for the forward-only guard
+    # below: a naive or non-UTC datetime would make its ISO string sort wrong,
+    # and a phone whose clock runs fast would stamp last_ping_at ahead of real
+    # time — after which every honest ping is older, fails the guard, and the
+    # device is frozen "Live" at a stale position with no way back.
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    # Whole seconds, always. The guard below compares ISO STRINGS, and "+" (0x2B)
+    # sorts before "." (0x2E) — so "10:00:00+00:00" compares as EARLIER than
+    # "10:00:00.5+00:00". Mixing the two (the app sends whole seconds, the
+    # server-time fallback carries microseconds) would let a fallback ping lock
+    # out the next real one for the rest of that second.
+    ts = ts.astimezone(timezone.utc).replace(microsecond=0)
+    _now = datetime.now(timezone.utc).replace(microsecond=0)
+    if ts > _now + timedelta(minutes=10):
+        ts = _now
     # Off duty -> discard. Nothing is written, not even a flagged row.
     if not await _is_on_duty(emp_id, ts):
         return
@@ -223,10 +244,27 @@ async def _process_ping(qp: dict, request: Request):
         "source": "app",
     }
     await db.location_logs.insert_one(log)
+    # The track itself is written unconditionally above — every fix is a real
+    # point wherever it arrives in the order. This summary is different: it is
+    # "last known", and it must only ever move FORWARD.
+    #
+    # The app now buffers fixes while it is out of coverage and replays them on
+    # reconnect, so backdated pings are normal. Overwriting unconditionally made
+    # a phone look MORE stale the moment it came back: the replayed backlog is
+    # older than the live fix that arrived with it, so the last write won and
+    # Freshness went backwards. Repeat the precondition inside the filter rather
+    # than reading-then-writing, so concurrent pings can't interleave past it.
+    ts_iso = ts.isoformat()
     await db.employee_trackers.update_one(
-        {"employee_id": emp_id},
+        {"employee_id": emp_id,
+         # $lte, not $lt: timestamps are whole seconds, so two fixes can share
+         # one. Refusing a tie would drop a live ping in favour of a replayed
+         # one from the same second; last-write-wins on a tie is the safer end.
+         "$or": [{"last_ping_at": {"$lte": ts_iso}},
+                 {"last_ping_at": None},
+                 {"last_ping_at": {"$exists": False}}]},
         {"$set": {
-            "last_ping_at": ts.isoformat(),
+            "last_ping_at": ts_iso,
             "last_lat": lat,
             "last_lon": lon,
             "last_accuracy": accuracy,
@@ -245,6 +283,36 @@ def _safe_float(v):
 # ──────────────────────────────────────────────────────────────
 def _new_secret() -> str:
     return secrets.token_urlsafe(12)
+
+
+def _has_left(emp: dict, today: str) -> bool:
+    """Has this employee finished working here?
+
+    Two independent signals, because they arrive at different times: `status`
+    flips to "exited" when HR completes the exit formalities, which can be days
+    or weeks after the person actually stopped coming in, while
+    `last_working_day` is known up front. Either one is enough.
+
+    An employee with no record at all (a tracker row whose employee was deleted)
+    counts as gone — there is nobody left to track.
+
+    The comparison is a plain string compare on YYYY-MM-DD, which is safe
+    because both sides are zero-padded ISO dates; `last_working_day` may carry a
+    time component ("2026-07-31T00:00:00") so only the date part is taken.
+    """
+    if not emp:
+        return True
+    if (emp.get("status") or "").lower() == "exited":
+        return True
+    lwd = emp.get("last_working_day")
+    if not lwd:
+        return False
+    lwd = str(lwd).split("T")[0].split(" ")[0].strip()
+    if len(lwd) != 10:
+        # Unrecognised format — keep the person visible. Hiding a working
+        # employee because a date failed to parse is the worse mistake.
+        return False
+    return lwd < today
 @router.get("/devices")
 async def list_devices(current_user: dict = Depends(get_current_user)):
     """List all configured tracker devices with freshness status.
@@ -266,13 +334,25 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
         {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1,
          "designation": 1, "department": 1, "role": 1, "status": 1, "phone": 1,
          "branch": 1, "last_platform": 1, "last_app_version": 1,
-         "location_permission": 1, "location_permission_at": 1},
+         "location_permission": 1, "location_permission_at": 1,
+         "tracker_battery_optimised": 1, "tracker_exact_alarms": 1,
+         "tracker_service_dead": 1, "tracker_health_at": 1,
+         "tracker_queued_pings": 1, "last_working_day": 1},
     ).to_list(2000)
     emp_map = {e["employee_id"]: e for e in employees}
     now = datetime.now(timezone.utc)
     out = []
+    today_ist = _today()
     for t in trackers:
         emp = emp_map.get(t["employee_id"]) or {}
+        # Anyone who has finished their last working day drops off this list.
+        # A tracker row outlives the employment, so leavers used to sit here
+        # forever as permanently "Silent" devices — noise that grows every month
+        # and buries the people HR can still do something about. Someone serving
+        # notice stays visible until the day itself has passed; they are still
+        # working, and their tracking still matters.
+        if _has_left(emp, today_ist):
+            continue
         last_ping = t.get("last_ping_at")
         minutes_ago = None
         freshness = "never"
@@ -280,6 +360,11 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
             try:
                 dt = datetime.fromisoformat(last_ping.replace("Z", "+00:00"))
                 minutes_ago = int((now - dt).total_seconds() / 60)
+                # A clock-skewed device can still carry a future last_ping_at
+                # from before the clamp existed; without max(0, ...) it reads
+                # "Live, just now" forever, which is the single most misleading
+                # thing this table could say about a dead phone.
+                minutes_ago = max(0, minutes_ago)
                 if minutes_ago <= 5:
                     freshness = "live"
                 elif minutes_ago <= 30:
@@ -315,6 +400,13 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
             "app_version": emp.get("last_app_version"),
             "location_permission": emp.get("location_permission"),
             "location_permission_at": emp.get("location_permission_at"),
+            # Tracker health (APK v1.5.0+). None = this build never reported it,
+            # which the UI must show as unknown rather than as healthy.
+            "battery_optimised": emp.get("tracker_battery_optimised"),
+            "exact_alarms": emp.get("tracker_exact_alarms"),
+            "service_dead": emp.get("tracker_service_dead"),
+            "queued_pings": emp.get("tracker_queued_pings"),
+            "health_at": emp.get("tracker_health_at"),
         })
     # Distance covered TODAY only. The Active Today tab is a live view of the day in
     # progress, so a running total from any other period would be misleading there.
@@ -430,6 +522,19 @@ async def get_my_tracker_config(current_user: dict = Depends(get_current_user)):
             "last_ping_at": None,
         }
         await db.employee_trackers.insert_one(dict(tracker))
+    # UTC ON PURPOSE — do not "fix" this to _today() (IST).
+    #
+    # This reads attendance_records, and punch_in writes that collection's
+    # `date` with datetime.now(timezone.utc) (routes/attendance.py). The lookup
+    # has to use the convention the rows were WRITTEN with, not the one the rest
+    # of this file uses for GPS buckets. Switching it to IST looks tidier and
+    # silently breaks tracking every day between 00:00 and 05:30 IST, when the
+    # two dates differ: the record is filed under the UTC date and an IST lookup
+    # misses it, so should_track comes back False and the app stops tracking.
+    #
+    # (_is_on_duty has the mirror-image mismatch — it converts to IST before
+    # looking up the same collection. Pre-existing, and it only bites for pings
+    # taken 00:00-05:30 IST, but it is the same trap from the other side.)
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     att = await db.attendance_records.find_one({"employee_id": emp_id, "date": today})
     return {
@@ -976,6 +1081,21 @@ class ClientInfoIn(BaseModel):
     # "in_use" = foreground only (tracker dies when the screen locks), "denied",
     # "prompt" = not yet asked. Older APKs send nothing → stays unknown.
     location_permission: Optional[str] = None
+    # Tracker health, reported by the native app only (v1.5.0+). Permission and
+    # battery percentage both look healthy on a phone whose tracking has been
+    # dead for six hours, so these carry the reasons that column cannot express.
+    # True means Android may doze the app — the usual cause of a silent device.
+    battery_optimised: Optional[bool] = None
+    # False means exact alarms are barred, so fixes fall back to inexact ones
+    # that Doze can defer for hours.
+    exact_alarms: Optional[bool] = None
+    # True once the foreground service was found dead while tracking was on —
+    # i.e. an OEM cleaner reaped it and only the worker is still delivering.
+    service_dead: Optional[bool] = None
+    # Fixes taken out of coverage and buffered on the phone, still waiting to
+    # upload. Not a fault — it means the buffer is working — but it separates
+    # "no coverage, catching up" from "this phone stopped tracking".
+    queued_pings: Optional[int] = None
 @router.post("/client-info")
 async def record_client_info(body: ClientInfoIn, current_user: dict = Depends(get_current_user)):
     """Called by the frontend on login to record whether the employee is on the
@@ -1001,6 +1121,32 @@ async def record_client_info(body: ClientInfoIn, current_user: dict = Depends(ge
     if platform == "app" and perm in _LOCATION_PERMISSION_STATES:
         update["location_permission"] = perm
         update["location_permission_at"] = now
+    # Health is app-only and, like permission, must never be overwritten by a
+    # PWA login. `None` means "this build doesn't report it" (any APK before
+    # v1.5.0), which is NOT the same as False — so test against None, not falsy.
+    if platform == "app":
+        health_at = False
+        for field, value in (
+            ("tracker_battery_optimised", body.battery_optimised),
+            ("tracker_exact_alarms", body.exact_alarms),
+            ("tracker_service_dead", body.service_dead),
+        ):
+            if value is not None:
+                update[field] = bool(value)
+                health_at = True
+        if body.queued_pings is not None:
+            try:
+                # Clamped, not just floored at 0. Pydantic hands over an
+                # arbitrary-precision int, so int() never raises and the failure
+                # would land in Mongo instead ("can only handle up to 8-byte
+                # ints") as an unhandled 500. Every other free-form field on
+                # this handler is bounded; this one has to be too.
+                update["tracker_queued_pings"] = min(max(0, int(body.queued_pings)), 100000)
+                health_at = True
+            except (TypeError, ValueError, OverflowError):
+                pass
+        if health_at:
+            update["tracker_health_at"] = now
     await db.employees.update_one({"employee_id": emp_id}, {"$set": update})
     return {"ok": True}
 @router.get("/adoption")
