@@ -50,8 +50,9 @@ export default function Settings() {
   const [savingCompany, setSavingCompany] = useState(false);
   const [faceMatchStrict, setFaceMatchStrict] = useState(false);
   const [savingFaceMatch, setSavingFaceMatch] = useState(false);
-  const [appPolicy, setAppPolicy] = useState({ min_version: "1.4.0", enforce: false });
-  const [appPolicySaved, setAppPolicySaved] = useState({ min_version: "1.4.0", enforce: false });
+  const APP_POLICY_BLANK = { min_version: "1.4.0", enforce: false, latest_version: "", apk_url: "" };
+  const [appPolicy, setAppPolicy] = useState(APP_POLICY_BLANK);
+  const [appPolicySaved, setAppPolicySaved] = useState(APP_POLICY_BLANK);
   const [savingAppPolicy, setSavingAppPolicy] = useState(false);
   const [adoption, setAdoption] = useState(null);
   const [pwForm, setPwForm] = useState({ current_password: "", new_password: "", confirm_password: "" });
@@ -80,6 +81,8 @@ export default function Settings() {
       const pol = {
         min_version: appRes.data?.min_version || "1.4.0",
         enforce: !!appRes.data?.enforce,
+        latest_version: appRes.data?.latest_version || "",
+        apk_url: appRes.data?.apk_url || "",
       };
       setAppPolicy(pol);
       setAppPolicySaved(pol);
@@ -165,11 +168,41 @@ export default function Settings() {
     );
   })();
   const policyDirty = appPolicy.min_version !== appPolicySaved.min_version
-    || appPolicy.enforce !== appPolicySaved.enforce;
+    || appPolicy.enforce !== appPolicySaved.enforce
+    || appPolicy.latest_version !== appPolicySaved.latest_version
+    || appPolicy.apk_url !== appPolicySaved.apk_url;
+  // Mirrors the backend's _is_apk_url: https only (the APK is an executable
+  // going onto the whole field force's phones), and it must end in .apk before
+  // any query string, so signed download links still pass.
+  // 2000 matches the backend cap. Without it the UI showed a valid-looking
+  // field, enabled Save, and let the server answer "must be a full https://
+  // address ending in .apk" — a message about format, for a link whose format
+  // was fine. Presigned S3/CloudFront links get long enough for this to matter.
+  const APK_URL_MAX = 2000;
+  const validApkUrl = (u) => {
+    const v = String(u || "").trim();
+    if (!/^https:\/\/\S+$/i.test(v)) return false;
+    if (v.length > APK_URL_MAX) return false;
+    return v.split("?")[0].split("#")[0].toLowerCase().endsWith(".apk");
+  };
+  // Both or neither. Half a pair is an "Update now" button with nowhere to
+  // download from, which reads as a broken app on the phone and as a saved
+  // setting here.
+  const updateLinkOk = (!appPolicy.latest_version && !appPolicy.apk_url)
+    || (validVersion(appPolicy.latest_version) && validApkUrl(appPolicy.apk_url));
 
   const saveAppPolicy = async () => {
     if (!validVersion(appPolicy.min_version)) {
       alert("Minimum version must look like 1.4.0 (numbers and dots only)");
+      return;
+    }
+    if (!updateLinkOk) {
+      alert("Set BOTH the latest version (like 1.6.0) and an https:// link ending in .apk — or leave both empty.");
+      return;
+    }
+    if (appPolicy.latest_version
+        && cmpVersion(appPolicy.latest_version, appPolicy.min_version) < 0) {
+      alert("The latest version can't be older than the minimum version — that would tell everyone to install a build the app then rejects.");
       return;
     }
     // Only the ON direction can strand anyone, so only that one asks.
@@ -191,8 +224,15 @@ export default function Settings() {
       const res = await API.put("/settings/app-version", {
         min_version: String(appPolicy.min_version).trim(),
         enforce: !!appPolicy.enforce,
+        latest_version: String(appPolicy.latest_version || "").trim(),
+        apk_url: String(appPolicy.apk_url || "").trim(),
       });
-      const pol = { min_version: res.data?.min_version, enforce: !!res.data?.enforce };
+      const pol = {
+        min_version: res.data?.min_version,
+        enforce: !!res.data?.enforce,
+        latest_version: res.data?.latest_version || "",
+        apk_url: res.data?.apk_url || "",
+      };
       setAppPolicy(pol);
       setAppPolicySaved(pol);
     } catch (err) { alert(err.response?.data?.detail || "Failed to save"); }
@@ -457,6 +497,52 @@ export default function Settings() {
               </div>
             </div>
 
+            {/* ── In-app update link ──────────────────────────────────────────
+                What turns both update screens from "contact the IT team" into
+                a button. Until v1.6.0 every release was carried to ~36 phones
+                by hand; the measured result was 28 of them still running v1.4.0
+                and 17 of the 20 stale devices being exactly those handsets. */}
+            <div className="border-t border-slate-200 pt-4 space-y-3">
+              <div>
+                <p className="text-sm font-semibold text-[#0F172A]">In-app update</p>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Publish the newest APK here and staff get an <strong>Update now</strong> button
+                  inside the app instead of needing the file sent to them. Works on v1.6.0 and
+                  above; older builds still have to be updated by hand, once.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-end gap-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Latest version</label>
+                  <input value={appPolicy.latest_version} data-testid="latest-app-version"
+                    onChange={e => setAppPolicy(p => ({ ...p, latest_version: e.target.value }))}
+                    placeholder="1.6.0"
+                    className={`w-40 border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-[#E85B1E] ${!appPolicy.latest_version || validVersion(appPolicy.latest_version) ? "border-slate-300" : "border-red-400 bg-red-50"}`} />
+                </div>
+                <div className="flex-1 min-w-[280px]">
+                  <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">APK download link</label>
+                  <input value={appPolicy.apk_url} data-testid="apk-url"
+                    onChange={e => setAppPolicy(p => ({ ...p, apk_url: e.target.value }))}
+                    placeholder="https://…/radhya-hr-1.6.0.apk"
+                    className={`w-full border rounded-lg px-3 py-2 text-sm font-mono outline-none focus:ring-2 focus:ring-[#E85B1E] ${!appPolicy.apk_url || validApkUrl(appPolicy.apk_url) ? "border-slate-300" : "border-red-400 bg-red-50"}`} />
+                </div>
+              </div>
+              {!updateLinkOk && (
+                <p className="text-xs text-red-600" data-testid="update-link-error">
+                  {String(appPolicy.apk_url || "").trim().length > APK_URL_MAX
+                    ? `That link is ${String(appPolicy.apk_url).trim().length} characters — the maximum is ${APK_URL_MAX}.`
+                    : <>Fill in both, or leave both empty. The link must start with <span className="font-mono">https://</span> and end in <span className="font-mono">.apk</span> —
+                      the phone downloads and installs it, so it can't be a web page or a sharing link.</>}
+                </p>
+              )}
+              {updateLinkOk && appPolicy.latest_version && (
+                <p className="text-xs text-slate-500">
+                  Staff on an older build will see an update prompt. This does <strong>not</strong> block
+                  anyone — that is the minimum version above.
+                </p>
+              )}
+            </div>
+
             {/* Who this would affect — the number that should decide whether to enforce. */}
             {affectedByPolicy === null ? (
               <p className="text-xs text-slate-400">Couldn't read app adoption data, so the impact below is unavailable.</p>
@@ -480,7 +566,7 @@ export default function Settings() {
           </div>
 
           <div className="flex gap-3">
-            <button onClick={saveAppPolicy} disabled={savingAppPolicy || !policyDirty || !validVersion(appPolicy.min_version)}
+            <button onClick={saveAppPolicy} disabled={savingAppPolicy || !policyDirty || !validVersion(appPolicy.min_version) || !updateLinkOk}
               data-testid="save-app-policy"
               className="px-6 py-2.5 bg-[#E85B1E] text-white rounded-lg text-sm font-semibold disabled:opacity-50">
               {savingAppPolicy ? "Saving..." : "Save"}

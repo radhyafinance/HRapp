@@ -90,6 +90,24 @@ const HEALTH_TONES = {
   unknown: "bg-slate-100 text-slate-500 border-slate-200",
 };
 /**
+ * What the phone's backstop said about its own last pass (v1.6.0+), in words HR
+ * can act on. Exists because "the worker ran and no fix arrived" covered a
+ * denied permission, a GPS timeout and a failed upload — three different
+ * repairs that were indistinguishable from the server, and that ambiguity cost
+ * a full round of diagnosis on RMF0022 and RMF0060.
+ */
+const WORKER_OUTCOMES = {
+  healthy: "not needed — the main tracker was delivering",
+  fixed: "took its own position successfully",
+  fixed_last_known: "sent the phone's last known position (couldn't get a fresh one)",
+  post_failed: "got a position but couldn't upload it — it is buffered on the phone",
+  no_location: "the phone returned no position at all",
+  stale_last_known: "only had a position over an hour old, so sent nothing",
+  no_permission: "location permission was refused",
+  inactive: "the employee is punched out",
+  error: "failed unexpectedly",
+};
+/**
  * Concrete, fixable reasons a device goes quiet while its permission column
  * looks perfectly healthy. Reported by the v1.5.0+ app.
  *
@@ -105,8 +123,38 @@ function healthIssues(d) {
   const out = [];
   if (d.battery_optimised === true)
     out.push({ label: "Battery optimised", tone: "bad", fix: "Phone Settings → Apps → Radhya HR → Battery → Unrestricted" });
-  if (d.exact_alarms === false)
+  // Only a fault on the builds where the alarm actually carried the tracking.
+  // From v1.6.0 a standing GPS subscription does that and the alarm is a spare
+  // heartbeat — flagging it there would put a red chip on a healthy phone, and
+  // the whole point of this column is that its chips are worth acting on.
+  if (d.exact_alarms === false && d.fix_age_min == null)
     out.push({ label: "Alarms restricted", tone: "bad", fix: "Phone Settings → Apps → Radhya HR → Alarms & reminders → Allow" });
+  // What the backstop actually hit. These are the two outcomes that need a
+  // human: everything else either resolves itself or is already covered by
+  // another chip. Both come from v1.6.0+; older builds report nothing here.
+  if (d.worker_outcome === "no_permission")
+    out.push({ label: "Location permission gone", tone: "bad",
+               fix: "The tracker asked for a position and was refused. Phone Settings → Apps → Radhya HR → Permissions → Location → Allow all the time" });
+  if (d.worker_outcome === "no_location")
+    out.push({ label: "GPS returning nothing", tone: "warn",
+               fix: "The tracker ran but the phone gave it no position at all — usually GPS/Location switched off in the quick settings, or the employee is deep inside a building. Check the location toggle first." });
+  // These two were originally left to the hover text on the grounds that they
+  // "resolve themselves". They do not, and a tooltip does not exist on a touch
+  // screen — so a phone that had explicitly reported a fault rendered the green
+  // "None" badge, which is the one thing this column must never do.
+  if (d.worker_outcome === "stale_last_known")
+    out.push({ label: "Only an old position available", tone: "warn",
+               fix: "The tracker could not get a fresh fix and the phone's last known position was over an hour old, so nothing was sent. Usually means GPS has been off or the phone has been indoors for a long stretch." });
+  if (d.worker_outcome === "error")
+    out.push({ label: "Backstop failed", tone: "bad",
+               fix: "The recovery job hit an unexpected error. If this persists on one phone, reinstall the app on it." });
+  // Scoped to devices that are ALREADY quiet. On a phone that is reporting
+  // normally this flips every time the employee walks into a building, and a
+  // chip that appears in every doorway trains people to ignore the column.
+  if (d.location_unavailable === true
+      && (d.freshness === "stale" || d.freshness === "silent" || d.freshness === "never"))
+    out.push({ label: "Phone can't get a GPS fix", tone: "warn",
+               fix: "The phone itself reports that location is currently unavailable — check that Location/GPS is switched on in the quick settings, not just that the app has permission." });
   if (d.service_dead === true)
     out.push({ label: "Service killed", tone: "bad", fix: "Enable Autostart for Radhya HR and lock it in the recents screen" });
   // Amber, not red: buffering is the phone working correctly through a coverage
@@ -699,12 +747,39 @@ export default function FieldTracking() {
                 {!bad && wdog.last_result && (
                   <span className="text-green-700">
                     {" "}Last pass: {wdog.last_result.checked ?? 0} watched,
+                    {" "}{wdog.last_result.reporting ?? 0} reporting normally,
                     {" "}{wdog.last_result.silent ?? 0} woken,
-                    {" "}{wdog.last_result.visible ?? 0} notified
+                    {" "}{wdog.last_result.visible ?? 0} notified.
                     {wdog.last_result.skipped_not_field_staff
-                      ? `, ${wdog.last_result.skipped_not_field_staff} skipped (not marked field staff)` : ""}.
+                      ? ` ${wdog.last_result.skipped_not_field_staff} skipped (not marked field staff).` : ""}
                   </span>
                 )}
+                {/* The counts that make "0 woken" readable. On their own the
+                    numbers above are ambiguous: nothing sent can equally mean
+                    "nothing needed sending" and "we gave up on four phones
+                    hours ago", and those want opposite reactions from HR. */}
+                {!bad && wdog.last_result
+                  && (wdog.last_result.gave_up || wdog.last_result.no_push_token) ? (
+                  <div className="mt-1.5 text-amber-800" data-testid="watchdog-unreached">
+                    {wdog.last_result.no_push_token ? (
+                      <div>
+                        <strong>{wdog.last_result.no_push_token}</strong> quiet
+                        {wdog.last_result.no_push_token === 1 ? " phone has" : " phones have"} no
+                        push registration, so the watchdog cannot reach
+                        {wdog.last_result.no_push_token === 1 ? " it" : " them"} at all —
+                        {wdog.last_result.no_push_token === 1 ? " that phone needs" : " those phones need"} the
+                        app opened once, and notification permission allowed.
+                      </div>
+                    ) : null}
+                    {wdog.last_result.gave_up ? (
+                      <div>
+                        <strong>{wdog.last_result.gave_up}</strong> quiet for over 3 hours — no
+                        longer being poked. Usually someone who finished and forgot to punch out;
+                        if not, the phone needs looking at.
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             );
           })()}
@@ -794,8 +869,20 @@ export default function FieldTracking() {
                             // ago" and "neither has run since lunch" need different
                             // fixes and look identical without this.
                             const detail = [
-                              carriedAge(d, d.alarm_age_min) != null ? `Alarm last fired ${minsAgoLabel(carriedAge(d, d.alarm_age_min))}` : null,
+                              // v1.6.0+ reports fix_age_min: the standing GPS
+                              // subscription's last delivery, which is the
+                              // primary path on that build. The alarm line below
+                              // is only a 15-min heartbeat there — measured as
+                              // never firing at all on 4 of 5 phones — so it is
+                              // labelled as secondary rather than shown next to
+                              // the subscription as an equal signal.
+                              carriedAge(d, d.fix_age_min) != null ? `GPS last delivered a fix ${minsAgoLabel(carriedAge(d, d.fix_age_min))}` : null,
+                              carriedAge(d, d.alarm_age_min) != null
+                                ? `${d.fix_age_min != null ? "Backup alarm" : "Alarm"} last fired ${minsAgoLabel(carriedAge(d, d.alarm_age_min))}`
+                                : null,
                               carriedAge(d, d.worker_age_min) != null ? `Backstop last ran ${minsAgoLabel(carriedAge(d, d.worker_age_min))}` : null,
+                              d.worker_outcome ? `Backstop result: ${WORKER_OUTCOMES[d.worker_outcome] || d.worker_outcome}` : null,
+                              d.location_unavailable ? "The phone reported it cannot get a GPS fix right now (GPS off, or indoors)." : null,
                             ].filter(Boolean).join("\n");
                             if (issues.length) return (
                               <div className="space-y-1" data-testid={`device-health-${d.employee_id}`}>
