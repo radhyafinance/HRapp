@@ -88,9 +88,14 @@ def _days(n: float) -> str:
     return str(int(n)) if n == int(n) else f"{n:.1f}"
 
 
-def _hold_doc(reason: str, actor: str) -> dict:
+def _hold_doc(reason: str, actor: str, source: str = "exit") -> dict:
     return {
         "on_hold": True,
+        # "exit" (accepting a resignation held this automatically) or "manual"
+        # (an admin held it deliberately). They look identical on the record
+        # otherwise, and releasing an EXIT hold without realising what it was
+        # for is a different mistake from releasing one you placed yourself.
+        "hold_source": source,
         "hold_reason": reason,
         "held_at": datetime.now(timezone.utc).isoformat(),
         "held_by": actor,
@@ -471,6 +476,9 @@ def pay_to_dict(p):
     # so the UI never has to distinguish "not held" from "missing".
     p["on_hold"] = bool(p.get("on_hold"))
     p["hold_eligible"] = bool(p.get("hold_eligible_at"))
+    # Records held before this field existed came from the exit path.
+    p["hold_source"] = p.get("hold_source") or ("exit" if p["on_hold"] else None)
+    p["hold_after_export"] = bool(p.get("hold_after_export"))
     # Records processed before joiners/exits were separated from LOP have no
     # such field — normalise so the UI can always read it as a number.
     p["non_employed_days"] = float(p.get("non_employed_days") or 0)
@@ -919,6 +927,69 @@ async def reopen_payslip(record_id: str, data: ReopenRequest,
     return pay_to_dict(record)
 
 
+class HoldRequest(BaseModel):
+    reason: str
+    # Holding a salary that is already in a downloaded NEFT file does NOT stop
+    # the bank. Requiring this to be set means nobody does it by accident.
+    acknowledge_exported: bool = False
+
+
+@router.post("/{record_id}/hold")
+async def hold_salary(record_id: str, data: HoldRequest,
+                      current_user: dict = Depends(get_current_user)):
+    """Hold one person's salary so it stays out of the NEFT file.
+
+    The hold machinery already existed for exits; this is the manual door into
+    it. Everything downstream is shared: held records are excluded from the
+    export, refused by publish, and their payslip is suppressed.
+
+    A reason is required. A salary that simply did not arrive, with nothing on
+    the record saying why, is unexplainable three weeks later when the employee
+    asks — and the person who held it may not be the person who has to answer.
+    """
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    reason = (data.reason or "").strip()
+    if not reason:
+        raise HTTPException(status_code=400, detail="A reason is required to hold a salary.")
+
+    record = await db.payroll_records.find_one({"_id": _oid(record_id)})
+    if not record:
+        raise HTTPException(status_code=404, detail="Not found")
+    if record.get("on_hold"):
+        raise HTTPException(status_code=400, detail="This salary is already on hold.")
+    if record.get("status") == "paid":
+        raise HTTPException(
+            status_code=400,
+            detail="This salary is already marked paid — the money has gone. "
+                   "Holding it here would change nothing.",
+        )
+
+    # Already instructed to the bank? Then a hold here is bookkeeping, not a
+    # stop. Say so plainly rather than letting the record imply the payment was
+    # prevented — only the bank can do that.
+    sent_ids, _ = await _exported_amounts(record.get("period", ""))
+    exported = record.get("employee_id") in sent_ids
+    if exported and not data.acknowledge_exported:
+        raise HTTPException(
+            status_code=409,
+            detail=("This salary was already included in a NEFT file sent to the bank. "
+                    "Holding it here will NOT stop that payment — only the bank can. "
+                    "Confirm only if you have already cancelled it with them."),
+        )
+
+    doc = _hold_doc(reason, current_user.get("employee_id") or current_user.get("username"),
+                    source="manual")
+    # Recorded so the trail shows the hold could not have prevented the payment.
+    doc["hold_after_export"] = bool(exported)
+    await db.payroll_records.update_one(
+        {"_id": _oid(record_id), "status": {"$ne": "paid"}, "on_hold": {"$ne": True}},
+        {"$set": doc},
+    )
+    record = await db.payroll_records.find_one({"_id": _oid(record_id)})
+    return pay_to_dict(record)
+
+
 class ReleaseHoldRequest(BaseModel):
     note: Optional[str] = None
 
@@ -945,7 +1016,9 @@ async def release_hold(record_id: str, data: ReleaseHoldRequest,
     if override and not (data.note or "").strip():
         raise HTTPException(
             status_code=400,
-            detail="The exit is not complete yet. Give a reason to release this salary early.",
+            detail=("This hold has not been cleared for release yet "
+                    "(a manual hold never is, and an exit hold clears when the "
+                    "exit completes). Give a reason to release it anyway."),
         )
 
     await db.payroll_records.update_one(

@@ -121,6 +121,8 @@ export default function Payroll() {
   const [publishing, setPublishing] = useState(false);
   const [releaseNote, setReleaseNote] = useState("");
   const [releasing, setReleasing] = useState(false);
+  const [holdReason, setHoldReason] = useState("");
+  const [holding, setHolding] = useState(false);
   const [recalc, setRecalc] = useState(null);        // preview payload, null = closed
   const [recalcLoading, setRecalcLoading] = useState(false);
   const [recalcApplying, setRecalcApplying] = useState(false);
@@ -166,14 +168,50 @@ export default function Payroll() {
     setReleaseNote("");
   };
 
+  const holdSalary = async (acknowledgeExported) => {
+    if (!showSlip) return;
+    const reason = holdReason.trim();
+    if (!reason) { alert("Give a reason for holding this salary."); return; }
+    if (!window.confirm(
+      `Hold ${showSlip.employee_name}'s salary for ${showSlip.period}?\n\n` +
+      `₹${Number(showSlip.net_salary || 0).toLocaleString("en-IN")} will be kept OUT of the NEFT sheet ` +
+      `until someone releases it.`
+    )) return;
+    setHolding(true);
+    try {
+      const res = await API.post(`/payroll/${showSlip.id}/hold`,
+        { reason, acknowledge_exported: !!acknowledgeExported });
+      setShowSlip(res.data);
+      setRecords(prev => prev.map(r => r.id === res.data.id ? res.data : r));
+      setHoldReason("");
+    } catch (e) {
+      // 409 means this salary is already in a NEFT file at the bank. Holding it
+      // here cannot stop that payment, so the second confirmation is deliberately
+      // separate and spells out what it does and does not do.
+      if (e.response?.status === 409) {
+        if (window.confirm(
+          `${e.response.data.detail}\n\n` +
+          `Hold it anyway? This records the hold but does NOT recall the money.`
+        )) { setHolding(false); return holdSalary(true); }
+      } else {
+        alert(e.response?.data?.detail || "Failed to hold this salary");
+      }
+    } finally {
+      setHolding(false);
+    }
+  };
+
   const releaseHold = async () => {
     if (!showSlip) return;
     const early = !showSlip.hold_eligible;
+    const manual = showSlip.hold_source === "manual";
     if (early && !releaseNote.trim()) {
-      alert("The exit isn't complete yet. Give a reason to release this salary early.");
+      alert(manual
+        ? "Give a reason for releasing this salary."
+        : "The exit isn't complete yet. Give a reason to release this salary early.");
       return;
     }
-    const warn = early
+    const warn = early && !manual
       ? `\n\nThe exit process is NOT complete for this employee. This is an early release and will be recorded as an override.`
       : "";
     if (!window.confirm(
@@ -1317,11 +1355,23 @@ export default function Payroll() {
                 <div className="flex items-start gap-2">
                   <Lock size={16} className="text-red-600 flex-shrink-0 mt-0.5" />
                   <div className="text-sm text-red-900">
-                    <p className="font-bold">Salary on hold — not in the NEFT sheet</p>
+                    <p className="font-bold">
+                      Salary on hold — not in the NEFT sheet
+                      {showSlip.hold_source === "manual" ? " (held by HR)" : " (exit)"}
+                    </p>
+                    {showSlip.hold_after_export && (
+                      <p className="text-red-800 text-[12px] mt-0.5 font-semibold">
+                        Held after the NEFT file was sent — this hold did not stop that payment.
+                      </p>
+                    )}
                     {showSlip.hold_reason && <p className="text-red-800 text-[12px] mt-0.5">{showSlip.hold_reason}</p>}
                   </div>
                 </div>
-                {showSlip.hold_eligible ? (
+                {showSlip.hold_source === "manual" ? (
+                  <p className="text-[12px] text-slate-700 bg-white border border-slate-200 rounded p-2">
+                    Held by HR, not by an exit. Releasing puts it back in the next NEFT sheet.
+                  </p>
+                ) : showSlip.hold_eligible ? (
                   <p className="text-[12px] text-green-800 bg-green-50 border border-green-200 rounded p-2 flex items-start gap-1.5">
                     <CheckCircle2 size={13} className="flex-shrink-0 mt-0.5" />
                     <span>Exit clearance is complete. This salary is ready to release.</span>
@@ -1342,6 +1392,34 @@ export default function Payroll() {
                 <button onClick={releaseHold} disabled={releasing} data-testid="release-hold-btn"
                   className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg text-sm font-semibold hover:bg-red-700 disabled:opacity-50">
                   {releasing ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Releasing...</> : <><Unlock size={14} /> Release Salary</>}
+                </button>
+              </div>
+            )}
+
+            {/* Not held — HR can put this one salary on hold */}
+            {isManager && !showSlip.on_hold && showSlip.status !== "paid" && (
+              <div className="border border-slate-300 bg-slate-50 rounded-lg p-3 space-y-2.5" data-testid="hold-form">
+                <div className="flex items-start gap-2">
+                  <Lock size={16} className="text-slate-500 flex-shrink-0 mt-0.5" />
+                  <div className="text-sm text-slate-800">
+                    <p className="font-bold">Hold this salary</p>
+                    <p className="text-[12px] text-slate-600 mt-0.5">
+                      Keeps it out of the NEFT sheet until someone releases it. Works before or
+                      after Approve for Payment — but not once the money has been sent.
+                    </p>
+                  </div>
+                </div>
+                <input
+                  value={holdReason}
+                  onChange={e => setHoldReason(e.target.value)}
+                  data-testid="hold-reason-input"
+                  placeholder="Reason for holding (required)"
+                  className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none"
+                />
+                <button onClick={() => holdSalary(false)} disabled={holding || !holdReason.trim()}
+                  data-testid="hold-salary-btn"
+                  className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-lg text-sm font-semibold hover:bg-slate-900 disabled:opacity-50">
+                  {holding ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Holding...</> : <><Lock size={14} /> Hold Salary</>}
                 </button>
               </div>
             )}
