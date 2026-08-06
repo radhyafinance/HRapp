@@ -327,6 +327,54 @@ def _parse_iso(v) -> Optional[datetime]:
         return None
 
 
+WATCHDOG_STATE_KEY = "tracking_watchdog"
+
+
+async def _record_watchdog_run(result: dict) -> None:
+    """Stamp every pass so 'is this thing even running?' is answerable.
+
+    The watchdog is an in-process asyncio task. Nothing about a deploy, a
+    restart or a crashed task is visible from the outside, and we spent two
+    rounds unable to tell a silent watchdog from a working one.
+    """
+    try:
+        await db.app_settings.update_one(
+            {"key": WATCHDOG_STATE_KEY},
+            {"$set": {"key": WATCHDOG_STATE_KEY,
+                      "last_run_at": datetime.now(timezone.utc).isoformat(),
+                      "last_result": result},
+             "$inc": {"runs": 1}},
+            upsert=True,
+        )
+    except Exception:
+        pass        # diagnostics must never break the thing they diagnose
+
+
+@router.get("/watchdog-status")
+async def watchdog_status(current_user: dict = Depends(get_current_user)):
+    """Is the tracking watchdog alive, and can it actually send anything?"""
+    if current_user.get("role") not in ("hr_admin", "management"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    from services.fcm import push_status
+    doc = await db.app_settings.find_one({"key": WATCHDOG_STATE_KEY}) or {}
+    now = datetime.now(timezone.utc)
+    last_run = doc.get("last_run_at")
+    age = _age_min(last_run, now)
+    return {
+        "push": push_status(),
+        "last_run_at": last_run,
+        "last_run_age_min": age,
+        # It runs every 5 minutes. Anything past ~15 means the task is gone —
+        # most likely killed by a deploy and never restarted.
+        "running": age is not None and age <= 15,
+        "runs": doc.get("runs") or 0,
+        "last_result": doc.get("last_result") or {},
+        "interval_minutes": 5,
+        "silent_after_min": WATCHDOG_SILENT_AFTER_MIN,
+        "visible_after_min": WATCHDOG_VISIBLE_AFTER_MIN,
+    }
+
+
 async def run_tracking_watchdog() -> dict:
     """Poke phones that are on duty but have stopped reporting.
 
@@ -382,8 +430,10 @@ async def run_tracking_watchdog() -> dict:
                if e.get("field_staff") and not _has_left(e, today_ist)}
     skipped_not_field = len(on_duty) - len(watched)
     if not watched:
-        return {"checked": 0, "silent": 0, "visible": 0,
-                "skipped_not_field_staff": skipped_not_field}
+        early = {"checked": 0, "silent": 0, "visible": 0,
+                 "skipped_not_field_staff": skipped_not_field}
+        await _record_watchdog_run(early)
+        return early
 
     trackers = await db.employee_trackers.find(
         {"employee_id": {"$in": list(watched)}}).to_list(4000)
@@ -479,8 +529,10 @@ async def run_tracking_watchdog() -> dict:
     # skipped_not_field_staff is reported so a field officer who was never
     # flagged shows up as a number rather than as silence — the failure mode of
     # this gate is a phone that stops being watched with nothing to indicate it.
-    return {"checked": len(trackers), "silent": silent, "visible": visible,
-            "skipped_not_field_staff": skipped_not_field}
+    result = {"checked": len(trackers), "silent": silent, "visible": visible,
+              "skipped_not_field_staff": skipped_not_field}
+    await _record_watchdog_run(result)
+    return result
 
 
 def _age_min(iso, now: datetime) -> Optional[int]:

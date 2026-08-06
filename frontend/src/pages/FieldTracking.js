@@ -145,6 +145,7 @@ export default function FieldTracking() {
   const [date, setDate] = useState(toLocalDateStr());
   const [devFilter, setDevFilter] = useState("");
   const [devBranch, setDevBranch] = useState("");
+  const [wdog, setWdog] = useState(null);
   const [distDate, setDistDate] = useState(toLocalDateStr());
   const [distData, setDistData] = useState(null);
   const [distLoading, setDistLoading] = useState(false);
@@ -196,6 +197,9 @@ export default function FieldTracking() {
   };
   const fetchDevices = async () => {
     setLoading(true);
+    // Fetched alongside the devices list, and deliberately never allowed to
+    // break it: this is diagnostics about the thing, not the thing.
+    API.get("/tracker/watchdog-status").then(r => setWdog(r.data)).catch(() => setWdog(null));
     try { const res = await API.get("/tracker/devices"); setDevices(res.data); }
     catch (e) { console.error(e); } finally { setLoading(false); }
   };
@@ -671,6 +675,39 @@ export default function FieldTracking() {
       {/* TAB: Tracker Devices */}
       {!selected && !histSelected && tab === "devices" && (
         <div className="space-y-4">
+          {/* Is the auto-recovery actually alive? Without this, a watchdog that
+              died on a deploy and one that is working look identical from here —
+              which is exactly how two rounds of diagnosis got lost. */}
+          {wdog && (() => {
+            const dead = !wdog.running;
+            const noPush = !wdog.push?.usable;
+            const bad = dead || noPush;
+            return (
+              <div data-testid="watchdog-status"
+                   className={`rounded-xl p-3 text-xs border ${bad
+                     ? "bg-red-50 border-red-200 text-red-800"
+                     : "bg-green-50 border-green-200 text-green-800"}`}>
+                <strong>Auto-recovery: {bad ? "NOT WORKING" : "running"}</strong>
+                {" — "}
+                {noPush
+                  ? (wdog.push?.env_set
+                      ? "push credentials are set but Firebase failed to start, so no phone can be woken."
+                      : "push is not configured, so no phone can be woken.")
+                  : dead
+                    ? `the watchdog last ran ${minsAgoLabel(wdog.last_run_age_min)} and should run every ${wdog.interval_minutes} min — it has most likely died on a deploy and needs the backend restarted.`
+                    : `last checked ${minsAgoLabel(wdog.last_run_age_min)}. Wakes a quiet phone after ${wdog.silent_after_min} min, notifies the employee after ${wdog.visible_after_min} min.`}
+                {!bad && wdog.last_result && (
+                  <span className="text-green-700">
+                    {" "}Last pass: {wdog.last_result.checked ?? 0} watched,
+                    {" "}{wdog.last_result.silent ?? 0} woken,
+                    {" "}{wdog.last_result.visible ?? 0} notified
+                    {wdog.last_result.skipped_not_field_staff
+                      ? `, ${wdog.last_result.skipped_not_field_staff} skipped (not marked field staff)` : ""}.
+                  </span>
+                )}
+              </div>
+            );
+          })()}
           <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex flex-wrap gap-2 items-center">
             <div className="relative flex-1 min-w-[240px]">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />

@@ -119,3 +119,25 @@ async def send_push(tokens: List[str], title: str, body: str, data: Optional[dic
     except Exception as e:  # noqa: BLE001
         log.warning("send_push error: %s", e)
         return []
+
+
+def push_status() -> dict:
+    """Is push actually usable? Never returns the key or any part of it.
+
+    Exists because a missing FCM_SERVICE_ACCOUNT_JSON fails SILENTLY: _get_app()
+    returns None, both senders return [] and swallow it, and the watchdog still
+    increments its counters — so the logs report pushes that were never sent.
+    That question cost two rounds of guessing; this makes it answerable from the
+    app.
+
+    `env_set` and `initialised` are separate on purpose: a present but malformed
+    or revoked key sets the first and not the second, and those need different
+    fixes.
+    """
+    env_set = bool(os.environ.get("FCM_SERVICE_ACCOUNT_JSON"))
+    initialised = _get_app() is not None
+    return {
+        "env_set": env_set,
+        "initialised": initialised,
+        "usable": env_set and initialised,
+    }
