@@ -18,6 +18,7 @@ from typing import Optional
 from database import db
 from auth_utils import get_current_user
 from datetime import datetime, timezone, timedelta
+import logging
 import secrets
 import math
 import io
@@ -285,6 +286,211 @@ def _new_secret() -> str:
     return secrets.token_urlsafe(12)
 
 
+# ──────────────────────────────────────────────────────────────
+#  Watchdog — revive phones that have gone quiet mid-shift
+# ──────────────────────────────────────────────────────────────
+# Every other recovery mechanism lives ON the phone, and a low-battery episode
+# on a test device defeated all of them at once: the foreground service was
+# dead, the WorkManager backstop never ran, and it stayed silent for over an
+# hour. Opening the app fixed it instantly — but nothing on the phone can open
+# the app, and Android has no API that lets one launch itself. The server is the
+# only actor left, and it can see the silence.
+#
+# 20 minutes, NOT 15: a phone that has fallen back to the worker legitimately
+# pings every ~15 minutes when it is working perfectly, so a 15-minute trigger
+# would nag healthy devices continuously.
+WATCHDOG_SILENT_AFTER_MIN = 20
+# Escalate to something a human can act on. A force-stopped app receives no FCM
+# at all, and some OEMs throttle delivery for non-whitelisted apps, so the
+# silent push cannot be the only stage.
+WATCHDOG_VISIBLE_AFTER_MIN = 35
+# Don't repeat the same stage more often than this for one employee.
+WATCHDOG_REPEAT_MIN = 60
+# Stop poking after this. Past a few hours the notification is not going to
+# help, and the likeliest explanation is no longer "the tracker died" but
+# "they finished for the day and forgot to punch out" — nagging someone at
+# 20:50 to re-enable location tracking is worse than a gap in the track.
+WATCHDOG_GIVE_UP_MIN = 180
+# A visible notification is only sent inside these IST hours. Tracking still
+# gets the silent push around the clock; this is about not buzzing someone's
+# phone at 2am over a night shift.
+WATCHDOG_VISIBLE_HOURS = (7, 21)
+
+
+def _parse_iso(v) -> Optional[datetime]:
+    if not v:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+async def run_tracking_watchdog() -> dict:
+    """Poke phones that are on duty but have stopped reporting.
+
+    Two stages. The silent one is a data-only high-priority push that the app
+    turns into a full revive with nobody noticing. The visible one asks the
+    employee to tap, which is the only cure that works on a force-stopped app.
+    """
+    from services.fcm import send_push, send_data_push
+
+    now = datetime.now(timezone.utc)
+    # Attendance rows are keyed on the UTC date by punch_in — match it. (See the
+    # long comment in get_my_tracker_config; do not "fix" this to IST.)
+    today = now.strftime("%Y-%m-%d")
+    att = await db.attendance_records.find(
+        {"date": today}, {"_id": 0, "employee_id": 1, "sessions": 1,
+                          "punch_in_time": 1, "punch_out_time": 1}).to_list(4000)
+    # Also remember when each open session STARTED. `last_ping_at` is an
+    # all-time value, so for someone whose tracker died yesterday evening the
+    # raw age is already ~15 hours at the moment they punch in — past the
+    # give-up window before the shift has begun, which would silently exclude
+    # exactly the phones that need waking.
+    on_duty = {}
+    for a in att:
+        try:
+            if not _has_open_session(a):
+                continue
+            starts = [_parse_punch(s.get("punch_in_time"))
+                      for s in (a.get("sessions") or [{"punch_in_time": a.get("punch_in_time")}])]
+            starts = [x for x in starts if x]
+            on_duty[a["employee_id"]] = max(starts) if starts else None
+        except Exception:
+            continue
+    if not on_duty:
+        return {"checked": 0, "silent": 0, "visible": 0}
+
+    # Only people HR has actually marked as field staff. Without this gate the
+    # watchdog pokes anyone punched in with the app installed — /my-config grants
+    # should_track on an open attendance session alone, with no field_staff
+    # check, so an office employee who granted location pings once, locks the
+    # phone, the service dies, and they get "Location tracking stopped" on their
+    # phone every working day about something nobody asked them to do.
+    emps = await db.employees.find(
+        {"employee_id": {"$in": list(on_duty)}},
+        {"_id": 0, "employee_id": 1, "field_staff": 1, "status": 1,
+         "last_working_day": 1},
+    ).to_list(4000)
+    # _has_left, not a bare status check — it also honours last_working_day, so
+    # someone past their last day but not yet auto-exited is treated the same
+    # way the Devices tab treats them. Two rules for one question in one file
+    # is how they drift apart.
+    today_ist = _today()
+    watched = {e["employee_id"] for e in emps
+               if e.get("field_staff") and not _has_left(e, today_ist)}
+    skipped_not_field = len(on_duty) - len(watched)
+    if not watched:
+        return {"checked": 0, "silent": 0, "visible": 0,
+                "skipped_not_field_staff": skipped_not_field}
+
+    trackers = await db.employee_trackers.find(
+        {"employee_id": {"$in": list(watched)}}).to_list(4000)
+    ist_hour = now.astimezone(IST).hour
+    silent = visible = 0
+
+    for t in trackers:
+        # One bad employee must not abort the pass. Without this, a transient
+        # Mongo error on the third of two hundred silently skips the rest, and
+        # a deterministic one starves them on every pass forever.
+        try:
+            if not t.get("active", True):
+                continue
+            emp_id = t["employee_id"]
+            last_ping = _parse_iso(t.get("last_ping_at"))
+            # A watched employee who has NEVER pinged is not noise — it is the
+            # person who most needs this: field staff HR has explicitly flagged,
+            # on a fresh install or a new handset, whose tracker has never once
+            # delivered. The office-staff population this used to exclude is
+            # already gone via the field_staff gate, so skipping here now only
+            # hides real failures. The clamp below keeps it sane: with no ping
+            # ever, quiet is measured from the punch-in.
+            quiet_min = ((now - last_ping).total_seconds() / 60
+                         if last_ping else float("inf"))
+            # Clamp to this duty period. Silence from before they clocked on is
+            # not silence we can act on, and counting it burns the give-up
+            # budget before the shift starts.
+            started = on_duty.get(emp_id)
+            if started:
+                on_duty_min = (now - started.astimezone(timezone.utc)).total_seconds() / 60
+                quiet_min = min(quiet_min, max(0.0, on_duty_min))
+            elif quiet_min == float("inf"):
+                continue        # never pinged AND no usable punch-in time
+            if quiet_min < WATCHDOG_SILENT_AFTER_MIN:
+                continue
+            if quiet_min > WATCHDOG_GIVE_UP_MIN:
+                continue
+
+            stage = "visible" if quiet_min >= WATCHDOG_VISIBLE_AFTER_MIN else "silent"
+            if stage == "visible" and not (
+                    WATCHDOG_VISIBLE_HOURS[0] <= ist_hour < WATCHDOG_VISIBLE_HOURS[1]):
+                stage = "silent"      # out of hours: keep trying quietly
+
+            # A SEPARATE floor for the visible stage, applied BEFORE the
+            # throttle below so the downgraded stage is the one the throttle
+            # actually judges. The throttle only compares the SAME stage, so a
+            # phone that revives on a push and dies again alternates
+            # silent/visible/silent/visible and slips past it; and if the
+            # downgrade happened afterwards, the resulting silent push would be
+            # unthrottled and repeat on every 5-minute pass.
+            if stage == "visible":
+                last_visible = _parse_iso(t.get("watchdog_visible_at"))
+                if (last_visible
+                        and (now - last_visible).total_seconds() / 60 < WATCHDOG_REPEAT_MIN):
+                    stage = "silent"
+
+            # Throttle, but let an escalation through — the whole point of the
+            # second stage is that the first one did not work.
+            last_poke = _parse_iso(t.get("watchdog_at"))
+            if (last_poke and t.get("watchdog_stage") == stage
+                    and (now - last_poke).total_seconds() / 60 < WATCHDOG_REPEAT_MIN):
+                continue
+
+            docs = await db.device_tokens.find({"employee_id": emp_id}).to_list(20)
+            tokens = [d["token"] for d in docs if d.get("token")]
+            if not tokens:
+                continue        # nothing to poke; the Devices tab still shows it
+
+            if stage == "visible":
+                dead = await send_push(
+                    tokens,
+                    "Location tracking stopped",
+                    "Open Radhya HR to resume tracking for today.",
+                    # Employees have no access to /field-tracking — sending them
+                    # there produces a 403 right after telling them to open the app.
+                    {"type": "tracker_wake", "link": "/dashboard"},
+                )
+                visible += 1
+            else:
+                dead = await send_data_push(tokens, {"type": "tracker_wake"})
+                silent += 1
+            if dead:
+                await db.device_tokens.delete_many({"token": {"$in": dead}})
+
+            poke = {"watchdog_at": now.isoformat(), "watchdog_stage": stage}
+            if stage == "visible":
+                poke["watchdog_visible_at"] = now.isoformat()
+            await db.employee_trackers.update_one({"employee_id": emp_id}, {"$set": poke})
+        except Exception:
+            logging.getLogger("tracker").warning(
+                "watchdog failed for %s", t.get("employee_id"), exc_info=True)
+
+    # skipped_not_field_staff is reported so a field officer who was never
+    # flagged shows up as a number rather than as silence — the failure mode of
+    # this gate is a phone that stops being watched with nothing to indicate it.
+    return {"checked": len(trackers), "silent": silent, "visible": visible,
+            "skipped_not_field_staff": skipped_not_field}
+
+
+def _age_min(iso, now: datetime) -> Optional[int]:
+    """Whole minutes since an ISO timestamp, or None. Never negative."""
+    dt = _parse_iso(iso)
+    if not dt:
+        return None
+    return max(0, int((now - dt).total_seconds() / 60))
+
+
 def _has_left(emp: dict, today: str) -> bool:
     """Has this employee finished working here?
 
@@ -337,7 +543,8 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
          "location_permission": 1, "location_permission_at": 1,
          "tracker_battery_optimised": 1, "tracker_exact_alarms": 1,
          "tracker_service_dead": 1, "tracker_health_at": 1,
-         "tracker_queued_pings": 1, "last_working_day": 1},
+         "tracker_queued_pings": 1, "last_working_day": 1,
+         "tracker_alarm_age_min": 1, "tracker_worker_age_min": 1},
     ).to_list(2000)
     emp_map = {e["employee_id"]: e for e in employees}
     now = datetime.now(timezone.utc)
@@ -406,7 +613,15 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
             "exact_alarms": emp.get("tracker_exact_alarms"),
             "service_dead": emp.get("tracker_service_dead"),
             "queued_pings": emp.get("tracker_queued_pings"),
+            "alarm_age_min": emp.get("tracker_alarm_age_min"),
+            "worker_age_min": emp.get("tracker_worker_age_min"),
             "health_at": emp.get("tracker_health_at"),
+            # Age computed HERE, not in the browser. The Devices tab used to
+            # diff health_at against the viewer's Date.now(); an HR laptop with
+            # a slow clock produced a negative age, clamped to "just now", and
+            # turned a day-old reading on a dead phone into a green all-clear.
+            # last_ping's minutes_ago is server-side for the same reason.
+            "health_age_min": _age_min(emp.get("tracker_health_at"), now),
         })
     # Distance covered TODAY only. The Active Today tab is a live view of the day in
     # progress, so a running total from any other period would be misleading there.
@@ -1096,6 +1311,11 @@ class ClientInfoIn(BaseModel):
     # upload. Not a fault — it means the buffer is working — but it separates
     # "no coverage, catching up" from "this phone stopped tracking".
     queued_pings: Optional[int] = None
+    # Telemetry (v1.5.1+). Minutes since the alarm last fired / the worker last
+    # ran, as measured ON the phone. Sent as ages rather than clock times
+    # because a device with a skewed clock is exactly the sort we are diagnosing.
+    alarm_age_min: Optional[int] = None
+    worker_age_min: Optional[int] = None
 @router.post("/client-info")
 async def record_client_info(body: ClientInfoIn, current_user: dict = Depends(get_current_user)):
     """Called by the frontend on login to record whether the employee is on the
@@ -1134,6 +1354,14 @@ async def record_client_info(body: ClientInfoIn, current_user: dict = Depends(ge
             if value is not None:
                 update[field] = bool(value)
                 health_at = True
+        for field, value in (("tracker_alarm_age_min", body.alarm_age_min),
+                             ("tracker_worker_age_min", body.worker_age_min)):
+            if value is not None:
+                try:
+                    update[field] = min(max(0, int(value)), 100000)
+                    health_at = True
+                except (TypeError, ValueError, OverflowError):
+                    pass
         if body.queued_pings is not None:
             try:
                 # Clamped, not just floored at 0. Pydantic hands over an

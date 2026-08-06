@@ -30,6 +30,66 @@ function permissionCell(d) {
   return { label: "—", cls: "bg-slate-50 text-slate-400 border-slate-200", sub: null };
 }
 /**
+ * How old is this phone's self-report?
+ *
+ * The Blockers column is a SNAPSHOT taken when the app last ran, not a live
+ * reading, and it used to be rendered with no age at all. A test phone died at
+ * 08:00 and the tab kept showing a confident green "None" for over an hour —
+ * the one column meant to explain a silent device was the column lying about it.
+ * Returns minutes, or null if the phone has never reported.
+ */
+function healthAgeMin(d) {
+  // Server-computed. Diffing health_at against the viewer's own clock made an
+  // HR laptop running slow produce a negative age, clamp to "just now", and
+  // show a green all-clear for a day-old reading on a dead phone.
+  // `== null` FIRST. The backend always emits this key, as JSON null for a
+  // phone that has never reported — and Number(null) is 0, which Number.isFinite
+  // accepts. Coercing first turned "never reported" into "checked just now" and
+  // put a confident green "None" on every 1.4.0 phone and PWA user: the exact
+  // false all-clear this column exists to prevent.
+  if (d.health_age_min == null) return null;
+  const n = Number(d.health_age_min);
+  return Number.isFinite(n) ? n : null;
+}
+/**
+ * Beyond this, a clean reading is too old to be worth believing.
+ *
+ * Note the cadence this is judged against: health is reported on login and on
+ * app-resume (throttled), while a tracking phone pings every few minutes. So a
+ * reading being older than the last ping is the NORMAL, healthy case — an
+ * earlier version treated that as staleness and consequently showed
+ * "Not checked recently" for every device that was working, and a green "None"
+ * mostly for devices that were not. Age alone is the honest test.
+ */
+const HEALTH_FRESH_MIN = 90;
+function healthIsStale(d) {
+  const age = healthAgeMin(d);
+  if (age === null) return false;
+  if (age > HEALTH_FRESH_MIN) return true;
+  // A reading taken BEFORE the device went quiet cannot vouch for the present.
+  // Scoped to devices that are actually quiet: on a live device a health
+  // reading older than the last ping is the normal case (pings are minutes
+  // apart, health is reported on app-resume), and testing it unconditionally
+  // marked every working phone "Not checked recently".
+  if ((d.freshness === "stale" || d.freshness === "silent")
+      && d.last_ping_at && d.health_at) {
+    return new Date(d.health_at).getTime() < new Date(d.last_ping_at).getTime();
+  }
+  return false;
+}
+/** A phone-measured age, carried forward to now. The phone reported "the alarm
+ *  fired N minutes ago" when it last checked in; without adding the age of that
+ *  check-in, an alarm that died this morning still reads as firing 2 min ago. */
+function carriedAge(d, mins) {
+  if (mins == null || !Number.isFinite(Number(mins))) return null;
+  return Number(mins) + (healthAgeMin(d) || 0);
+}
+const HEALTH_TONES = {
+  bad: "bg-red-50 text-red-700 border-red-200",
+  warn: "bg-amber-50 text-amber-700 border-amber-200",
+  unknown: "bg-slate-100 text-slate-500 border-slate-200",
+};
+/**
  * Concrete, fixable reasons a device goes quiet while its permission column
  * looks perfectly healthy. Reported by the v1.5.0+ app.
  *
@@ -41,10 +101,6 @@ function permissionCell(d) {
  * Strict === comparisons throughout: undefined means the app never reported the
  * field (any build before v1.5.0), which must not be shown as either good or bad.
  */
-const HEALTH_TONES = {
-  bad: "bg-red-50 text-red-700 border-red-200",
-  warn: "bg-amber-50 text-amber-700 border-amber-200",
-};
 function healthIssues(d) {
   const out = [];
   if (d.battery_optimised === true)
@@ -645,12 +701,12 @@ export default function FieldTracking() {
             <div className="overflow-x-auto">
               <table className="w-full" data-testid="devices-table">
                 <thead><tr className="bg-slate-50 border-b">
-                  {["Status", "Employee", "Branch", "Role", "Last Ping", "Battery", "Location Access", "Blockers", ""].map(h =>
+                  {["Status", "Employee", "Branch", "Role", "Last Ping", "Battery", "Distance", "Location Access", "Blockers", ""].map(h =>
                     <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>)}
                 </tr></thead>
                 <tbody>
-                  {loading ? <tr><td colSpan={9} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
-                  : filteredDevices.length === 0 ? <tr><td colSpan={9} className="px-4 py-12 text-center text-slate-400">No tracker devices yet.</td></tr>
+                  {loading ? <tr><td colSpan={10} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                  : filteredDevices.length === 0 ? <tr><td colSpan={10} className="px-4 py-12 text-center text-slate-400">No tracker devices yet.</td></tr>
                   : filteredDevices.map(d => {
                     const style = FRESHNESS_STYLES[d.freshness] || FRESHNESS_STYLES.never;
                     return (
@@ -676,6 +732,11 @@ export default function FieldTracking() {
                             </div>
                           ) : <span className="text-xs text-slate-400">—</span>}
                         </td>
+                        <td className="px-4 py-3" data-testid={`device-distance-${d.employee_id}`}>
+                          {d.distance_km_today != null
+                            ? <span className="text-sm text-slate-700">{d.distance_km_today} km</span>
+                            : <span className="text-xs text-slate-400">—</span>}
+                        </td>
                         <td className="px-4 py-3">
                           {(() => { const p = permissionCell(d); return (
                             <>
@@ -688,6 +749,17 @@ export default function FieldTracking() {
                         <td className="px-4 py-3">
                           {(() => {
                             const issues = healthIssues(d);
+                            const age = healthAgeMin(d);
+                            const stale = healthIsStale(d);
+                            const ageLabel = age === null ? null : `checked ${minsAgoLabel(age).replace("Just now", "just now")}`;
+                            // Diagnostics behind a hover rather than more columns:
+                            // "the alarm stopped 3 h ago but the worker ran 5 min
+                            // ago" and "neither has run since lunch" need different
+                            // fixes and look identical without this.
+                            const detail = [
+                              carriedAge(d, d.alarm_age_min) != null ? `Alarm last fired ${minsAgoLabel(carriedAge(d, d.alarm_age_min))}` : null,
+                              carriedAge(d, d.worker_age_min) != null ? `Backstop last ran ${minsAgoLabel(carriedAge(d, d.worker_age_min))}` : null,
+                            ].filter(Boolean).join("\n");
                             if (issues.length) return (
                               <div className="space-y-1" data-testid={`device-health-${d.employee_id}`}>
                                 {issues.map(i => (
@@ -696,13 +768,30 @@ export default function FieldTracking() {
                                     {i.label}
                                   </span>
                                 ))}
+                                {ageLabel && <p className="text-[10px] text-slate-400" title={detail}>{ageLabel}</p>}
                               </div>
                             );
-                            // Reported and clean is a real, useful answer: it rules
-                            // out the phone and points at coverage or a punch-out.
-                            if (d.health_at) return (
-                              <span className="inline-flex px-2 py-1 rounded-full text-[11px] font-medium border bg-green-50 text-green-700 border-green-200"
-                                    data-testid={`device-health-${d.employee_id}`}>None</span>
+                            // A clean reading is only worth showing if it is
+                            // RECENT. Rendering a confident green "None" from an
+                            // hour-old snapshot is what told HR a dead phone was
+                            // fine — say "not checked recently" instead.
+                            if (age !== null && stale) return (
+                              <div data-testid={`device-health-${d.employee_id}`}>
+                                <span title={detail || "The phone has not reported since it went quiet. Ask the employee to open the app."}
+                                      className={`inline-flex px-2 py-1 rounded-full text-[11px] font-medium border cursor-help ${HEALTH_TONES.unknown}`}>
+                                  Not checked recently
+                                </span>
+                                <p className="text-[10px] text-slate-400">{ageLabel}</p>
+                              </div>
+                            );
+                            // Reported, clean and fresh: a real, useful answer —
+                            // it rules out the phone and points at coverage.
+                            if (age !== null) return (
+                              <div data-testid={`device-health-${d.employee_id}`}>
+                                <span title={detail}
+                                      className="inline-flex px-2 py-1 rounded-full text-[11px] font-medium border bg-green-50 text-green-700 border-green-200">None</span>
+                                <p className="text-[10px] text-slate-400">{ageLabel}</p>
+                              </div>
                             );
                             return <span className="text-xs text-slate-400" data-testid={`device-health-${d.employee_id}`}>—</span>;
                           })()}
@@ -731,6 +820,7 @@ export default function FieldTracking() {
             or <span className="font-medium">Denied</span> yet <span className="font-medium">Live</span> (app left open). Read the two columns together.
             <br /><strong>Blockers</strong> are phone settings that stop the tracker even when location access is correct — hover a chip for the exact setting to change.
             <span className="font-medium"> None</span> means the phone reported no blockers, so look at coverage or whether they punched out.
+            <span className="font-medium"> Not checked recently</span> means the phone has not reported since it last opened the app, so treat any all-clear with suspicion.
             <span className="font-medium"> —</span> means the app is older than v1.5.0 and cannot report them yet.
           </div>
         </div>

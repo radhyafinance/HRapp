@@ -91,6 +91,22 @@ async function detectTrackerHealth(isApp) {
     if (typeof h.serviceRunning === "boolean") out.service_dead = !!h.active && !h.serviceRunning;
     // Fixes buffered offline and still waiting to upload.
     if (Number.isFinite(Number(h.queued))) out.queued_pings = Number(h.queued);
+    // Ages, not timestamps. A phone whose clock is wrong is precisely the kind
+    // we are trying to diagnose, so sending "12 minutes ago" survives a skewed
+    // clock in a way that sending its idea of the wall time does not.
+    const ageMin = (t) => {
+      const n = Number(t);
+      if (!Number.isFinite(n) || n <= 0) return null;      // never happened
+      const mins = Math.round((Date.now() - n) / 60000);
+      // A future timestamp means the clock stepped backwards. Reporting 0 would
+      // manufacture "the alarm fired just now" for one that may never have
+      // fired — say nothing instead, which is what the rest of this file does.
+      return mins >= 0 ? mins : null;
+    };
+    const alarm = ageMin(h.lastAlarmAt);
+    const worker = ageMin(h.lastWorkerAt);
+    if (alarm !== null) out.alarm_age_min = alarm;
+    if (worker !== null) out.worker_age_min = worker;
     return Object.keys(out).length ? out : null;
   } catch (e) {
     return null;

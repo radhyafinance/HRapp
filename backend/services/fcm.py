@@ -65,6 +65,51 @@ def _send_sync(tokens: List[str], title: str, body: str, data: Optional[dict]) -
     return dead
 
 
+def _send_data_sync(tokens: List[str], data: dict) -> List[str]:
+    """Data-only high-priority send — no notification block, so nothing is shown.
+
+    Deliberately separate from _send_sync: including a `notification` makes
+    Android display it AND hand it to the launcher instead of the app when the
+    app is in the background, which is the opposite of what a silent wake-up
+    needs. Data-only + priority high is what reaches onMessageReceived directly
+    with the app closed, and receiving one is what exempts the app from the
+    Android 12+ ban on starting a foreground service from the background.
+    """
+    app = _get_app()
+    if not app or not tokens:
+        return []
+    from firebase_admin import messaging
+    message = messaging.MulticastMessage(
+        tokens=tokens,
+        data={k: str(v) for k, v in (data or {}).items() if v is not None},
+        android=messaging.AndroidConfig(priority="high"),
+    )
+    dead: List[str] = []
+    try:
+        resp = messaging.send_each_for_multicast(message, app=app)
+        for i, r in enumerate(resp.responses):
+            if not r.success:
+                name = type(r.exception).__name__ if r.exception else ""
+                if name in ("UnregisteredError", "SenderIdMismatchError"):
+                    dead.append(tokens[i])
+                else:
+                    log.warning("FCM data token %s… failed: %s", tokens[i][:12], name)
+    except Exception as e:  # noqa: BLE001
+        log.warning("FCM data send failed: %s", e)
+    return dead
+
+
+async def send_data_push(tokens: List[str], data: dict) -> List[str]:
+    """Async wrapper for a silent data-only push. Never raises."""
+    if not tokens:
+        return []
+    try:
+        return await asyncio.to_thread(_send_data_sync, tokens, data)
+    except Exception as e:  # noqa: BLE001
+        log.warning("send_data_push error: %s", e)
+        return []
+
+
 async def send_push(tokens: List[str], title: str, body: str, data: Optional[dict] = None) -> List[str]:
     """Async wrapper. Returns dead tokens to prune. Never raises."""
     if not tokens:

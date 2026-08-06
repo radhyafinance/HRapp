@@ -198,6 +198,39 @@ async def _odometer_reminder_loop():
             await asyncio.sleep(3600)
 
 
+async def _tracking_watchdog_loop():
+    """Every 5 minutes, poke phones that are on duty but have stopped pinging.
+
+    Runs often because the thing it detects is time-sensitive — a shift's track
+    is only worth reconstructing while the shift is happening. The watchdog
+    itself is cheap (one attendance query, and it only pushes to devices that
+    have actually gone quiet) and throttles per employee, so a 5-minute cadence
+    does not mean 5-minute notifications.
+    """
+    from routes.tracker import run_tracking_watchdog
+    last_skipped = None
+    while True:
+        try:
+            await asyncio.sleep(300)
+            result = await run_tracking_watchdog()
+            skipped = result.get("skipped_not_field_staff") or 0
+            # Log a poke, and log the skip count WHENEVER IT CHANGES. The skip
+            # count is the only signal that a real field officer was never
+            # flagged as field staff — and on a pass where nobody is watched
+            # there are no pokes at all, so gating the log on silent/visible
+            # threw away the number in exactly the case it exists for. Logging
+            # only on change keeps it to a line or two a day instead of 288.
+            if result.get("silent") or result.get("visible") or skipped != last_skipped:
+                logger.info(f"Tracking watchdog: {result}")
+            last_skipped = skipped
+        except asyncio.CancelledError:
+            logger.info("Tracking watchdog stopped")
+            raise
+        except Exception as e:
+            logger.error(f"Tracking watchdog failed: {e}")
+            await asyncio.sleep(300)
+
+
 @app.on_event("startup")
 async def startup():
     db = db_instance
@@ -295,6 +328,7 @@ async def startup():
     except Exception:
         pass
     app.state.odometer_reminder_task = asyncio.create_task(_odometer_reminder_loop())
+    app.state.tracking_watchdog_task = asyncio.create_task(_tracking_watchdog_loop())
 
     # Auto-exit: mark employees whose LWD has already passed on startup
     try:
