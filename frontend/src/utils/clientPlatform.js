@@ -90,7 +90,29 @@ async function detectTrackerHealth(isApp) {
     // running because the employee has punched out is working as designed.
     if (typeof h.serviceRunning === "boolean") out.service_dead = !!h.active && !h.serviceRunning;
     // Fixes buffered offline and still waiting to upload.
-    if (Number.isFinite(Number(h.queued))) out.queued_pings = Number(h.queued);
+    //
+    // typeof, not Number(): every other field here uses a strict check and this
+    // one did not, which made it a live instance of the exact bug the comment
+    // above warns about. Number(null), Number(""), Number(false) and Number([])
+    // are all 0 and all finite, so a plugin that reported nothing would send
+    // queued_pings: 0 — an affirmative "nothing buffered" for a value never
+    // measured, which stamps tracker_health_at and puts a green "None, checked
+    // just now" on a phone whose blockers were never checked at all.
+    if (typeof h.queued === "number" && Number.isFinite(h.queued)) {
+      out.queued_pings = h.queued;
+    }
+    // v1.6.0+. Play Services says the phone cannot currently produce a fix at
+    // all (GPS switched off, deep indoors). Separates "not reporting" from
+    // "cannot see sky", which look identical in last_ping_at.
+    if (typeof h.locationUnavailable === "boolean") {
+      out.location_unavailable = h.locationUnavailable;
+    }
+    // Why the last backstop pass ended the way it did. Whitelisted server-side;
+    // sent as-is here so a new build's value reaches the log even if this file
+    // has not been updated for it.
+    if (typeof h.lastWorkerOutcome === "string" && h.lastWorkerOutcome) {
+      out.worker_outcome = h.lastWorkerOutcome.slice(0, 40);
+    }
     // Ages, not timestamps. A phone whose clock is wrong is precisely the kind
     // we are trying to diagnose, so sending "12 minutes ago" survives a skewed
     // clock in a way that sending its idea of the wall time does not.
@@ -105,8 +127,14 @@ async function detectTrackerHealth(isApp) {
     };
     const alarm = ageMin(h.lastAlarmAt);
     const worker = ageMin(h.lastWorkerAt);
+    // v1.6.0+: the standing subscription's last delivery. THIS is the
+    // primary-path signal on that build — lastAlarmAt there is a 15-minute
+    // heartbeat that on most handsets never fires at all, so its absence is
+    // normal and must not be read as a fault.
+    const fix = ageMin(h.lastFixAt);
     if (alarm !== null) out.alarm_age_min = alarm;
     if (worker !== null) out.worker_age_min = worker;
+    if (fix !== null) out.fix_age_min = fix;
     return Object.keys(out).length ? out : null;
   } catch (e) {
     return null;
@@ -167,8 +195,14 @@ export async function reportClientPlatform() {
     // exact count changes with every ping, and putting it in the signature
     // would report on each one; the bucket still makes "started buffering" and
     // "finished draining" show up promptly.
+    // worker_outcome joins the signature because it is STABLE while things work
+    // ("healthy" run after run) and changes the moment they stop — so it costs
+    // nothing on a good phone and reports within minutes on a failing one,
+    // which is the whole point. location_unavailable is deliberately left OUT:
+    // it flips every time someone walks into a building, and putting it here
+    // would POST on each one.
     const healthSig = health
-      ? `${health.battery_optimised ? 1 : 0}${health.exact_alarms === false ? 1 : 0}${health.service_dead ? 1 : 0}${health.queued_pings > 0 ? 1 : 0}`
+      ? `${health.battery_optimised ? 1 : 0}${health.exact_alarms === false ? 1 : 0}${health.service_dead ? 1 : 0}${health.queued_pings > 0 ? 1 : 0}|${health.worker_outcome || ""}`
       : "";
     // The session tag scopes the throttle to the logged-in user. Without it,
     // on a shared field phone the second employee to log in within 6h matches

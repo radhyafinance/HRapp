@@ -73,7 +73,19 @@ const FIELD_STAFF_CACHE_KEY = "rmf_field_staff";
 // These are only the fallbacks used when the policy cannot be read. Note
 // enforce defaults to FALSE: a backend hiccup must never invent a lockout.
 const DEFAULT_MIN_APP_VERSION = "1.4.0";
-const APP_POLICY_CACHE_KEY = "rmf_app_policy";
+// Versioned by SHAPE. A cache written by the previous deployed build holds only
+// {minVersion, enforce}; reading that back would satisfy any "is this a policy?"
+// test while silently having no apkUrl, so the Update button never appears for
+// the whole session — on the release whose entire purpose is that button.
+const APP_POLICY_CACHE_KEY = "rmf_app_policy_v2";
+// The policy used to be cached for the life of the browser session, on the
+// grounds that it changes about twice a year. That stopped being true the moment
+// it started carrying the download link: on rollout day a phone caches
+// {apkUrl:""} in the window between deploying the web app and pasting the link
+// into Settings, and field officers keep the app resident all day — so most of
+// the fleet would never see the button until they force-closed it. One small GET
+// every 15 minutes of app-resume is a trade worth making for that.
+const APP_POLICY_TTL_MS = 15 * 60 * 1000;
 // Per browser session, so dismissing it silences the nag for that sitting but
 // it returns next time they open the app.
 const UPDATE_NAG_KEY = "rmf_update_nag_dismissed";
@@ -142,12 +154,18 @@ function appVersion() {
  * outage degrades to "nobody is blocked", never to "everybody is".
  */
 async function appPolicy() {
-  const fallback = { minVersion: DEFAULT_MIN_APP_VERSION, enforce: false };
+  const fallback = { minVersion: DEFAULT_MIN_APP_VERSION, enforce: false, latestVersion: "", apkUrl: "" };
   try {
     const raw = sessionStorage.getItem(APP_POLICY_CACHE_KEY);
     if (raw) {
       const p = JSON.parse(raw);
-      if (p && typeof p.minVersion === "string") return p;
+      // Require the download-link keys to be PRESENT, not merely truthy — an
+      // empty string is a legitimate policy ("no link configured"), an absent
+      // key means this cache was written by code that did not know about them.
+      const fresh = typeof p?.at === "number" && (Date.now() - p.at) < APP_POLICY_TTL_MS;
+      if (p && typeof p.minVersion === "string" && typeof p.apkUrl === "string" && fresh) {
+        return p;
+      }
     }
   } catch (e) { /* unreadable or corrupt cache — just re-fetch */ }
   try {
@@ -158,16 +176,86 @@ async function appPolicy() {
     // response we never actually understood. A malformed policy is a policy we
     // could not read, and an unread policy does not enforce anything.
     const versionOk = typeof d.min_version === "string" && /^\d+(\.\d+){0,3}$/.test(d.min_version);
+    // Same standard for the download pair, and BOTH must be usable: an
+    // "Update now" button with no link, or a link with no version to compare
+    // against, is a button that does nothing on a field phone. The backend
+    // refuses to store half a pair; this is the second line of that defence,
+    // because the value reaching here may predate that rule.
+    const latestOk = typeof d.latest_version === "string" && /^\d+(\.\d+){0,3}$/.test(d.latest_version);
+    const urlOk = typeof d.apk_url === "string" && /^https:\/\/\S+$/i.test(d.apk_url);
     const p = {
       minVersion: versionOk ? d.min_version : DEFAULT_MIN_APP_VERSION,
       enforce: versionOk && d.enforce === true,
+      latestVersion: latestOk && urlOk ? d.latest_version : "",
+      apkUrl: latestOk && urlOk ? d.apk_url : "",
     };
-    try { sessionStorage.setItem(APP_POLICY_CACHE_KEY, JSON.stringify(p)); } catch (e) { /* noop */ }
+    try {
+      sessionStorage.setItem(APP_POLICY_CACHE_KEY, JSON.stringify({ ...p, at: Date.now() }));
+    } catch (e) { /* noop */ }
     return p;
   } catch (e) {
     return fallback;
   }
 }
+
+/**
+ * Is there a newer APK than the one we are running, and can we fetch it?
+ *
+ * Separate from isOutdatedApp() and deliberately FAIL-OPEN in the other
+ * direction: an unmarked (pre-1.4.0) app counts as outdated for the block gate,
+ * but here an unknown version means we cannot say a specific build is newer, so
+ * we offer the update anyway — those are the phones furthest behind.
+ */
+function updateAvailable(policy) {
+  try {
+    if (!policy || !policy.apkUrl || !policy.latestVersion) return false;
+    if (!isNativeApp()) return false;
+    if (!/android/i.test(navigator.userAgent || "")) return false;
+    const v = appVersion();
+    if (!v) return true;                       // unmarked == very old
+    return compareVersions(v, policy.latestVersion) < 0;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * Download the new APK and hand it to Android's installer.
+ *
+ * This is why v1.6.0 exists as much as the tracking rewrite does. Every build
+ * before it was carried to ~36 phones by hand, and the result was measured: 28
+ * were still on v1.4.0 long after v1.5 shipped, and 17 of the 20 phones showing
+ * as stale that day were exactly those. Server-side fixes shipped; the handsets
+ * did not get them.
+ *
+ * Returns an error string, or null if the download started. Android shows its
+ * own install confirmation afterwards — that tap cannot be removed outside the
+ * Play Store, and the copy below says so rather than pretending otherwise.
+ */
+async function startUpdate(apkUrl) {
+  try {
+    if (!apkUrl) return "No update link has been set. Please contact the IT team.";
+    if (!RadhyaTracker || typeof RadhyaTracker.downloadAndInstall !== "function") {
+      return OLD_BUILD_MSG;
+    }
+    await RadhyaTracker.downloadAndInstall({ url: apkUrl });
+    return null;
+  } catch (e) {
+    // Any APK before v1.6.0 — the very builds most in need of updating — has no
+    // installer bridge. The typeof guard above does NOT catch them: Capacitor's
+    // registerPlugin returns a Proxy that hands back a function for ANY name, so
+    // an unimplemented method looks callable and only fails when called. Those
+    // people need one last manual update and must be told so plainly, not shown
+    // a raw bridge error they cannot act on.
+    const msg = (e && e.message) ? String(e.message) : "";
+    if (/not implement|does not exist|unimplemented|no such method/i.test(msg)) {
+      return OLD_BUILD_MSG;
+    }
+    return msg || "Download failed. Check your connection and try again.";
+  }
+}
+const OLD_BUILD_MSG =
+  "This version can't update itself. Please contact the IT team for the new app.";
 
 /** The cached policy only, for sync paths (first paint, the banner). */
 function cachedPolicy() {
@@ -220,23 +308,33 @@ function versionGateApplies() {
 }
 
 /**
- * Should the "please update" banner sit over the working app right now?
+ * Should the "please update" banner sit over the working app right now, and in
+ * which of its two tones? Returns { kind, policy } or null.
+ *
+ *   "required"  — below min_version. They are running a retired build.
+ *   "available" — allowed, but a newer APK exists. This is the one that keeps
+ *                 the fleet current: waiting until a build is RETIRED before
+ *                 telling anyone is how 28 phones ended up on v1.4.0.
  *
  * Sync, and reads only the CACHED policy — the banner is a nag, so it can wait
  * for the fetch that evaluate() already does rather than blocking first paint.
  */
-function shouldNagUpdate() {
+function updateNag() {
   try {
-    if (!versionGateApplies()) return false;
+    if (!versionGateApplies()) return null;
     const p = cachedPolicy();
-    if (!p) return false;
-    if (!isOutdatedApp(p.minVersion)) return false;
-    // Once enforcement is on, non-exempt users get the block screen instead;
-    // HR sees the banner, since they are exempt from the block but still need
-    // to update.
-    return !p.enforce || isExemptRole();
+    if (!p) return null;
+    if (isOutdatedApp(p.minVersion)) {
+      // Once enforcement is on, non-exempt users get the block screen instead;
+      // HR sees the banner, since they are exempt from the block but still need
+      // to update.
+      if (p.enforce && !isExemptRole()) return null;
+      return { kind: "required", policy: p };
+    }
+    if (updateAvailable(p)) return { kind: "available", policy: p };
+    return null;
   } catch (e) {
-    return false;
+    return null;
   }
 }
 
@@ -337,6 +435,24 @@ async function evaluate() {
   }
 }
 
+/**
+ * evaluate(), but it cannot hang.
+ *
+ * `status === "checking"` renders NOTHING — no spinner, no app. evaluate() awaits
+ * two API calls, and the axios instance has no timeout, so a request that stalls
+ * rather than fails (a half-open socket on a flaky tower — routine in the field)
+ * never settles and leaves a white screen with no way to punch in. Every other
+ * failure in this file is fail-open; this was the one hole in that, and it was
+ * the worst-behaved one because it is indistinguishable from a crash.
+ */
+const GATE_TIMEOUT_MS = 8000;
+function evaluateOrAllow() {
+  return Promise.race([
+    evaluate(),
+    new Promise((resolve) => setTimeout(() => resolve("allowed"), GATE_TIMEOUT_MS)),
+  ]).catch(() => "allowed");
+}
+
 // ── Screens ──────────────────────────────────────────────────────────────────
 
 const SHELL = {
@@ -406,7 +522,53 @@ function AndroidDownloadScreen() {
   );
 }
 
-function UpdateRequiredScreen() {
+/**
+ * The download button, shared by the block screen and the banner.
+ *
+ * Renders nothing at all when there is no usable link, so the fallback copy
+ * ("contact the IT team") is what shows — a dead button is worse than no
+ * button on a phone the employee cannot troubleshoot.
+ */
+function UpdateButton({ apkUrl, style, label }) {
+  const [busy, setBusy] = React.useState(false);
+  const [msg, setMsg] = React.useState(null);
+  const [failed, setFailed] = React.useState(false);
+  if (!apkUrl) return null;
+  const go = async () => {
+    setBusy(true);
+    setMsg(null);
+    const err = await startUpdate(apkUrl);
+    setBusy(false);
+    setFailed(Boolean(err));
+    // Success message, not silence: the download runs in Android's notification
+    // shade, so without this the button looks like it did nothing for the
+    // minute or two before the install prompt appears.
+    setMsg(err || "Downloading… the install prompt will appear when it's ready.");
+  };
+  return (
+    <React.Fragment>
+      <button type="button" style={style || BTN} onClick={go} disabled={busy}
+              data-testid="update-now">
+        {busy ? "Starting…" : (label || "Update now")}
+      </button>
+      {msg ? (
+        <p style={{
+              fontSize: 12.5, lineHeight: 1.45, margin: "8px 0 0",
+              // A failure and a "downloading…" used to render identically. On a
+              // field phone that is the difference between waiting patiently and
+              // knowing to call the office.
+              opacity: failed ? 1 : 0.85,
+              fontWeight: failed ? 700 : 400,
+              color: failed ? "#FFD5C2" : undefined,
+            }}
+           data-testid="update-msg">{msg}</p>
+      ) : null}
+    </React.Fragment>
+  );
+}
+
+function UpdateRequiredScreen({ policy }) {
+  const apkUrl = (policy && policy.apkUrl) || "";
   return (
     <div style={SHELL}>
       <div style={{ maxWidth: 420 }}>
@@ -416,9 +578,11 @@ function UpdateRequiredScreen() {
         </h1>
         <p style={{ fontSize: 15, lineHeight: 1.5, opacity: 0.85, margin: "0 0 8px" }}>
           You're using an old version of Radhya HR that is no longer supported.
-          Please contact the IT team for the latest app.
+          {apkUrl ? " Tap Update now to install the latest version."
+                  : " Please contact the IT team for the latest app."}
         </p>
         <Contact />
+        <UpdateButton apkUrl={apkUrl} />
         <p style={{ fontSize: 12, opacity: 0.6, margin: "20px 0 0" }}>
           Install the new app over this one — you won't lose anything, and you
           won't need to sign in again on this device.
@@ -434,26 +598,75 @@ function UpdateRequiredScreen() {
  * bottom. Dismissal is per session, so it nags again tomorrow rather than
  * being silenced forever by one stray tap.
  */
-function UpdateBanner() {
+function UpdateBanner({ nag }) {
   const [gone, setGone] = React.useState(() => {
     try { return sessionStorage.getItem(UPDATE_NAG_KEY) === "1"; } catch (e) { return false; }
   });
+  // How far up to sit so we do not cover Layout's mobile bottom navigation.
+  //
+  // That nav is `fixed bottom-0 z-[60]`, and this banner is `bottom-0` at
+  // z-99999 — so it sat directly on top of it, including the More button that
+  // opens the rest of the menu. The banner ONLY ever renders inside the Android
+  // APK, so the nav is always present when it shows: on the day an update is
+  // published, every phone below that version would have launched into an app
+  // whose entire bottom navigation was untappable.
+  //
+  // Measured rather than hardcoded: the nav's height varies with the device's
+  // safe-area inset, and a constant would either leave a gap or keep covering it.
+  const [lift, setLift] = React.useState(0);
+  React.useLayoutEffect(() => {
+    if (gone) return undefined;
+    const measure = () => {
+      try {
+        const nav = document.querySelector('[data-testid="mobile-bottom-nav"]');
+        setLift(nav ? Math.round(nav.getBoundingClientRect().height) : 0);
+      } catch (e) { setLift(0); }
+    };
+    measure();
+    // Rotation changes the inset, and the nav mounts after the gate on a cold
+    // start, so re-measure shortly after paint as well.
+    const t = setTimeout(measure, 400);
+    window.addEventListener("resize", measure);
+    window.addEventListener("orientationchange", measure);
+    return () => {
+      clearTimeout(t);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("orientationchange", measure);
+    };
+  }, [gone]);
   if (gone) return null;
+  const policy = (nag && nag.policy) || {};
+  const apkUrl = policy.apkUrl || "";
+  const required = !nag || nag.kind === "required";
   const dismiss = () => {
     try { sessionStorage.setItem(UPDATE_NAG_KEY, "1"); } catch (e) { /* noop */ }
     setGone(true);
   };
+  const fallback = IT_CONTACT
+    ? ` Contact ${IT_CONTACT} for the latest app.`
+    : " Please contact the IT team for the latest app.";
   return (
-    <div style={{
-      position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 99999,
+    <div data-testid="update-banner" style={{
+      position: "fixed", left: 0, right: 0, bottom: lift, zIndex: 99999,
       background: "#E85B1E", color: "#fff", padding: "11px 14px",
       display: "flex", alignItems: "center", gap: 12,
       fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
       boxShadow: "0 -2px 10px rgba(0,0,0,0.18)",
     }}>
       <div style={{ flex: 1, fontSize: 13.5, lineHeight: 1.45 }}>
-        <strong>Update Radhya HR.</strong> You're on an old version.
-        {IT_CONTACT ? ` Contact ${IT_CONTACT} for the latest app.` : " Please contact the IT team for the latest app."}
+        <strong>Update Radhya HR.</strong>{" "}
+        {required
+          ? "You're on an old version."
+          : `Version ${policy.latestVersion} is available.`}
+        {apkUrl ? "" : fallback}
+        {apkUrl ? (
+          <div style={{ marginTop: 6 }}>
+            <UpdateButton apkUrl={apkUrl} style={{
+              ...BTN, width: "auto", marginTop: 0, padding: "7px 14px",
+              fontSize: 13, background: "#fff", color: "#E85B1E",
+            }} />
+          </div>
+        ) : null}
       </div>
       <button type="button" onClick={dismiss} aria-label="Dismiss"
         style={{
@@ -518,25 +731,25 @@ export default function PlatformGate({ children }) {
   // evaluate() is what fills that cache, and it usually resolves to the same
   // status we started with ("allowed") — React then skips the re-render, and a
   // cache-reading banner would never appear at all.
-  const [nag, setNag] = React.useState(shouldNagUpdate);
+  const [nag, setNag] = React.useState(updateNag);
   const [busy, setBusy] = React.useState(false);
   const tokenRef = React.useRef(null);
 
   const recheck = React.useCallback(async () => {
     setBusy(true);
-    const next = await evaluate();
+    const next = await evaluateOrAllow();
     setStatus(next);
-    setNag(shouldNagUpdate());
+    setNag(updateNag());
     setBusy(false);
   }, []);
 
   React.useEffect(() => {
     let alive = true;
     const run = async () => {
-      const next = await evaluate();
+      const next = await evaluateOrAllow();
       if (!alive) return;
       setStatus(next);
-      setNag(shouldNagUpdate());
+      setNag(updateNag());
     };
     try { tokenRef.current = localStorage.getItem("auth_token"); } catch (e) { /* noop */ }
     run();
@@ -567,8 +780,16 @@ export default function PlatformGate({ children }) {
 
   if (shouldBlockPlatform()) return <AndroidDownloadScreen />;
   if (status === "checking") return null;
-  if (status === "blocked-update") return <UpdateRequiredScreen />;
+  if (status === "blocked-update") return <UpdateRequiredScreen policy={cachedPolicy()} />;
   if (status === "blocked-app") return <LocationRequiredScreen onRecheck={recheck} busy={busy} />;
-  if (nag) return <React.Fragment><UpdateBanner />{children}</React.Fragment>;
-  return children;
+  // ALWAYS a Fragment, even with no banner. Switching between `children` and
+  // `<Fragment>…{children}</Fragment>` changes the root child's element type,
+  // which makes React tear down and remount the whole app the first time the
+  // nag appears — losing every bit of in-progress form state with it.
+  return (
+    <React.Fragment>
+      {nag ? <UpdateBanner nag={nag} /> : null}
+      {children}
+    </React.Fragment>
+  );
 }

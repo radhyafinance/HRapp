@@ -408,7 +408,15 @@ async def run_tracking_watchdog() -> dict:
         except Exception:
             continue
     if not on_duty:
-        return {"checked": 0, "silent": 0, "visible": 0}
+        # Stamp this pass like any other. It is the commonest outcome there is —
+        # every pass overnight, on a Sunday, and before the first punch-in — and
+        # returning without recording left last_run_at hours old, which is
+        # exactly the condition the status strip reports as "the watchdog has
+        # died and needs the backend restarted". A healthy watchdog would have
+        # gone red every night.
+        idle = {"checked": 0, "silent": 0, "visible": 0, "on_duty": 0}
+        await _record_watchdog_run(idle)
+        return idle
 
     # Only people HR has actually marked as field staff. Without this gate the
     # watchdog pokes anyone punched in with the app installed — /my-config grants
@@ -439,6 +447,17 @@ async def run_tracking_watchdog() -> dict:
         {"employee_id": {"$in": list(watched)}}).to_list(4000)
     ist_hour = now.astimezone(IST).hour
     silent = visible = 0
+    # Why nothing was sent. "0 woken, 0 notified" reads as "everything is fine"
+    # and can equally mean "we gave up on four phones hours ago" — those need
+    # opposite reactions from HR, and the strip could not tell them apart.
+    #
+    # These are EXHAUSTIVE by construction: every tracker examined below leaves
+    # the loop through exactly one increment, and the total is asserted against
+    # len(trackers) at the end. A bucket that merely covers the interesting cases
+    # leaves an unexplained residue on the strip, which is the same
+    # can't-tell-nothing-needed-from-something-broke problem in a smaller box.
+    reporting = gave_up = throttled = no_token = 0
+    inactive = not_yet_due = failed = 0
 
     for t in trackers:
         # One bad employee must not abort the pass. Without this, a transient
@@ -446,6 +465,8 @@ async def run_tracking_watchdog() -> dict:
         # a deterministic one starves them on every pass forever.
         try:
             if not t.get("active", True):
+                # HR switched this one off deliberately (phone in for repair).
+                inactive += 1
                 continue
             emp_id = t["employee_id"]
             last_ping = _parse_iso(t.get("last_ping_at"))
@@ -466,10 +487,27 @@ async def run_tracking_watchdog() -> dict:
                 on_duty_min = (now - started.astimezone(timezone.utc)).total_seconds() / 60
                 quiet_min = min(quiet_min, max(0.0, on_duty_min))
             elif quiet_min == float("inf"):
-                continue        # never pinged AND no usable punch-in time
+                # Never pinged AND no usable punch-in time — nothing to measure
+                # silence against, so there is no honest verdict to give.
+                failed += 1
+                continue
             if quiet_min < WATCHDOG_SILENT_AFTER_MIN:
+                # Distinguish "pinging normally" from "has delivered nothing
+                # today, but only just clocked on". The clamp above makes both
+                # score a small quiet_min, and calling the second one "reporting
+                # normally" would print '4 watched, 4 reporting normally' on a
+                # morning when all four phones were dead.
+                if last_ping is None or (started and last_ping < started.astimezone(timezone.utc)):
+                    not_yet_due += 1
+                else:
+                    reporting += 1
                 continue
             if quiet_min > WATCHDOG_GIVE_UP_MIN:
+                # Silent for hours. Most likely they finished and forgot to
+                # punch out — but if it is not that, this is a phone nobody is
+                # coming back for, and it must be counted rather than skipped
+                # into silence.
+                gave_up += 1
                 continue
 
             stage = "visible" if quiet_min >= WATCHDOG_VISIBLE_AFTER_MIN else "silent"
@@ -495,11 +533,16 @@ async def run_tracking_watchdog() -> dict:
             last_poke = _parse_iso(t.get("watchdog_at"))
             if (last_poke and t.get("watchdog_stage") == stage
                     and (now - last_poke).total_seconds() / 60 < WATCHDOG_REPEAT_MIN):
+                throttled += 1
                 continue
 
             docs = await db.device_tokens.find({"employee_id": emp_id}).to_list(20)
             tokens = [d["token"] for d in docs if d.get("token")]
             if not tokens:
+                # Quiet AND unreachable — the app has never registered for push
+                # on this handset, so no amount of watchdog will ever help it.
+                # The single most actionable number on the strip.
+                no_token += 1
                 continue        # nothing to poke; the Devices tab still shows it
 
             if stage == "visible":
@@ -523,14 +566,37 @@ async def run_tracking_watchdog() -> dict:
                 poke["watchdog_visible_at"] = now.isoformat()
             await db.employee_trackers.update_one({"employee_id": emp_id}, {"$set": poke})
         except Exception:
+            # Counted, not just logged. A transient Mongo error used to leave a
+            # phone in `checked` and in no bucket, which on the strip is
+            # indistinguishable from a phone that was fine.
+            failed += 1
             logging.getLogger("tracker").warning(
                 "watchdog failed for %s", t.get("employee_id"), exc_info=True)
 
     # skipped_not_field_staff is reported so a field officer who was never
     # flagged shows up as a number rather than as silence — the failure mode of
     # this gate is a phone that stops being watched with nothing to indicate it.
+    # Field staff who are on duty but have no tracker document at all. The doc
+    # is only created lazily by /my-config, which a PWA punch-in never calls — so
+    # these people are watched, invisible to the loop below, and were counted
+    # nowhere. That is the same failure skipped_not_field_staff exists to prevent.
+    no_tracker = max(0, len(watched) - len(trackers))
     result = {"checked": len(trackers), "silent": silent, "visible": visible,
-              "skipped_not_field_staff": skipped_not_field}
+              "skipped_not_field_staff": skipped_not_field,
+              # Accounts for every watched phone this pass did NOT poke, so
+              # "0 woken" can be read as "nothing needed waking" only when the
+              # numbers say so.
+              "reporting": reporting, "gave_up": gave_up,
+              "throttled": throttled, "no_push_token": no_token,
+              "inactive": inactive, "not_yet_due": not_yet_due,
+              "failed": failed, "no_tracker": no_tracker}
+    # The buckets must sum to what was examined. If they ever don't, say so on
+    # the strip rather than letting the difference vanish — an unexplained
+    # residue is exactly what these counters were added to eliminate.
+    accounted = (silent + visible + reporting + gave_up + throttled
+                 + no_token + inactive + not_yet_due + failed)
+    if accounted != len(trackers):
+        result["unaccounted"] = len(trackers) - accounted
     await _record_watchdog_run(result)
     return result
 
@@ -596,7 +662,9 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
          "tracker_battery_optimised": 1, "tracker_exact_alarms": 1,
          "tracker_service_dead": 1, "tracker_health_at": 1,
          "tracker_queued_pings": 1, "last_working_day": 1,
-         "tracker_alarm_age_min": 1, "tracker_worker_age_min": 1},
+         "tracker_alarm_age_min": 1, "tracker_worker_age_min": 1,
+         "tracker_fix_age_min": 1, "tracker_worker_outcome": 1,
+         "tracker_location_unavailable": 1},
     ).to_list(2000)
     emp_map = {e["employee_id"]: e for e in employees}
     now = datetime.now(timezone.utc)
@@ -667,6 +735,11 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
             "queued_pings": emp.get("tracker_queued_pings"),
             "alarm_age_min": emp.get("tracker_alarm_age_min"),
             "worker_age_min": emp.get("tracker_worker_age_min"),
+            # v1.6.0+. fix_age_min is the primary-path signal on that build;
+            # alarm_age_min there is only a heartbeat and is normally absent.
+            "fix_age_min": emp.get("tracker_fix_age_min"),
+            "worker_outcome": emp.get("tracker_worker_outcome"),
+            "location_unavailable": emp.get("tracker_location_unavailable"),
             "health_at": emp.get("tracker_health_at"),
             # Age computed HERE, not in the browser. The Devices tab used to
             # diff health_at against the viewer's Date.now(); an HR laptop with
@@ -1338,6 +1411,31 @@ async def run_odometer_reminders():
 # are the states the app reports; anything else is ignored so junk can't land.
 _LOCATION_PERMISSION_STATES = {"always", "in_use", "denied", "prompt", "unknown"}
 
+# What the native backstop is allowed to say about its last pass (v1.6.0+).
+# Mirrors TrackerWorker.KEY_LAST_OUTCOME — if a build starts sending something
+# new, add it here or it is silently dropped rather than shown as-is.
+# Every app-only health field, so a reading the phone has stopped reporting can
+# be cleared rather than left on screen as current. Keep in step with the writes
+# in record_client_info — a field missing here is one that survives a reinstall.
+_TRACKER_HEALTH_FIELDS = (
+    "tracker_battery_optimised", "tracker_exact_alarms", "tracker_service_dead",
+    "tracker_location_unavailable", "tracker_worker_outcome",
+    "tracker_alarm_age_min", "tracker_worker_age_min", "tracker_fix_age_min",
+    "tracker_queued_pings",
+)
+
+_WORKER_OUTCOMES = {
+    "healthy",            # the primary path is delivering; nothing to do
+    "fixed",              # the backstop took and posted its own fresh fix
+    "fixed_last_known",   # posted a cached fix; no fresh one was obtainable
+    "post_failed",        # got a fix, upload failed — it is queued on the phone
+    "no_location",        # neither a fresh nor a usable cached fix existed
+    "stale_last_known",   # only a cached fix older than an hour: not worth sending
+    "no_permission",      # location permission gone
+    "inactive",           # punched out
+    "error",
+}
+
 
 class ClientInfoIn(BaseModel):
     platform: str                 # "app" | "pwa"
@@ -1368,6 +1466,20 @@ class ClientInfoIn(BaseModel):
     # because a device with a skewed clock is exactly the sort we are diagnosing.
     alarm_age_min: Optional[int] = None
     worker_age_min: Optional[int] = None
+    # v1.6.0+. Minutes since the standing location subscription last delivered a
+    # fix. This is the primary-path signal in that architecture; alarm_age_min is
+    # demoted to a 15-minute heartbeat there and is EXPECTED to be absent — on
+    # 4 of the 5 phones running v1.5.2 the alarm had never fired even once, so
+    # treating its absence as a fault would flag healthy devices.
+    fix_age_min: Optional[int] = None
+    # Why the last backstop pass produced what it did: fixed, fixed_last_known,
+    # no_location, post_failed, no_permission, healthy, … Without it, "the worker
+    # ran and no fix arrived" covered a denied permission, a GPS timeout and a
+    # failed upload — three different repairs, identical from the server.
+    worker_outcome: Optional[str] = None
+    # Play Services says the phone currently cannot produce a fix at all (GPS
+    # switched off, deep indoors). Separates "not reporting" from "cannot see sky".
+    location_unavailable: Optional[bool] = None
 @router.post("/client-info")
 async def record_client_info(body: ClientInfoIn, current_user: dict = Depends(get_current_user)):
     """Called by the frontend on login to record whether the employee is on the
@@ -1402,12 +1514,22 @@ async def record_client_info(body: ClientInfoIn, current_user: dict = Depends(ge
             ("tracker_battery_optimised", body.battery_optimised),
             ("tracker_exact_alarms", body.exact_alarms),
             ("tracker_service_dead", body.service_dead),
+            ("tracker_location_unavailable", body.location_unavailable),
         ):
             if value is not None:
                 update[field] = bool(value)
                 health_at = True
+        # Free-form string from the phone, so it is both length-capped and
+        # whitelisted. An unrecognised value is dropped rather than stored: this
+        # is rendered straight onto the Devices tab, and the only thing worse
+        # than no diagnosis is a made-up one.
+        outcome = (body.worker_outcome or "").strip().lower()
+        if outcome in _WORKER_OUTCOMES:
+            update["tracker_worker_outcome"] = outcome
+            health_at = True
         for field, value in (("tracker_alarm_age_min", body.alarm_age_min),
-                             ("tracker_worker_age_min", body.worker_age_min)):
+                             ("tracker_worker_age_min", body.worker_age_min),
+                             ("tracker_fix_age_min", body.fix_age_min)):
             if value is not None:
                 try:
                     update[field] = min(max(0, int(value)), 100000)
@@ -1427,7 +1549,24 @@ async def record_client_info(body: ClientInfoIn, current_user: dict = Depends(ge
                 pass
         if health_at:
             update["tracker_health_at"] = now
-    await db.employees.update_one({"employee_id": emp_id}, {"$set": update})
+    ops = {"$set": update}
+    # Clear what this build STOPPED reporting.
+    #
+    # Without this, the standard first-line fix — clear the app's data, or
+    # reinstall it — leaves every previous reading in place. The phone then sends
+    # a payload with all the ages omitted (they are 0 on a fresh install, and the
+    # client omits a zero), the remaining fields still stamp tracker_health_at as
+    # fresh, and the Devices tab carries the PRE-WIPE alarm age and backstop
+    # outcome forward as if they were current. That is a false all-clear on the
+    # exact device someone is in the middle of investigating.
+    #
+    # Only when the phone reported SOMETHING (health_at): a build that reports no
+    # health at all must not wipe what an earlier build measured.
+    if platform == "app" and health_at:
+        stale = [f for f in _TRACKER_HEALTH_FIELDS if f not in update]
+        if stale:
+            ops["$unset"] = {f: "" for f in stale}
+    await db.employees.update_one({"employee_id": emp_id}, ops)
     return {"ok": True}
 @router.get("/adoption")
 async def adoption_report(current_user: dict = Depends(get_current_user)):
