@@ -13,7 +13,7 @@ identifier. Pings with unknown/invalid identifiers are silently ignored (still
 """
 from fastapi import APIRouter, HTTPException, Depends, Request, Response
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from database import db
 from auth_utils import get_current_user
@@ -947,6 +947,35 @@ async def my_tracking_access(current_user: dict = Depends(get_current_user)):
     return {"can_view": False, "scope": "none", "can_admin": False, "via": None}
 
 
+@router.get("/trackable-employees")
+async def trackable_employees(current_user: dict = Depends(get_current_user)):
+    """People who can appear in tracking — for the History tab's picker.
+
+    Deliberately NOT the employee directory. The History tab used
+    `/employees?status=all`, which returns every field on every employee and
+    scopes managers to their own reporting line — so a grant holder got a list
+    of one. Widening THAT endpoint would have handed the whole staff directory
+    to someone who was given tracking access, and those are different things.
+
+    Returns the five fields the picker renders and nothing else, over the set of
+    people who are actually tracked.
+    """
+    scope = await _scope_ids(current_user)          # raises 403 for everyone else
+    provisioned = await db.employee_trackers.distinct("employee_id")
+    q = {"status": {"$ne": "exited"},
+         "$or": [{"employee_id": {"$in": provisioned}}, {"field_staff": True}]}
+    if scope is not None:
+        # get_descendant_employee_ids excludes the root, so a manager who does
+        # field work himself was missing from his own picker — visible on Active
+        # Today, absent from History. location_track already allows him.
+        me = current_user.get("employee_id")
+        q["employee_id"] = {"$in": list(scope) + ([me] if me else [])}
+    emps = await db.employees.find(
+        q,
+        {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1,
+         "designation": 1, "department": 1},
+    ).sort("employee_id", 1).to_list(4000)
+    return emps
 @router.post("/tracking-viewer/toggle/{employee_id}")
 async def toggle_tracking_viewer(employee_id: str, current_user: dict = Depends(get_current_user)):
     """Grant or revoke read-only tracking access for one person.
@@ -1090,6 +1119,35 @@ async def _att_punch_state(employee_id: str, date_str: str):
 async def _odo_reading(employee_id: str, date_str: str, kind: str):
     return await db.odometer_readings.find_one(
         {"employee_id": employee_id, "date": date_str, "kind": kind}, {"_id": 0, "photo": 0})
+# A field officer's whole day on a two-wheeler. Set far above any real day so it
+# only ever catches a mistyped digit, never a long one: adding a digit multiplies
+# the reading by ten, so a typo overshoots this by orders of magnitude.
+_ODO_MAX_DAY_KM = 500.0
+# Odometers roll over at 999999. Anything past this is not a reading.
+_ODO_MAX_READING_KM = 2_000_000.0
+_ODO_REVIEW_LABELS = {
+    "below_start": "End reading is lower than the start reading",
+    "implausible": f"More than {int(_ODO_MAX_DAY_KM)} km in one day",
+}
+def _odo_review(start, end):
+    """Why this day needs a human to look at the photos, or None.
+
+    Derived here rather than trusted from the phone. The app also warns the
+    employee, but that warning depends on a GET that fails silently on bad
+    coverage — which is most of where these readings are taken. If the check
+    only lived on the client, the readings most likely to be wrong would be
+    exactly the ones nobody checked.
+    """
+    if not (start and end):
+        return None
+    a, b = start.get("reading_km"), end.get("reading_km")
+    if a is None or b is None:
+        return None
+    if b < a:
+        return "below_start"
+    if b - a > _ODO_MAX_DAY_KM:
+        return "implausible"
+    return None
 async def _odo_day(employee_id: str, date_str: str):
     """Return (start_doc, end_doc, distance_km_or_None)."""
     start = await _odo_reading(employee_id, date_str, "start")
@@ -1144,10 +1202,14 @@ async def distance_report(date_str: str = None, current_user: dict = Depends(get
         required = bool(e.get("odometer_required"))
         start, end, odo = await _odo_day(eid, date_str)
         has_in, _ = await _att_punch_state(eid, date_str)
+        review = _odo_review(start, end)
         if not required:
             status = "n/a"
         elif start and end:
-            status = "complete"
+            # "Complete" is the status HR filters OUT. A day whose readings do not
+            # add up must not wear it, or the one row worth opening is the one row
+            # nobody opens.
+            status = "review" if review else "complete"
         elif not has_in:
             status = "not_on_duty"
         else:
@@ -1162,6 +1224,7 @@ async def distance_report(date_str: str = None, current_user: dict = Depends(get
             "odo_end_km": end.get("reading_km") if end else None,
             "odo_km": odo,
             "odo_status": status,
+            "odo_review": review,
         })
     rows.sort(key=lambda r: r["gps_km"], reverse=True)
     return {"date": date_str, "total_gps_km": round(total, 2), "rows": rows}
@@ -1198,7 +1261,8 @@ async def distance_export(from_date: str, to_date: str, current_user: dict = Dep
     wb = Workbook()
     daily = wb.active
     daily.title = "Daily"
-    daily.append(["Employee ID", "Name", "Date", "GPS km (est.)", "Odometer km", "Odometer status"])
+    daily.append(["Employee ID", "Name", "Date", "GPS km (est.)", "Odometer km",
+                  "Odometer status", "Why check"])
     summary_rows = {}  # eid -> [gps_total, odo_total]
     for eid in emp_ids:
         e = emap.get(eid, {})
@@ -1209,17 +1273,22 @@ async def distance_export(from_date: str, to_date: str, current_user: dict = Dep
             gps = await _gps_distance_km(eid, ds)
             start, end, odo = await _odo_day(eid, ds)
             has_in, _ = await _att_punch_state(eid, ds)
+            review = _odo_review(start, end)
             if not required:
                 status = ""
             elif start and end:
-                status = "complete"
+                # A day that does not add up contributes nothing to the Total
+                # Odometer km below. Labelling it "complete" hides a hole in the
+                # figure HR reimburses from.
+                status = "CHECK" if review else "complete"
             elif not has_in:
                 status = ""
             else:
                 status = "MISSING"
             if gps == 0 and odo is None and not has_in:
                 continue  # skip empty non-working days
-            daily.append([eid, name, ds, gps, odo if odo is not None else "", status])
+            daily.append([eid, name, ds, gps, odo if odo is not None else "", status,
+                          _ODO_REVIEW_LABELS.get(review, "")])
             summary_rows[eid][0] += gps
             summary_rows[eid][1] += (odo or 0.0)
     summ = wb.create_sheet("Summary")
@@ -1239,9 +1308,22 @@ async def distance_export(from_date: str, to_date: str, current_user: dict = Dep
 # ── Feature B: odometer capture + reminders ───────────────────────
 class OdometerReadingIn(BaseModel):
     kind: str                      # "start" | "end"
-    reading_km: float
+    # Bounded here, not only in the app. `float` alone accepts Infinity and NaN —
+    # Python's json parses both literals and pydantic allows them by default — and
+    # one such reading makes every later GET /tracker/distance for that date raise
+    # on serialisation, for every employee, not just the sender.
+    reading_km: float = Field(gt=0, le=_ODO_MAX_READING_KM, allow_inf_nan=False)
+    # Only ever populated by a phone still running the pre-manual-entry bundle,
+    # where the reading was machine-read and auto-submitted with no human
+    # confirmation. That is the one thing that distinguishes those rows, so it is
+    # written only when present rather than nulled out on every new submission.
     ocr_text: Optional[str] = None
     photo: Optional[str] = None    # base64 (audit proof)
+    # Records that the EMPLOYEE was shown a warning and went ahead — useful for
+    # telling a deliberate override from a slip. It is not what HR reads: whether
+    # the day actually needs review is derived server-side by _odo_review, which
+    # does not depend on the phone having been online.
+    override_warning: Optional[bool] = None
 @router.post("/odometer/reading")
 async def submit_odometer_reading(body: OdometerReadingIn, current_user: dict = Depends(get_current_user)):
     """Field employee submits a confirmed odometer reading (start/end of day)."""
@@ -1251,21 +1333,29 @@ async def submit_odometer_reading(body: OdometerReadingIn, current_user: dict = 
     if body.kind not in ("start", "end"):
         raise HTTPException(status_code=400, detail="kind must be 'start' or 'end'")
     date_str = _today()
+    fields = {
+        "employee_id": emp_id,
+        "date": date_str,
+        "kind": body.kind,
+        "reading_km": float(body.reading_km),
+        "photo": body.photo,
+        "override_warning": bool(body.override_warning),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # Only from the old auto-submitting bundle. Writing it unconditionally would
+    # null out the one marker that identifies a machine-read row whenever the
+    # employee re-submits from the new app.
+    if body.ocr_text is not None:
+        fields["ocr_text"] = body.ocr_text
     await db.odometer_readings.update_one(
         {"employee_id": emp_id, "date": date_str, "kind": body.kind},
-        {"$set": {
-            "employee_id": emp_id,
-            "date": date_str,
-            "kind": body.kind,
-            "reading_km": float(body.reading_km),
-            "ocr_text": body.ocr_text,
-            "photo": body.photo,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }},
+        {"$set": fields},
         upsert=True,
     )
-    _, _, dist = await _odo_day(emp_id, date_str)
-    return {"ok": True, "distance_km": dist}
+    start, end, dist = await _odo_day(emp_id, date_str)
+    # Told back to the app so it can say something useful even when the check it
+    # ran locally was skipped for want of a network.
+    return {"ok": True, "distance_km": dist, "review": _odo_review(start, end)}
 @router.get("/odometer/my-status")
 async def my_odometer_status(current_user: dict = Depends(get_current_user)):
     """Tells the app whether the employee owes a start/end odometer photo today."""
@@ -1289,6 +1379,101 @@ async def my_odometer_status(current_user: dict = Depends(get_current_user)):
         "end_km": end.get("reading_km") if end else None,
         "distance_km": dist,
     }
+async def _odo_required(emp_id: str) -> bool:
+    if not emp_id:
+        return False
+    emp = await db.employees.find_one({"employee_id": emp_id}, {"_id": 0, "odometer_required": 1})
+    return bool(emp and emp.get("odometer_required"))
+def _month_start(date_str: str, back: int = 0) -> str:
+    """First day of the month `back` months before date_str's month."""
+    y, m, _ = (int(p) for p in date_str.split("-"))
+    m -= back
+    while m < 1:
+        m += 12
+        y -= 1
+    return f"{y:04d}-{m:02d}-01"
+@router.get("/odometer/my-history")
+async def my_odometer_history(current_user: dict = Depends(get_current_user)):
+    """This month and last month of the CALLER's own odometer readings.
+
+    Deliberately takes no employee_id. The one endpoint that serves odometer
+    photos by id is admin-gated, and adding a second, self-service path that
+    accepts an id is how that gate stops meaning anything. The id comes from the
+    token and nowhere else.
+
+    Readings are a reimbursement claim, and until now the employee held no copy
+    of one — HR had the only record of both the number and the photo the
+    employee took. Photos are NOT included here: a month of base64 in one
+    response is a large payload for a field phone, and each day is fetched on
+    demand instead.
+    """
+    emp_id = current_user.get("employee_id")
+    if not await _odo_required(emp_id):
+        # Not an error. Everyone else simply has no travel record to show, and
+        # the card that calls this hides itself on `required: False`.
+        return {"required": False, "days": []}
+    today = _today()
+    frm = _month_start(today, 1)
+    # `kind` is filtered in the QUERY, not after. This collection also holds
+    # `_hr_flag` bookkeeping rows (see run_odometer_reminders), so an unfiltered
+    # read spends the limit on documents that are then thrown away — 62 days x 3
+    # kinds is 186 against a cap of 200. Sorted so that if the window is ever
+    # widened, what falls off the end is the oldest day rather than whichever
+    # rows Mongo happened to return first.
+    docs = await db.odometer_readings.find(
+        {"employee_id": emp_id, "date": {"$gte": frm, "$lte": today},
+         "kind": {"$in": ["start", "end"]}},
+        {"_id": 0, "photo": 0},
+    ).sort("date", -1).to_list(400)
+    by_date = {}
+    for d in docs:
+        if d.get("kind") in ("start", "end"):
+            by_date.setdefault(d["date"], {})[d["kind"]] = d
+    days = []
+    for ds in sorted(by_date, reverse=True):
+        start, end = by_date[ds].get("start"), by_date[ds].get("end")
+        dist = None
+        if start and end and start.get("reading_km") is not None and end.get("reading_km") is not None:
+            diff = end["reading_km"] - start["reading_km"]
+            dist = round(diff, 1) if diff >= 0 else None
+        days.append({
+            "date": ds,
+            "start_km": start.get("reading_km") if start else None,
+            "end_km": end.get("reading_km") if end else None,
+            "distance_km": dist,
+            # The same verdict HR sees. Told to the employee the same evening,
+            # a queryable reading gets fixed while they still remember the day;
+            # otherwise they find out at payroll.
+            "review": _odo_review(start, end),
+        })
+    # A flagged day is NOT in the total. `below_start` already contributed
+    # nothing (its distance is None), but an `implausible` day has a real number
+    # and was being banked in full — so one mistyped digit rendered a bold
+    # "Total recorded: 4,00,098 km" directly above the amber line saying that
+    # very day is not believed. `excluded` is returned so the total can say what
+    # it left out instead of quietly under-reporting a claim.
+    counted = [d for d in days if d["distance_km"] is not None and not d["review"]]
+    total = round(sum(d["distance_km"] for d in counted), 1)
+    return {"required": True, "from": frm, "to": today, "total_km": total,
+            "counted_days": len(counted),
+            "excluded_days": sum(1 for d in days if d["review"] or d["distance_km"] is None),
+            "days": days}
+@router.get("/odometer/my-day/{date_str}")
+async def my_odometer_day(date_str: str, current_user: dict = Depends(get_current_user)):
+    """The caller's own photos for one day. Own rows only — see my-history."""
+    emp_id = current_user.get("employee_id")
+    if not await _odo_required(emp_id):
+        raise HTTPException(status_code=403, detail="Access denied")
+    start = await db.odometer_readings.find_one(
+        {"employee_id": emp_id, "date": date_str, "kind": "start"}, {"_id": 0})
+    end = await db.odometer_readings.find_one(
+        {"employee_id": emp_id, "date": date_str, "kind": "end"}, {"_id": 0})
+    dist = None
+    if start and end and start.get("reading_km") is not None and end.get("reading_km") is not None:
+        diff = end["reading_km"] - start["reading_km"]
+        dist = round(diff, 1) if diff >= 0 else None
+    return {"date": date_str, "start": start, "end": end,
+            "distance_km": dist, "review": _odo_review(start, end)}
 @router.get("/odometer/employees")
 async def odometer_employees(current_user: dict = Depends(get_current_user)):
     """Admin list of employees with their per-person field flags (for Settings).
@@ -1350,7 +1535,8 @@ async def odometer_day(employee_id: str, date_str: str = None, current_user: dic
     if start and end and start.get("reading_km") is not None and end.get("reading_km") is not None:
         d = end["reading_km"] - start["reading_km"]
         dist = round(d, 1) if d >= 0 else None
-    return {"employee_id": employee_id, "date": date_str, "start": start, "end": end, "distance_km": dist}
+    return {"employee_id": employee_id, "date": date_str, "start": start, "end": end,
+            "distance_km": dist, "review": _odo_review(start, end)}
 async def _notify_hr_admins(emp_id: str, date_str: str, has_start: bool, has_end: bool):
     from routes.notifications import create_notification
     emp = await db.employees.find_one({"employee_id": emp_id}, {"_id": 0, "first_name": 1, "last_name": 1})

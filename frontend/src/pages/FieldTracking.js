@@ -6,6 +6,13 @@ import RouteMap from "../components/RouteMap";
 import { toLocalDateStr } from "../utils/shiftRules";
 // Location-permission chip. A SEPARATE axis from freshness — see the note below
 // the table. Reported by the v1.4.0+ app; older apps / PWA show "—".
+// Why the server thinks a day's odometer readings need a person to look. Derived
+// server-side from the two readings, so it is present whether or not the phone
+// was online when the employee submitted.
+const ODO_REVIEW_LABELS = {
+  below_start: "End reading is lower than the start reading",
+  implausible: "More than 500 km in one day",
+};
 const PERMISSION_STYLES = {
   always: { label: "Allowed always", cls: "bg-green-50 text-green-700 border-green-200" },
   in_use: { label: "Foreground only", cls: "bg-amber-50 text-amber-700 border-amber-200" },
@@ -252,7 +259,12 @@ export default function FieldTracking() {
     catch (e) { console.error(e); } finally { setLoading(false); }
   };
   const fetchEmployees = async () => {
-    try { const res = await API.get("/employees?status=all"); setHistEmployees(res.data); }
+    // Tracked staff, not the employee directory. This used /employees?status=all,
+    // which scopes managers to their own reporting line and ignores the tracking
+    // grant entirely — so a granted viewer searching History found one person.
+    // Widening that endpoint would have handed over the whole staff directory
+    // for a permission that was only ever about tracking.
+    try { const res = await API.get("/tracker/trackable-employees"); setHistEmployees(res.data); }
     catch (e) { console.error(e); }
   };
   const fetchDistance = async (d) => {
@@ -421,10 +433,23 @@ export default function FieldTracking() {
                     return (
                       <div key={k} className="border border-slate-200 rounded-lg p-3">
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-sm font-semibold text-[#1E2A47] capitalize">{k} of day</span>
+                          <span className="text-sm font-semibold text-[#1E2A47]">{k === "start" ? "Start" : "End"} of day</span>
                           <span className="text-sm font-bold text-[#1E2A47]">{rd?.reading_km != null ? `${Number(rd.reading_km).toLocaleString("en-IN")} km` : "—"}</span>
                         </div>
-                        {rd?.photo ? <img src={`data:image/jpeg;base64,${rd.photo}`} alt={`${k} odometer`} className="w-full rounded-lg border border-slate-100" />
+                        {/* Keyed on the server's own comparison, not on the phone
+                            saying it warned someone. The app's check needs a GET that
+                            fails silently on bad coverage — which is where most of
+                            these readings are taken — so trusting the phone would drop
+                            the flag on exactly the readings most likely to be wrong. */}
+                        {k === "end" && odoView.data.review && (
+                          <p className="text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mb-2">
+                            {ODO_REVIEW_LABELS[odoView.data.review]} — check this photo against the start reading.
+                            {rd?.override_warning
+                              ? " The employee was warned and submitted it anyway."
+                              : " The employee was not warned (the app could not reach the server)."}
+                          </p>
+                        )}
+                        {rd?.photo ? <img src={`data:image/jpeg;base64,${rd.photo}`} alt={`${k} odometer`} className="w-full max-h-[45vh] object-contain bg-slate-50 rounded-lg border border-slate-100" />
                           : <p className="text-xs text-slate-400">No photo submitted.</p>}
                         {rd?.created_at && <p className="text-[11px] text-slate-400 mt-1">{new Date(rd.created_at).toLocaleString("en-IN")}</p>}
                       </div>
@@ -482,7 +507,12 @@ export default function FieldTracking() {
                   {distLoading ? <tr><td colSpan={4} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
                   : !distData || distData.rows.length === 0 ? <tr><td colSpan={4} className="px-4 py-12 text-center text-slate-400">No distance data for this date.</td></tr>
                   : distData.rows.map(r => {
-                    const st = r.odo_status === "complete" ? ["Complete", "bg-green-100 text-green-700"]
+                    // "Check" is deliberately its own status rather than a mark on
+                    // top of Complete. Complete is the one HR scrolls past, and a
+                    // day whose readings do not add up contributes nothing to the
+                    // reimbursement total — it is the row that most needs opening.
+                    const st = r.odo_status === "review" ? ["Check", "bg-amber-100 text-amber-800"]
+                      : r.odo_status === "complete" ? ["Complete", "bg-green-100 text-green-700"]
                       : r.odo_status === "missing" ? ["Missing", "bg-red-100 text-red-700"]
                       : ["—", "bg-slate-100 text-slate-400"];
                     return (
@@ -495,8 +525,14 @@ export default function FieldTracking() {
                         </td>
                         <td className="px-4 py-3">
                           {r.odometer_required ? (
-                            <div className="flex items-center gap-2">
+                            <div className="flex items-center gap-2 flex-wrap">
                               <span className={`px-2 py-1 rounded-full text-xs font-medium ${st[1]}`}>{st[0]}</span>
+                              {/* Spelled out, not a tooltip. HR opens this on a laptop
+                                  but reads it on a phone often enough, and a hover
+                                  tooltip is a finding nobody on a touch screen sees. */}
+                              {r.odo_review && (
+                                <span className="w-full text-[11px] text-amber-700">{ODO_REVIEW_LABELS[r.odo_review]}</span>
+                              )}
                               {canViewOdoPhotos && (r.odo_start_km != null || r.odo_end_km != null) && (
                                 <button onClick={() => openOdoPhotos(r.employee_id, r.name)} className="text-xs text-[#E85B1E] font-medium hover:underline">Photos</button>
                               )}
