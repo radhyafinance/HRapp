@@ -1011,10 +1011,15 @@ async def my_attendance(
 
 @router.get("/location-track/{employee_id}")
 async def location_track(employee_id: str, date_str: str = None, current_user: dict = Depends(get_current_user)):
-    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
+    # Same grant, same precedence as /field-staff/active. Without it a granted
+    # viewer reaches the page and the list, then gets a 403 on every route map
+    # for anyone outside their own reporting line.
+    from routes.tracker import _is_tracking_viewer
+    viewer = await _is_tracking_viewer(current_user)
+    if not viewer and current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
-    # Manager scope: only employees in their sub-tree
-    if current_user.get("role") == "managers":
+    # Manager scope: only employees in their sub-tree — unless granted.
+    if current_user.get("role") == "managers" and not viewer:
         from services.hierarchy import get_descendant_employee_ids
         me_id = current_user.get("employee_id")
         allowed = await get_descendant_employee_ids(me_id) if me_id else set()
@@ -1066,9 +1071,38 @@ async def location_track(employee_id: str, date_str: str = None, current_user: d
 
     attendance = await db.attendance_records.find_one({"employee_id": employee_id, "date": today})
     if attendance:
-        attendance["id"] = str(attendance.pop("_id"))
-        attendance.pop("punch_in_photo", None)
-        attendance.pop("punch_out_photo", None)
+        # Allow-list, not pop(). The two pops this replaces removed the
+        # top-level selfies and missed the SAME images at
+        # sessions[].punch_in_photo / .punch_out_photo and
+        # punch_in_photo_original / punch_out_photo_original — the copies kept
+        # only when the face check FAILED, i.e. the biometric-dispute evidence —
+        # along with the face-match distances. Those were shipping in the
+        # response, and the grant above has just opened this endpoint to people
+        # outside the subject's reporting line, so it has to be tightened in the
+        # same change rather than after it.
+        #
+        # Every name below is a field this collection actually stores, checked
+        # against the live API response. A denylist over a raw Mongo document
+        # leaks whatever the next migration adds.
+        allowed = (
+            "employee_id", "date", "status", "auto_status_reason", "regularised",
+            "punch_in_time", "punch_out_time", "hours_worked",
+            "hours_worked_estimated", "auto_closed", "late_minutes",
+            "shift_id", "shift_name", "session_count",
+            "punch_in_location", "punch_out_location", "location_name",
+            "geofence_verified", "distance_from_office",
+        )
+        att = {k: attendance[k] for k in allowed if k in attendance}
+        att["id"] = str(attendance.get("_id", ""))
+        if attendance.get("sessions"):
+            att["sessions"] = [
+                {k: s.get(k) for k in ("punch_in_time", "punch_out_time", "status",
+                                       "hours_worked", "auto_closed",
+                                       "punch_in_location", "punch_out_location")
+                 if k in s}
+                for s in attendance["sessions"]
+            ]
+        attendance = att
 
     return {
         "employee_id": employee_id,
@@ -1082,14 +1116,23 @@ async def location_track(employee_id: str, date_str: str = None, current_user: d
 @router.get("/field-staff/active")
 async def list_active_field_staff(current_user: dict = Depends(get_current_user)):
     """List employees who have punched in today and have location updates."""
-    if current_user.get("role") not in ["hr_admin", "management", "managers"]:
+    # The read-only tracking grant (`tracking_viewer` on the employee record).
+    # Checked BEFORE the role gate and before the manager narrowing below,
+    # because it is a WIDER scope than either — a granted manager narrowed back
+    # to his own reporting line sees one person on the tab that matters most.
+    # Imported inside the function, matching the existing `_gps_distance_km`
+    # import below: routes.tracker has no module-scope routes.* imports, so
+    # there is no cycle, and nothing new has to exist for this file to load.
+    from routes.tracker import _is_tracking_viewer
+    viewer = await _is_tracking_viewer(current_user)
+    if not viewer and current_user.get("role") not in ["hr_admin", "management", "managers"]:
         raise HTTPException(status_code=403, detail="Access denied")
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     role = current_user.get("role")
     me_id = current_user.get("employee_id")
     rec_query = {"date": today, "punch_in_time": {"$exists": True}}
-    if role == "managers":
+    if role == "managers" and not viewer:
         from services.hierarchy import get_manager_scope_excluding_ho
         scope = await get_manager_scope_excluding_ho(me_id)
         if scope == ["__none__"]:
