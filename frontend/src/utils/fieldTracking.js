@@ -4,12 +4,17 @@
  * Runs ONLY inside the native Android app (no-op in a normal browser) and only
  * while the employee is punched in (open attendance session).
  *
- * The heavy lifting is done natively by the custom "RadhyaTracker" plugin: it
- * wakes every 3 minutes (exact alarm), takes ONE GPS fix, posts it to the
- * existing OsmAnd endpoint (/api/tracker/osmand), and powers GPS back down —
- * so it keeps working with the phone locked or the app closed, and is easy on
- * the battery. This module only decides WHEN to run it (punch-in → start,
- * punch-out → stop) and hands it the employee's identifier.
+ * The heavy lifting is done natively by the custom "RadhyaTracker" plugin. It
+ * holds ONE standing GPS subscription for as long as the service lives and posts
+ * each fix to the OsmAnd endpoint (/api/tracker/osmand), so it keeps working
+ * with the phone locked or the app closed. This module only decides WHEN to run
+ * it (punch-in → start, punch-out → stop), hands it the employee's identifier,
+ * and sets the cadence via INTERVAL_MS below.
+ *
+ * It used to describe an exact alarm firing every 3 minutes. That design is gone:
+ * when Android refuses an alarm-driven foreground-service start it throws before
+ * the service exists, so the code that booked the next alarm never ran and one
+ * refusal ended tracking for the day. There is no chain to break now.
  *
  * A FAILED REQUEST IS NOT AN ANSWER. This module used to call stop() from the
  * catch block, and stop() is not a pause — it clears the native alarm and kills
@@ -24,7 +29,21 @@ import { isNativeApp } from "./clientPlatform";
 const RadhyaTracker = registerPlugin("RadhyaTracker");
 const BACKEND = process.env.REACT_APP_BACKEND_URL || "";
 const PING_URL = `${BACKEND}/api/tracker/osmand`;
-const INTERVAL_MS = 3 * 60 * 1000; // ping every 3 minutes
+// Ping every 60 seconds. This is the ONLY thing that sets the tracking cadence:
+// the native side takes it from RadhyaTracker.start() and floors it at 60s
+// (TrackerService: Math.max(interval, 60_000L), and setMinUpdateIntervalMillis
+// at Math.max(60s, intervalMs / 2)), so 60s here is the fastest the fleet can
+// go without changing the APK.
+//
+// Note `interval_seconds` on the tracker record and in /tracker/my-config is a
+// DECOY — nothing reads it, so changing it per employee does nothing. If you
+// ever need per-person intervals, wire it through here.
+//
+// Battery: measured 5.2 %/hr median on v1.6.0 at 3 minutes, against 6.7 %/hr on
+// the old v1.4.0 alarm build. Tripling the GPS duty cycle will cost more than
+// that. If field staff start complaining about battery, raise this number —
+// it is a one-line change and it reaches every phone on the next deploy.
+const INTERVAL_MS = 60 * 1000;
 // Persisted so a webview reload (or an app restart) can still re-assert the
 // last decision while offline — in memory alone, a reload would leave us unable
 // to restart a service the OEM had killed until the network came back.
