@@ -39,6 +39,113 @@ def haversine_distance(lat1, lon1, lat2, lon2):
     return 2 * R * math.asin(math.sqrt(a))
 
 
+# ── stay detection ────────────────────────────────────────────────────────
+#
+# Measured on production: half of all fixes are proper GPS (8-30 m) and a
+# quarter are 300 m or worse — cell-tower or wifi positions, not GPS. Across
+# phones, a median of ~75% of apparent hops are SMALLER than the combined
+# accuracy of the two fixes involved. In other words most "movement" on the map
+# was never movement; it was a coarse fix drawn as a confident dot.
+#
+# The previous algorithm made that worse in two ways. It ignored `accuracy`
+# entirely, and it measured every point against the FIRST point of the cluster
+# rather than a running centre — so a single wild fix ended the stop and started
+# a new one, splitting one visit to one village into three "stops" a few minutes
+# apart. That is exactly the "is he at 1 location or 10" problem.
+_TRUST_ACCURACY_M = 100     # worse than this is not a position, it is an area
+_STAY_RADIUS_M = 60         # base radius; widened per-point by its own accuracy
+_STAY_MIN_MIN = 15          # a stop worth showing, unchanged from before
+_STAY_MERGE_M = 150         # two stays this close are the same place...
+_STAY_MERGE_GAP_MIN = 12    # ...if the gap between them is this short
+
+
+def _pt_time(p):
+    try:
+        return datetime.fromisoformat(str(p.get("timestamp")).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _detect_stays(logs):
+    """(stays, trusted_points, dropped_count) from a day's location logs.
+
+    Returns stays newest-last, each numbered, plus the points good enough to
+    draw. A fix the phone itself says is +/-400 m cannot support a 60 m stay,
+    so it is excluded from BOTH the path and the clustering — but counted, so
+    the UI can say so instead of silently showing less.
+    """
+    trusted, dropped = [], 0
+    for p in logs:
+        if p.get("latitude") is None or p.get("longitude") is None:
+            dropped += 1
+            continue
+        acc = p.get("accuracy")
+        if acc is not None and acc > _TRUST_ACCURACY_M:
+            dropped += 1
+            continue
+        if _pt_time(p) is None:
+            dropped += 1
+            continue
+        trusted.append(p)
+
+    stays = []
+    i, n = 0, len(trusted)
+    while i < n:
+        members = [trusted[i]]
+        c_lat, c_lon = trusted[i]["latitude"], trusted[i]["longitude"]
+        j = i + 1
+        while j < n:
+            p = trusted[j]
+            # Radius widens to the point's own uncertainty: a 90 m fix sitting
+            # 80 m from the centre is not evidence of having moved.
+            tol = max(_STAY_RADIUS_M, p.get("accuracy") or 0)
+            if haversine_distance(c_lat, c_lon, p["latitude"], p["longitude"]) > tol:
+                break
+            members.append(p)
+            # Recentre as it grows, so the stay tracks the true middle rather
+            # than being anchored to whichever fix happened to be first.
+            c_lat = sum(m["latitude"] for m in members) / len(members)
+            c_lon = sum(m["longitude"] for m in members) / len(members)
+            j += 1
+        if len(members) > 1:
+            t0, t1 = _pt_time(members[0]), _pt_time(members[-1])
+            if t0 and t1:
+                stays.append({
+                    "latitude": round(c_lat, 6), "longitude": round(c_lon, 6),
+                    "start": members[0]["timestamp"], "end": members[-1]["timestamp"],
+                    "_t0": t0, "_t1": t1, "points": len(members),
+                })
+        i = max(j, i + 1)
+
+    # Merge stays that are the same place split by a bad fix or a short step out.
+    merged = []
+    for s in stays:
+        if merged:
+            prev = merged[-1]
+            gap_min = (s["_t0"] - prev["_t1"]).total_seconds() / 60
+            if (haversine_distance(prev["latitude"], prev["longitude"],
+                                   s["latitude"], s["longitude"]) <= _STAY_MERGE_M
+                    and 0 <= gap_min <= _STAY_MERGE_GAP_MIN):
+                w1, w2 = prev["points"], s["points"]
+                prev["latitude"] = round((prev["latitude"] * w1 + s["latitude"] * w2) / (w1 + w2), 6)
+                prev["longitude"] = round((prev["longitude"] * w1 + s["longitude"] * w2) / (w1 + w2), 6)
+                prev["end"], prev["_t1"] = s["end"], s["_t1"]
+                prev["points"] = w1 + w2
+                continue
+        merged.append(s)
+
+    out = []
+    for s in merged:
+        mins = (s["_t1"] - s["_t0"]).total_seconds() / 60
+        if mins < _STAY_MIN_MIN:
+            continue
+        s.pop("_t0"); s.pop("_t1")
+        s["duration_minutes"] = round(mins, 1)
+        s["index"] = len(out) + 1      # 1,2,3… so the map can number the pins
+        out.append(s)
+    return out, trusted, dropped
+
+
 async def check_geofence(lat: float, lon: float):
     locations = await db.office_locations.find({}).to_list(100)
     for loc in locations:
@@ -1032,42 +1139,7 @@ async def location_track(employee_id: str, date_str: str = None, current_user: d
     for log in logs:
         log["id"] = str(log.pop("_id"))
 
-    # Detect stops: cluster of consecutive points within 50m for >= 15 min
-    STOP_RADIUS_M = 50
-    STOP_DURATION_MIN = 15
-    stops = []
-    if logs:
-        i = 0
-        n = len(logs)
-        while i < n:
-            anchor = logs[i]
-            j = i + 1
-            while j < n:
-                d = haversine_distance(
-                    anchor["latitude"], anchor["longitude"],
-                    logs[j]["latitude"], logs[j]["longitude"],
-                )
-                if d <= STOP_RADIUS_M:
-                    j += 1
-                else:
-                    break
-            cluster_end = j - 1
-            if cluster_end > i:
-                t_start = datetime.fromisoformat(anchor["timestamp"].replace("Z", "+00:00"))
-                t_end = datetime.fromisoformat(logs[cluster_end]["timestamp"].replace("Z", "+00:00"))
-                duration_min = (t_end - t_start).total_seconds() / 60
-                if duration_min >= STOP_DURATION_MIN:
-                    avg_lat = sum(p["latitude"] for p in logs[i:cluster_end + 1]) / (cluster_end - i + 1)
-                    avg_lon = sum(p["longitude"] for p in logs[i:cluster_end + 1]) / (cluster_end - i + 1)
-                    stops.append({
-                        "latitude": round(avg_lat, 6),
-                        "longitude": round(avg_lon, 6),
-                        "start": anchor["timestamp"],
-                        "end": logs[cluster_end]["timestamp"],
-                        "duration_minutes": round(duration_min, 1),
-                        "points": cluster_end - i + 1,
-                    })
-            i = cluster_end + 1
+    stops, trusted, dropped_low_accuracy = _detect_stays(logs)
 
     attendance = await db.attendance_records.find_one({"employee_id": employee_id, "date": today})
     if attendance:
@@ -1107,6 +1179,12 @@ async def location_track(employee_id: str, date_str: str = None, current_user: d
     return {
         "employee_id": employee_id,
         "date": today,
+        # `locations` stays the full raw set so nothing that reads it breaks.
+        # `trusted_locations` is what the map should draw: fixes the phone itself
+        # claims to within 100 m. `dropped_low_accuracy` exists so the UI can say
+        # "42 low-accuracy fixes hidden" rather than quietly showing less.
+        "trusted_locations": trusted,
+        "dropped_low_accuracy": dropped_low_accuracy,
         "locations": logs,
         "stops": stops,
         "attendance": attendance,

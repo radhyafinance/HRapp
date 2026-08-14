@@ -11,7 +11,7 @@ can't carry bearer tokens. Authentication is via the secret embedded in the
 identifier. Pings with unknown/invalid identifiers are silently ignored (still
 200 OK so scanners get no signal).
 """
-from fastapi import APIRouter, HTTPException, Depends, Request, Response
+from fastapi import APIRouter, HTTPException, Depends, Request, Response, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional
@@ -22,6 +22,7 @@ import logging
 import secrets
 import math
 import io
+import openpyxl
 router = APIRouter()
 # ──────────────────────────────────────────────────────────────
 #  Public endpoint — accepts background location pings
@@ -945,6 +946,137 @@ async def my_tracking_access(current_user: dict = Depends(get_current_user)):
     if role == "managers":
         return {"can_view": True, "scope": "team", "can_admin": False, "via": "role"}
     return {"can_view": False, "scope": "none", "can_admin": False, "via": None}
+
+
+# ── centres ───────────────────────────────────────────────────────────────
+#
+# Uploaded from the monthly GRT sheet. ONLY three columns are ever read —
+# branch, centre name and the GRT location — and the parsed rows are discarded
+# as soon as the centres are extracted. That sheet also carries client names,
+# mobile numbers, KYC numbers and a Member_Pass column; none of it is read,
+# none of it is stored, and none of it is logged. Storing customer PII in the HR
+# system to draw dots on a map would be a bad trade, and an easy one to make by
+# accident if the whole sheet were kept "just in case".
+_CENTRE_COLS = {
+    "branch": ("branchname", "branch"),
+    "centre": ("centername", "centrename", "centre", "center"),
+    "loc": ("grtlocation", "location", "gps", "grtlocations"),
+}
+# Generous India bounds. A latitude of 144.9 is not a place; the sheet has 76
+# such rows and they must be reported, not silently averaged into a centre.
+_IN_LAT = (6.0, 37.0)
+_IN_LON = (68.0, 98.0)
+
+
+def _parse_latlon(v):
+    try:
+        lat, lon = [float(x.strip()) for x in str(v).split(",")[:2]]
+    except (ValueError, AttributeError, TypeError):
+        return None
+    if not (_IN_LAT[0] <= lat <= _IN_LAT[1] and _IN_LON[0] <= lon <= _IN_LON[1]):
+        return None
+    return (round(lat, 6), round(lon, 6))
+
+
+@router.post("/centres/upload")
+async def upload_centres(file: UploadFile = File(...),
+                         current_user: dict = Depends(get_current_user)):
+    """Replace/extend the centre list from a monthly GRT export.
+
+    Upsert, never replace-all: a month's sheet only contains the centres that
+    had a GRT that month, so wiping first would delete every centre that simply
+    had no activity — which is most of them.
+    """
+    if current_user.get("role") not in ("hr_admin", "management"):
+        raise HTTPException(status_code=403, detail="Access denied")
+    raw = await file.read()
+    if len(raw) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 25 MB)")
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(raw), data_only=True, read_only=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Not a readable .xlsx file")
+    ws = wb.active
+    rows = ws.iter_rows(values_only=True)
+    try:
+        header = [str(h or "").strip().lower() for h in next(rows)]
+    except StopIteration:
+        raise HTTPException(status_code=400, detail="The sheet is empty")
+
+    idx = {}
+    for key, names in _CENTRE_COLS.items():
+        for n in names:
+            if n in header:
+                idx[key] = header.index(n)
+                break
+    missing = [k for k in ("centre", "loc") if k not in idx]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail="Could not find the CENTERNAME and GRTLocation columns. "
+                   f"Found: {', '.join(h for h in header if h)[:200]}")
+
+    seen, bad_rows, blank = {}, 0, 0
+    for r in rows:
+        centre = (r[idx["centre"]] if idx["centre"] < len(r) else None)
+        loc = (r[idx["loc"]] if idx["loc"] < len(r) else None)
+        centre = str(centre).strip() if centre not in (None, "") else ""
+        if not centre:
+            blank += 1
+            continue
+        pt = _parse_latlon(loc)
+        if pt is None:
+            bad_rows += 1
+            continue
+        branch = ""
+        if "branch" in idx and idx["branch"] < len(r) and r[idx["branch"]]:
+            branch = str(r[idx["branch"]]).strip()
+        seen.setdefault((branch, centre), []).append(pt)
+
+    # The MODE, not the mean. Repeat fixes for one centre are usually identical,
+    # but 36 centres in the sample disagreed by more than a kilometre and one by
+    # 63 km — averaging those puts the pin in a field halfway to the next
+    # district. The most common exact value had a clear plurality every time.
+    imported, updated, flagged = 0, 0, []
+    now = datetime.now(timezone.utc).isoformat()
+    for (branch, centre), pts in seen.items():
+        counts = {}
+        for p in pts:
+            counts[p] = counts.get(p, 0) + 1
+        best, n_best = max(counts.items(), key=lambda kv: kv[1])
+        spread = max((_haversine_m(best[0], best[1], p[0], p[1]) for p in pts), default=0.0)
+        if spread >= 1000:
+            flagged.append({"centre": centre, "spread_m": round(spread),
+                            "fixes": len(pts), "agreed": n_best})
+        res = await db.centres.update_one(
+            {"centre": centre},
+            {"$set": {"centre": centre, "branch": branch,
+                      "latitude": best[0], "longitude": best[1],
+                      "fixes": len(pts), "agreed": n_best,
+                      "spread_m": round(spread), "updated_at": now}},
+            upsert=True,
+        )
+        if res.matched_count:
+            updated += 1
+        else:
+            imported += 1
+    total = await db.centres.count_documents({})
+    return {
+        "ok": True, "added": imported, "updated": updated, "total_centres": total,
+        "rows_without_a_usable_location": bad_rows, "rows_without_a_centre_name": blank,
+        # Surfaced rather than buried: these are the ones worth a human look.
+        "centres_with_disagreeing_fixes": sorted(flagged, key=lambda f: -f["spread_m"])[:20],
+    }
+
+
+@router.get("/centres")
+async def list_centres(current_user: dict = Depends(get_current_user)):
+    """Centres for the map. Same audience as the tracking pages."""
+    await _scope_ids(current_user)          # raises 403 for anyone else
+    return await db.centres.find(
+        {}, {"_id": 0, "centre": 1, "branch": 1, "latitude": 1, "longitude": 1,
+             "spread_m": 1, "updated_at": 1},
+    ).sort("centre", 1).to_list(5000)
 
 
 @router.get("/trackable-employees")

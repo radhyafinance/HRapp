@@ -214,6 +214,9 @@ export default function FieldTracking() {
   const [histEmpSearch, setHistEmpSearch] = useState("");
   const [histDate, setHistDate] = useState(toLocalDateStr());
   const [histEmployees, setHistEmployees] = useState([]);
+  // Centres from the monthly GRT upload. Fetched once; they change monthly,
+  // not per employee or per day.
+  const [centres, setCentres] = useState([]);
   const [histSelected, setHistSelected] = useState(null);
   const [histTrack, setHistTrack] = useState(null);
   const [histLoading, setHistLoading] = useState(false);
@@ -257,6 +260,10 @@ export default function FieldTracking() {
     API.get("/tracker/watchdog-status").then(r => setWdog(r.data)).catch(() => setWdog(null));
     try { const res = await API.get("/tracker/devices"); setDevices(res.data); }
     catch (e) { console.error(e); } finally { setLoading(false); }
+  };
+  const fetchCentres = async () => {
+    try { const res = await API.get("/tracker/centres"); setCentres(res.data || []); }
+    catch (e) { /* map still works without them */ }
   };
   const fetchEmployees = async () => {
     // Tracked staff, not the employee directory. This used /employees?status=all,
@@ -357,6 +364,11 @@ export default function FieldTracking() {
   useEffect(() => {
     if (!canAdmin && (tab === "odometer" || tab === "adoption")) setTab("live");
   }, [canAdmin, tab]);
+  // Once per page load, not per tab: the centre list is the same for every
+  // employee and every day.
+  useEffect(() => {
+    if (isManager && centres.length === 0) fetchCentres();
+  }, [isManager]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!isManager) return;
     if (tab === "odometer" || tab === "adoption") { if (!canAdmin) return; }
@@ -1076,7 +1088,13 @@ export default function FieldTracking() {
                 <p className="text-xs text-slate-400">Tracker may have been off or the employee didn't punch in.</p>
               </div>
             ) : (
-              <RouteMap locations={selected ? locations : histLocations} stops={selected ? stops : histStops} attendance={(selected ? trackData : histTrack)?.attendance} />
+              <RouteMap
+                locations={selected ? locations : histLocations}
+                trustedLocations={(selected ? trackData : histTrack)?.trusted_locations}
+                droppedLowAccuracy={(selected ? trackData : histTrack)?.dropped_low_accuracy || 0}
+                centres={centres}
+                stops={selected ? stops : histStops}
+                attendance={(selected ? trackData : histTrack)?.attendance} />
             )}
           </div>
           {(selected ? stops : histStops).length > 0 && (

@@ -55,6 +55,15 @@ export default function Settings() {
   const [appPolicySaved, setAppPolicySaved] = useState(APP_POLICY_BLANK);
   const [savingAppPolicy, setSavingAppPolicy] = useState(false);
   const [adoption, setAdoption] = useState(null);
+  // Centres — uploaded monthly from the GRT export.
+  const [centres, setCentres] = useState(null);
+  const [centreUploading, setCentreUploading] = useState(false);
+  const [centreResult, setCentreResult] = useState(null);
+  const [centreError, setCentreError] = useState("");
+  const loadCentres = async () => {
+    try { const r = await API.get("/tracker/centres"); setCentres(r.data || []); }
+    catch { setCentres([]); }
+  };
   const [pwForm, setPwForm] = useState({ current_password: "", new_password: "", confirm_password: "" });
   const [pwMsg, setPwMsg] = useState(null);
   const [savingPw, setSavingPw] = useState(false);
@@ -92,6 +101,10 @@ export default function Settings() {
   };
 
   useEffect(() => { fetchData(); }, []);
+  // The centre list is only needed when that tab is opened, and only once.
+  useEffect(() => {
+    if (activeTab === "centres" && centres === null) loadCentres();
+  }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSaveLocation = async (e) => {
     e.preventDefault();
@@ -283,7 +296,7 @@ export default function Settings() {
 
       {/* Tabs */}
       <div className="flex gap-2 mb-6 border-b border-slate-200">
-        {[["locations", "Office Locations"], ["company", "Company / Bank"], ["attendance", "Attendance"], ["mobile", "Mobile App"], ["shifts", "Shifts"], ["leaves", "Leave Management"], ["holidays", "Holidays & Comp-Off"], ["users", "User Management"], ["security", "Security"]].map(([val, label]) => (
+        {[["locations", "Office Locations"], ["company", "Company / Bank"], ["attendance", "Attendance"], ["mobile", "Mobile App"], ["centres", "Centres"], ["shifts", "Shifts"], ["leaves", "Leave Management"], ["holidays", "Holidays & Comp-Off"], ["users", "User Management"], ["security", "Security"]].map(([val, label]) => (
           <button key={val} onClick={() => setActiveTab(val)} data-testid={`settings-tab-${val}`}
             className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 ${activeTab === val ? "border-[#E85B1E] text-[#E85B1E]" : "border-transparent text-slate-500 hover:text-slate-700"}`}>
             {label}
@@ -582,6 +595,91 @@ export default function Settings() {
             <p>Only the Android app is affected. Desktop and iPhone are never blocked by this setting.</p>
             <p>Apps before v1.4.0 don't report a version at all, so they count as older than any minimum you set.</p>
             <p>Changes reach staff the next time they open the app. There is nothing for them to reinstall — but there IS if they need the newer APK, so make sure they can get it before enforcing.</p>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "centres" && (
+        <div className="max-w-3xl">
+          <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4">
+            <div>
+              <h3 className="font-bold text-[#1E2A47] text-base mb-1" style={{ fontFamily: "'Outfit', sans-serif" }}>Centres</h3>
+              <p className="text-xs text-slate-500">Uploaded from the monthly GRT sheet and drawn on every route map.</p>
+            </div>
+            <p className="text-sm text-slate-600">
+              Upload the month's <strong>GRT Done</strong> export. Only three columns are
+              read — <code className="text-xs">BRANCHNAME</code>,{" "}
+              <code className="text-xs">CENTERNAME</code> and{" "}
+              <code className="text-xs">GRTLocation</code>. Client names, mobile numbers,
+              KYC numbers and every other column are ignored and never stored.
+            </p>
+            <p className="text-xs text-slate-500">
+              Centres are matched by name and updated in place, so uploading a month that
+              covers only some centres will not remove the others.
+            </p>
+            <div className="flex items-center gap-3 flex-wrap">
+              <label className={`px-4 py-2.5 rounded-lg text-sm font-semibold cursor-pointer ${centreUploading ? "bg-slate-200 text-slate-500" : "bg-[#E85B1E] text-white hover:bg-[#D04A15]"}`}>
+                {centreUploading ? "Reading the sheet…" : "Choose .xlsx file"}
+                <input type="file" accept=".xlsx" className="hidden" disabled={centreUploading}
+                  data-testid="centre-upload-input"
+                  onChange={async (e) => {
+                    const f = e.target.files && e.target.files[0];
+                    e.target.value = "";
+                    if (!f) return;
+                    setCentreUploading(true); setCentreError(""); setCentreResult(null);
+                    try {
+                      const fd = new FormData();
+                      fd.append("file", f);
+                      const res = await API.post("/tracker/centres/upload", fd,
+                        { headers: { "Content-Type": "multipart/form-data" } });
+                      setCentreResult(res.data);
+                      loadCentres();
+                    } catch (err) {
+                      setCentreError(err?.response?.data?.detail || "Upload failed. Check the file and try again.");
+                    } finally { setCentreUploading(false); }
+                  }} />
+              </label>
+              {centres != null && (
+                <span className="text-sm text-slate-600" data-testid="centre-count">
+                  <strong>{centres.length}</strong> centre{centres.length === 1 ? "" : "s"} on file
+                </span>
+              )}
+            </div>
+            {centreError && (
+              <p className="text-sm text-red-600" data-testid="centre-error">{centreError}</p>
+            )}
+            {centreResult && (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-2" data-testid="centre-result">
+                <p className="text-sm text-[#1E2A47]">
+                  <strong>{centreResult.added}</strong> added ·{" "}
+                  <strong>{centreResult.updated}</strong> updated ·{" "}
+                  <strong>{centreResult.total_centres}</strong> total
+                </p>
+                {centreResult.rows_without_a_usable_location > 0 && (
+                  <p className="text-xs text-slate-600">
+                    {centreResult.rows_without_a_usable_location} row
+                    {centreResult.rows_without_a_usable_location === 1 ? "" : "s"} had no usable
+                    GPS value and were skipped.
+                  </p>
+                )}
+                {(centreResult.centres_with_disagreeing_fixes || []).length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold text-amber-700 mb-1">
+                      These centres have GPS readings that disagree — the pin uses the most
+                      common one, but it is worth checking:
+                    </p>
+                    <ul className="text-xs text-slate-600 space-y-0.5 max-h-40 overflow-y-auto">
+                      {centreResult.centres_with_disagreeing_fixes.map((f) => (
+                        <li key={f.centre}>
+                          {f.centre} — readings {(f.spread_m / 1000).toFixed(1)} km apart
+                          ({f.agreed} of {f.fixes} agreed)
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}
