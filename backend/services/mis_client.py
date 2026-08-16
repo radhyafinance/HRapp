@@ -142,6 +142,25 @@ def today_ist() -> date:
     return datetime.now(IST).date()
 
 
+def _proxy_url() -> Optional[str]:
+    """The proxy to reach the MIS through, or None to let httpx decide.
+
+    `MIS_PROXY_URL` first so this is not welded to one platform's variable name —
+    if the fetcher ever moves off Emergent, or the proxy address changes, that is
+    a config edit rather than a code change. `INTEGRATION_PROXY_URL` is the
+    platform's own, used when nothing more specific is set.
+
+    Returning None is not "no proxy": it hands the decision back to httpx, which
+    reads HTTP(S)_PROXY itself. That is the right default for any environment
+    that does have direct egress.
+    """
+    for name in ("MIS_PROXY_URL", "INTEGRATION_PROXY_URL"):
+        v = (os.environ.get(name) or "").strip()
+        if v:
+            return v
+    return None
+
+
 def _cfg() -> tuple[str, str, str]:
     """(base_url, username, password) from the environment.
 
@@ -254,18 +273,22 @@ class MISClient:
                 base_url=base,
                 timeout=_TIMEOUT,
                 follow_redirects=True,
-                # BYPASS THE PLATFORM PROXY. httpx defaults to trust_env=True and
-                # picks up HTTP(S)_PROXY from the environment; on Emergent those
-                # point at the integrations proxy, which intercepts outbound HTTPS
-                # and never completes the connection to the MIS. Every poll failed
-                # with ConnectTimeout while `curl` to the same URL from the same
-                # container returned 200 in 0.35s -- the difference was entirely
-                # the proxy, not the network.
+                # THE PROXY IS THE ONLY WAY OUT, NOT AN OBSTACLE.
                 #
-                # This also disables .netrc and SSL_CERT_FILE/SSL_CERT_DIR lookups.
-                # Neither is used here: httpx verifies with its bundled certifi
-                # store, which validates radhyamfin.com's certificate fine.
-                trust_env=False,
+                # This pod has no direct egress: a raw TCP connect to
+                # radhyamfin.com:443 times out, even though DNS resolves fine.
+                # `curl` succeeds only because it goes through the platform's
+                # integration proxy. An earlier version of this file set
+                # trust_env=False to "bypass the proxy", which removed the one
+                # route that works and guaranteed the ConnectTimeout it was meant
+                # to fix.
+                #
+                # So: use the proxy explicitly when one is configured, and fall
+                # back to httpx's own environment handling otherwise. Setting
+                # `proxy` beats env vars, which matters because the platform's
+                # proxy URL is an https:// endpoint and env-var handling for those
+                # has been inconsistent across httpx versions.
+                proxy=_proxy_url(),
                 headers={
                     # A plain httpx UA on a legacy portal invites surprises; this
                     # is the same shape a staff browser sends.
@@ -274,6 +297,11 @@ class MISClient:
                     "Accept-Language": "en-IN,en;q=0.9",
                 },
             )
+            px = _proxy_url()
+            # Host only. The proxy URL is not a secret, but there is no reason to
+            # print a full URL that might one day carry credentials.
+            logger.info("MIS: outbound via %s",
+                        (px.split("://")[-1].split("/")[0] if px else "direct / env proxy"))
         return self._client
 
     async def login(self) -> None:
@@ -282,7 +310,10 @@ class MISClient:
         client = self._ensure_client(self._base or base)
 
         # -- 1/2: the login form -------------------------------------------------
-        r = await client.get(LOGIN_PATH)
+        try:
+            r = await client.get(LOGIN_PATH)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+            raise self._explain_connect_failure(e) from e
         if r.status_code != 200:
             raise MISError(f"login page returned HTTP {r.status_code}")
         payload = hidden_fields(r.text)
@@ -407,6 +438,22 @@ class MISClient:
                 f"expected an .xlsx but got {len(body)} bytes of {ctype}"
             )
         return body
+
+    @staticmethod
+    def _explain_connect_failure(e: Exception) -> MISError:
+        """Turn a bare ConnectTimeout into something actionable.
+
+        This pod has no direct egress, so a connect failure almost always means
+        the proxy setting is wrong or missing rather than the MIS being down.
+        Saying so here saves the next person the afternoon it cost this time.
+        """
+        px = _proxy_url()
+        where = f"via proxy {px.split('://')[-1].split('/')[0]}" if px else "directly (no proxy configured)"
+        return MISError(
+            f"could not connect to the MIS {where}: {type(e).__name__}. "
+            "This container has no direct outbound access — set MIS_PROXY_URL "
+            "(or INTEGRATION_PROXY_URL) to the platform proxy."
+        )
 
     async def fetch_report(self, day: Optional[date] = None) -> bytes:
         """The Demand & Collection workbook for one day, as bytes.
