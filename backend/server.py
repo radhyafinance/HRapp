@@ -91,6 +91,9 @@ from routes import id_cards
 app.include_router(id_cards.router, prefix="/api/id-cards", tags=["ID Cards"])
 app.include_router(id_cards.public_router, prefix="/api/public/verify", tags=["Public ID Verification"])
 
+from routes import closing
+app.include_router(closing.router, prefix="/api/closing", tags=["Daily Closing"])
+
 # Temporary diagnostic: face-check audit, HR Admin only, read-only. The preview
 # environment has its own database, so this endpoint is the only way to see the
 # real attendance history. Remove this and backend/face_audit.py when done.
@@ -329,6 +332,30 @@ async def startup():
         pass
     app.state.odometer_reminder_task = asyncio.create_task(_odometer_reminder_loop())
     app.state.tracking_watchdog_task = asyncio.create_task(_tracking_watchdog_loop())
+
+    # Daily cash closing: keep today's MIS collections current. Starts only when
+    # credentials are configured, so a deploy without them is a no-op rather than
+    # a task that logs a failure every fifteen minutes forever.
+    if os.environ.get("MIS_USERNAME") and os.environ.get("MIS_PASSWORD"):
+        try:
+            # branch_name is in the key because branch_code is NOT unique: a
+            # Branch cell without the "00n - " prefix yields an empty code, and
+            # every such branch would collide into one document.
+            await db.daily_collections.create_index(
+                [("date", 1), ("branch_code", 1), ("branch_name", 1)],
+                unique=True, name="closing_day_branch")
+            await db.closing_days.create_index(
+                [("date", 1), ("branch_code", 1)], unique=True, name="closing_day_state")
+            await db.deposit_slips.create_index([("id", 1)], unique=True, name="slip_id")
+            await db.deposit_slips.create_index([("date", 1), ("branch_code", 1)],
+                                                name="slip_day_branch")
+        except Exception:
+            pass
+        from routes.closing import collections_poll_loop
+        app.state.collections_task = asyncio.create_task(collections_poll_loop())
+        logger.info("Daily closing: MIS collections poller started")
+    else:
+        logger.info("Daily closing: MIS credentials not set, poller not started")
 
     # Auto-exit: mark employees whose LWD has already passed on startup
     try:
