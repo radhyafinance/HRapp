@@ -25,18 +25,26 @@ HOW THE SITE WORKS (all of this was measured against the live site, not guessed)
 Four things about this site cost real time to discover. They are the reason the
 code below looks more defensive than a form post deserves:
 
-* THE BRANCH CHECKBOXES ARE NOT IN THE SERVER'S HTML. The filter page ships only
-  the funder checkbox; the branch list is injected client-side after the funder
-  is chosen. A fetcher that parses the page and posts what it found submits ZERO
-  branches and gets a valid-looking empty report. We post the indices directly
-  instead -- the server accepts them without the intermediate round trip.
+* THE BRANCH LIST DOES NOT EXIST UNTIL THE FUNDER IS CHOSEN. A cold GET of the
+  filter page contains only the funder checkbox -- zero branch checkboxes. The
+  branch control is populated server-side in response to the funder postback, so
+  the download takes THREE requests, not two:
 
-* BECAUSE WE POST INDICES BLIND, A NEW BRANCH IS INVISIBLE. Index 5 would simply
-  never be requested and the report would quietly come back short. So the branch
-  count is read from ChooseBranch (which IS server-rendered) rather than
-  hardcoded, and the parser separately asserts the branches it expected are
-  present. A missing branch has to be loud; a silently short day is worse than
-  no day at all.
+      GET  the filter page            -> 21,435 bytes, 0 branches
+      POST with the funder selected   -> 22,842 bytes, 5 branches appear
+      POST with __EVENTTARGET=proceed -> 52,641 bytes of .xlsx
+
+  Skipping the middle step fails silently and expensively: posting branch indices
+  against the cold page's __VIEWSTATE selects nothing, because ASP.NET rebuilds
+  an empty control, and the site answers the download postback by re-rendering
+  the filter page. Production hit exactly this -- 22,888 bytes of text/html where
+  a spreadsheet was expected.
+
+* WE POST THE BRANCH NAMES THE SERVER JUST RENDERED, never a guessed index range.
+  An earlier version posted `ddlBranch$0..N` blind, which meant a fifth branch
+  opening would silently never be requested and the report would come back short.
+  Doing the cascade properly removes that whole class of error, and the parser
+  still asserts separately that the branches we bank for are present.
 
 * A SUCCESSFUL DOWNLOAD IS NOT AN HTML PAGE. When the session has expired the
   server cheerfully returns 200 with the login page. Checking the status code
@@ -327,28 +335,63 @@ class MISClient:
         if looks_like_login_page(r.content):
             raise MISAuthError("session expired")
 
-        payload = hidden_fields(r.text)
+        # ---- step 2: select the funder, which POPULATES THE BRANCH LIST -------
+        #
+        # This step is not optional and its absence is silent. A cold GET of the
+        # report page contains ZERO branch checkboxes -- only the funder. The
+        # branch list is built server-side in response to the funder being
+        # chosen, and until that happens the branch control has no items at all.
+        #
+        # Posting branch indices against the cold page's __VIEWSTATE therefore
+        # selects nothing: ASP.NET rebuilds an empty control, no branches are
+        # requested, and the site answers the "download" postback by simply
+        # re-rendering the filter page. Production saw exactly that -- 22,888
+        # bytes of text/html where an .xlsx was expected.
+        #
+        # Doing the cascade properly also removes the guesswork this module used
+        # to carry: we now post the branch checkbox names the server ITSELF just
+        # rendered, so a fifth branch opening is picked up automatically instead
+        # of being silently omitted by a hardcoded index range.
+        funders = BeautifulSoup(r.text, "html.parser").find_all(
+            "input", attrs={"name": lambda n: bool(n) and n.startswith(FLD_FUNDER)})
+        if not funders:
+            raise MISError("no funder options on the report page")
+
+        cascade = hidden_fields(r.text)
+        cascade["__EVENTTARGET"] = FLD_FUNDER.rstrip("$")
+        cascade["__EVENTARGUMENT"] = ""
+        cascade[FLD_DATE_FROM] = mis_date(day)
+        cascade[FLD_DATE_TO] = mis_date(day)
+        for el in funders:
+            cascade[el["name"]] = el.get("value", "on")
+
+        r2 = await client.post(REPORT_PATH, data=cascade)
+        if r2.status_code != 200:
+            raise MISError(f"funder selection returned HTTP {r2.status_code}")
+        if looks_like_login_page(r2.content):
+            raise MISAuthError("session expired while selecting the funder")
+
+        branch_inputs = BeautifulSoup(r2.text, "html.parser").find_all(
+            "input", attrs={"name": lambda n: bool(n) and n.startswith(FLD_BRANCH)})
+        if not branch_inputs:
+            # Refuse rather than download an empty report. A report with no
+            # branches parses fine and reads as "nobody collected anything",
+            # which is the most dangerous shape a wrong answer can take here.
+            raise MISError(
+                "the branch list did not appear after selecting the funder; "
+                "refusing to request a report with no branches")
+
+        # ---- step 3: the actual download ------------------------------------
+        payload = hidden_fields(r2.text)
         payload["__EVENTTARGET"] = BTN_PROCEED
         payload["__EVENTARGUMENT"] = ""
         payload[FLD_DATE_FROM] = mis_date(day)
         payload[FLD_DATE_TO] = mis_date(day)
-
-        # Funder: parsed from the page, because unlike the branches it IS
-        # rendered server-side, and a second funder appearing must not be
-        # silently excluded from the day's cash.
-        soup = BeautifulSoup(r.text, "html.parser")
-        funders = soup.find_all("input", attrs={"name": lambda n: bool(n) and n.startswith(FLD_FUNDER)})
-        if not funders:
-            raise MISError("no funder options on the report page")
         for el in funders:
             payload[el["name"]] = el.get("value", "on")
-
-        # Branches: posted blind by index. See the module docstring.
-        count = getattr(self, "_branch_count", 0)
-        if count <= 0:
-            raise MISError("branch count unknown; cannot request all branches")
-        for i in range(count):
-            payload[f"{FLD_BRANCH}{i}"] = "on"
+        for el in branch_inputs:
+            payload[el["name"]] = "on"
+        logger.info("MIS: requesting %s for %d branch(es)", mis_date(day), len(branch_inputs))
 
         r = await client.post(REPORT_PATH, data=payload)
         if r.status_code != 200:
