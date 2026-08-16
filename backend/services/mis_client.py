@@ -246,6 +246,18 @@ class MISClient:
                 base_url=base,
                 timeout=_TIMEOUT,
                 follow_redirects=True,
+                # BYPASS THE PLATFORM PROXY. httpx defaults to trust_env=True and
+                # picks up HTTP(S)_PROXY from the environment; on Emergent those
+                # point at the integrations proxy, which intercepts outbound HTTPS
+                # and never completes the connection to the MIS. Every poll failed
+                # with ConnectTimeout while `curl` to the same URL from the same
+                # container returned 200 in 0.35s -- the difference was entirely
+                # the proxy, not the network.
+                #
+                # This also disables .netrc and SSL_CERT_FILE/SSL_CERT_DIR lookups.
+                # Neither is used here: httpx verifies with its bundled certifi
+                # store, which validates radhyamfin.com's certificate fine.
+                trust_env=False,
                 headers={
                     # A plain httpx UA on a legacy portal invites surprises; this
                     # is the same shape a staff browser sends.

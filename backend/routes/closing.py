@@ -98,9 +98,15 @@ EXPECTED_BRANCHES = {"CHANDPUR", "NAJIBABAD", "CHANDAUSI", "BUDAUN"}
 
 # Evening window (IST) — when collections are actually landing and someone is
 # waiting on the number.
+#
+# 10 minutes, not 3. The tail is a trickle, not a firehose: the 21:00 hour held
+# 36 transactions across the whole of July, roughly one a day. Polling every 3
+# minutes bought a freshness nobody could perceive and cost 196 pulls a day
+# against a legacy box; at 10 it is 98, and the figure is still never more than
+# ten minutes behind during the only window that matters.
 EVENING_FROM_H = 17
 EVENING_TO_H = 23
-POLL_EVENING_S = 3 * 60
+POLL_EVENING_S = 10 * 60
 POLL_DAY_S = 15 * 60
 # Before this hour there is nothing to collect; the first punch-ins are ~06:00.
 QUIET_BEFORE_H = 6
@@ -397,20 +403,54 @@ async def closing_status(current_user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Not permitted")
     st = await db[STATE].find_one({"_id": STATE_KEY}) or {}
     last = st.get("last_run_at")
-    stale_min = None
-    if last:
+    success = st.get("last_success_at")
+
+    def _mins_since(ts):
+        if not ts:
+            return None
         try:
-            stale_min = int((datetime.now(IST) - datetime.fromisoformat(last)).total_seconds() / 60)
+            return int((datetime.now(IST) - datetime.fromisoformat(ts)).total_seconds() / 60)
         except Exception:
-            pass
+            return None
+
+    stale_min = _mins_since(last)
+    since_success = _mins_since(success)
+
+    # HEALTH MEANS "WE HAVE TODAY'S NUMBERS", NOT "THE LOOP IS SPINNING".
+    #
+    # This used to be `last_run_at is recent`, which reported healthy: true on a
+    # poller that had never once succeeded and was timing out every cycle -- a
+    # green strip over figures that did not exist. Running is not the same as
+    # working, and the whole point of this endpoint is that a dead fetcher must
+    # not look like a quiet one.
+    last_ok = bool(st.get("last_run_ok"))
+    healthy = (last_ok
+               and stale_min is not None and stale_min < 45
+               and since_success is not None and since_success < 120)
+
+    reason = None
+    if not last:
+        reason = "the MIS poller has never run — is the backend restarted and are the credentials set?"
+    elif not success:
+        reason = ("the poller is running but has never successfully fetched: "
+                  + (st.get("last_run_detail") or "no detail"))
+    elif not last_ok:
+        reason = "the last attempt failed: " + (st.get("last_run_detail") or "no detail")
+    elif stale_min is not None and stale_min >= 45:
+        reason = f"no attempt for {stale_min} minutes — the poller may have died"
+    elif since_success is not None and since_success >= 120:
+        reason = f"no successful fetch for {since_success} minutes"
+
     return {
         "last_run_at": last,
         "last_run_ok": st.get("last_run_ok"),
         "last_run_detail": st.get("last_run_detail"),
-        "last_success_at": st.get("last_success_at"),
+        "last_success_at": success,
         "last_change_at": st.get("last_change_at"),
         "minutes_since_last_run": stale_min,
-        "healthy": bool(last and stale_min is not None and stale_min < 45),
+        "minutes_since_last_success": since_success,
+        "healthy": healthy,
+        "unhealthy_reason": reason,
     }
 
 
