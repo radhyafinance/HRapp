@@ -6,7 +6,7 @@ import API from "../utils/api";
 import {
   LayoutDashboard, Users, UserPlus, CalendarCheck, FileText,
   CreditCard, TrendingUp, LogOut, Settings, Menu, X,
-  DoorOpen, Award, MapPin, Calendar, Database
+  DoorOpen, Award, MapPin, Calendar, Database, Banknote
 } from "lucide-react";
 
 const CIC_ALLOWED_IDS = ["RMF0007", "RMF0003"];
@@ -20,6 +20,7 @@ const NAV_ITEMS = [
   // `grant` = also shown to anyone holding the read-only tracking permission,
   // which is a per-person flag rather than a role (see /tracker/my-access).
   { path: "/field-tracking", label: "Field Tracking", icon: MapPin, roles: ["hr_admin", "management", "managers"], grant: "tracking" },
+  { path: "/closing", label: "Daily Closing", icon: Banknote, roles: ["hr_admin", "management", "managers"], grant: "closing" },
   { path: "/leaves", label: "Leaves", icon: FileText, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
   { path: "/payroll", label: "Payroll", icon: CreditCard, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
   { path: "/performance", label: "Performance", icon: TrendingUp, roles: ["hr_admin", "management", "managers", "employee", "field_agent"] },
@@ -72,12 +73,17 @@ export default function Layout() {
   // Per-person grants that open a nav item the role alone would not. Asked for
   // on every mount rather than read from the cached auth user, so a permission
   // granted today does not wait for the next login to appear.
-  const [grants, setGrants] = useState({ tracking: false });
+  const [grants, setGrants] = useState({ tracking: false, closing: false });
   useEffect(() => {
     if (!user) return;
     if (["hr_admin", "management", "managers"].includes(user.role)) return;  // role already covers it
     API.get("/tracker/my-access")
       .then(r => setGrants(g => ({ ...g, tracking: !!r.data?.can_view })))
+      .catch(() => {});
+    // The Accounts Manager who signs off cash closings is role=employee, so the
+    // nav item has to come from a grant or they never see the screen at all.
+    API.get("/closing/my-access")
+      .then(r => setGrants(g => ({ ...g, closing: !!r.data?.can_approve })))
       .catch(() => {});
   }, [user?.role, user?.employee_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -124,6 +130,7 @@ export default function Layout() {
     }
     // A per-person grant can open an item the role alone would not.
     if (item.grant === "tracking" && grants.tracking) return true;
+    if (item.grant === "closing" && grants.closing) return true;
     return item.roles.includes(user?.role);
   });
 
