@@ -176,6 +176,14 @@ def _num(v, bad: list = None) -> float:
         return 0.0
 
 
+def _norm_time(ts: str) -> str:
+    """'9:27:29' -> '09:27:29'. Left alone if it is not a clock string."""
+    parts = ts.split(":")
+    if len(parts) in (2, 3) and all(p.strip().isdigit() for p in parts):
+        return ":".join(p.strip().rjust(2, "0") for p in parts)
+    return ts
+
+
 def _as_date(v) -> Optional[date]:
     if isinstance(v, datetime):
         return v.date()
@@ -254,6 +262,7 @@ def parse_demand_collection(data: bytes, expect_day: Optional[date] = None) -> D
         warnings: list = []
         unknown_modes: set = set()
         undated = 0
+        undated_value = 0.0
         bad_numbers: list = []
         # Branch codes seen against more than one spelling of the name. Two
         # spellings of one branch ("002 - CHANDPUR" and "002 - Chandpur") become
@@ -286,7 +295,12 @@ def parse_demand_collection(data: bytes, expect_day: Optional[date] = None) -> D
 
             d = _as_date(row[i_date])
             if d is None:
+                # Count the MONEY, not just the rows. "3 rows skipped" reads as
+                # housekeeping; "Rs 9,000 skipped" is the deposit target being
+                # wrong, and it is the same sentence either way to whoever has to
+                # find the difference at 9pm.
                 undated += 1
+                undated_value += _num(row[i_collect])
                 continue
             days.add(d)
 
@@ -322,7 +336,11 @@ def parse_demand_collection(data: bytes, expect_day: Optional[date] = None) -> D
 
             t = row[i_time]
             if t is not None:
-                ts = str(t).strip()
+                # Zero-pad before comparing. These are clock strings compared as
+                # strings, which is fine only while every one is HH:MM:SS -- the
+                # day the MIS emits "9:27:29", it sorts ABOVE "21:14:03" and the
+                # "last posted at" stamp jumps backwards to the morning.
+                ts = _norm_time(str(t).strip())
                 if ts and (bd.last_posted_at is None or ts > bd.last_posted_at):
                     bd.last_posted_at = ts
     finally:
@@ -332,7 +350,10 @@ def parse_demand_collection(data: bytes, expect_day: Optional[date] = None) -> D
         warnings.append("the report contained no collection rows at all")
 
     if undated:
-        warnings.append(f"{undated} row(s) had no usable transaction date and were skipped")
+        warnings.append(
+            f"{undated} row(s) had no usable transaction date and were skipped"
+            + (f" — Rs {undated_value:,.2f} of collection is NOT in these totals"
+               if undated_value else ""))
 
     if bad_numbers:
         shown = [x for x in bad_numbers if x][:5]

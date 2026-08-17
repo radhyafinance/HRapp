@@ -43,13 +43,15 @@ DESIGN NOTES
 
 import asyncio
 import hashlib
+import json
+import os
 import math
 import logging
 import uuid
 from datetime import datetime, timedelta, date as date_cls
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
 
 from auth_utils import get_current_user
@@ -116,6 +118,152 @@ def _roles_ok(user: dict, allowed) -> bool:
     return user.get("role") in allowed
 
 
+def _content_digest(report) -> str:
+    """Hash what the report SAYS, not the bytes it arrived in.
+
+    Hashing the raw .xlsx looked obvious and was wrong. Three pulls of the same
+    unchanged day, minutes apart, came back at an identical 53,061 bytes with
+    three DIFFERENT SHA-256s: an .xlsx is a zip, and every entry carries the
+    moment it was generated. The bytes change on every pull even when not one
+    rupee has moved.
+
+    So a raw-byte digest never matches, `changed` is True on all 98 pulls a day,
+    and the one thing the digest exists to tell us -- has anything actually
+    happened since the last look -- is exactly the thing it cannot say.
+    """
+    payload = sorted((b.as_dict() for b in report.branches),
+                     key=lambda d: (d["branch_code"], d["branch_name"]))
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()
+
+
+_INGEST_LOCKS = {}
+
+
+def _ingest_lock(day_str: str):
+    """One lock per day, so two pulls of the same day cannot interleave."""
+    lock = _INGEST_LOCKS.get(day_str)
+    if lock is None:
+        lock = _INGEST_LOCKS[day_str] = asyncio.Lock()
+        # Unbounded growth would be a slow leak on a process that runs for
+        # months. Only today and a few neighbours are ever contended.
+        if len(_INGEST_LOCKS) > 32:
+            for k in sorted(_INGEST_LOCKS)[:-8]:
+                if not _INGEST_LOCKS[k].locked():
+                    _INGEST_LOCKS.pop(k, None)
+    return lock
+
+
+async def _flag_post_approval_drift(day_str: str, report) -> list:
+    """Did this pull change a branch-day that Accounts has already approved?
+
+    It is not an error and must not be refused: a genuine 21:14 posting against
+    a day approved the next morning is real money and belongs in the record. But
+    it means someone signed off a figure that has since moved, and the ONE thing
+    that must not happen is for that to pass unremarked.
+
+    So: the approved ledger stays as approved (see /day), the difference is
+    recorded on the day document, and the approvers are told. Whether the
+    approval should have locked the day at all is a question for the business,
+    not something to decide silently here.
+    """
+    out = []
+    for b in report.branches:
+        doc = await db[DAYS].find_one(
+            {"date": day_str, "branch_code": b.branch_code},
+            {"_id": 0, "state": 1, "approved_snapshot": 1}) or {}
+        if doc.get("state") != ST_APPROVED:
+            continue
+        was = float(((doc.get("approved_snapshot") or {}).get("ledger") or {})
+                    .get("expected_deposit") or 0)
+        now = float(b.expected_deposit or 0)
+        if abs(now - was) < 0.01:
+            continue
+        msg = (f"{b.branch_name}: collections changed by Rs {now - was:,.2f} AFTER "
+               f"Accounts approved {day_str} (approved against Rs {was:,.2f}, "
+               f"the MIS now says Rs {now:,.2f})")
+        out.append(msg)
+        await db[DAYS].update_one(
+            {"date": day_str, "branch_code": b.branch_code},
+            {"$set": {"collections_changed_after_approval": {
+                "approved_expected_deposit": was,
+                "current_expected_deposit": now,
+                "difference": round(now - was, 2),
+                "noticed_at": datetime.now(IST).isoformat(),
+            }}})
+        logger.error("closing: %s", msg)
+    if out:
+        await _alert_approvers(
+            "A day you approved has changed",
+            "; ".join(out) + ". The approved figures are unchanged on screen — "
+            "reopen the day if the difference needs to be banked.")
+    return out
+
+
+async def _alert_approvers(title: str, msg: str):
+    try:
+        from services.fcm import send_to_employee
+        emps = await db.employees.find(
+            {"$or": [{"role": {"$in": ["hr_admin", "management"]}},
+                     {"closing_approver": True}]},
+            {"_id": 0, "employee_id": 1}).to_list(20)
+        if not emps:
+            logger.error("closing: '%s' and NOBODY could be alerted", title)
+            return
+        for e in emps:
+            await send_to_employee(e.get("employee_id"), title, msg)
+    except Exception:
+        logger.warning("closing: could not send approver alert", exc_info=True)
+
+
+async def _cross_pull_conflicts(report, day_str: str) -> list:
+    """Would this pull collide with what an EARLIER pull of the same day stored?
+
+    `storage_conflicts` only ever sees one report, so two pulls that are each
+    internally clean can still collide. Both directions matter and only one of
+    them used to be checked:
+
+      same CODE, new NAME  -- "002 - CHANDPUR" this morning, "002 - Chandpur"
+                              this evening. One code, two names.
+      same NAME, new CODE  -- the `Branch` cell arrives without its "002 - "
+                              prefix, so the code parses as "". The code check
+                              cannot see this: "002" and "" are different keys,
+                              so nothing collides and the upsert writes a SECOND
+                              row for Chandpur beside the first.
+
+    The second is the dangerous one, because nothing refuses it and nothing warns.
+    /closing/day sums both rows: Chandpur's cash reads 309,404 against 154,702 of
+    real money, the BM is told to bank twice what they hold, and reports a
+    154,702 shortfall that does not exist. Both pulls answer {"ok": true}.
+    """
+    out = []
+    try:
+        existing = await db[COLL].find(
+            {"date": day_str}, {"_id": 0, "branch_code": 1, "branch_name": 1}).to_list(50)
+    except Exception:
+        # Not being able to check is not permission to overwrite.
+        logger.warning("closing: could not check stored branch names", exc_info=True)
+        return ["could not verify today's stored branches — not overwriting"]
+    by_code, by_name = {}, {}
+    for e in existing:
+        by_code.setdefault(e.get("branch_code"), set()).add(e.get("branch_name"))
+        by_name.setdefault((e.get("branch_name") or "").upper().strip(),
+                           set()).add(e.get("branch_code"))
+    for b in report.branches:
+        names = by_code.get(b.branch_code, set()) | {b.branch_name}
+        if len(names) > 1:
+            out.append(
+                f"branch code {b.branch_code!r} is already stored today under a "
+                f"different name ({', '.join(sorted(str(n) for n in names))}) — not overwriting")
+        codes = by_name.get((b.branch_name or "").upper().strip(), set()) | {b.branch_code}
+        if len(codes) > 1:
+            out.append(
+                f"branch {b.branch_name!r} is already stored today under a different "
+                f"code ({', '.join(sorted(str(c) for c in codes))}) — storing this "
+                f"would count the branch twice")
+    return out
+
+
 async def _record_run(ok: bool, detail: str, day: str, changed: bool = False,
                       warnings: list = None):
     """Stamp every attempt, so a dead loop is visible rather than merely quiet.
@@ -126,20 +274,56 @@ async def _record_run(ok: bool, detail: str, day: str, changed: bool = False,
     said "Expected on a Sunday or a holiday" under a green health strip. The one
     case the warnings exist for was the one case they vanished in.
     """
+    await _stamp_run(STATE_KEY, day, ok, detail, changed=changed, warnings=warnings)
+
+
+async def _stamp_run(key: str, day: str, ok: bool, detail: str, kind: str = None,
+                     changed: bool = False, warnings: list = None,
+                     source: str = None):
+    """The single place a fetch attempt is written down.
+
+    There used to be two of these -- one for the in-process poller and one for
+    the Worker -- writing the same fields to the same document with different
+    rules, and the differences were all bugs:
+
+    * only one of them stamped `failing_since`, so a failure recorded by the
+      other left it unset and `_alert_fetch_failure` returned early forever. The
+      30-minute sustained alert could not fire at all.
+    * `last_success_at` was stamped whichever DAY succeeded, so a backfill of
+      last Friday reset today's failure clock and turned the health strip green
+      while today's figures sat frozen. `last_success_date` now travels with it
+      and /status compares it to the day being asked about.
+    """
     now = datetime.now(IST)
     upd = {
         "last_run_at": now.isoformat(),
         "last_run_ok": ok,
         "last_run_detail": detail,
         "last_run_date": day,
-        f"warnings_{day}": list(warnings or []),
     }
+    if kind is not None:
+        upd["last_run_kind"] = kind
+    if source is not None:
+        upd["last_run_source"] = source
+    # Only write warnings when this run actually produced a verdict on the day.
+    # An unconditional $set meant one network blip erased "the report contained
+    # no collection rows at all" -- leaving a branch showing Rs 0 with nothing
+    # to say why, which is the single state this field exists to prevent.
+    if warnings is not None:
+        upd[f"warnings_{day}"] = list(warnings)
+    prev = await db[STATE].find_one({"_id": key}) or {}
     if ok:
         upd["last_success_at"] = now.isoformat()
+        upd["last_success_date"] = day
+        # Clearing the failure clock only counts for the day that succeeded.
+        if prev.get("last_run_date") == day or prev.get("failing_since") is None:
+            upd["failing_since"] = None
+    elif prev.get("last_run_ok") is not False:
+        upd["failing_since"] = now.isoformat()
     if changed:
         upd["last_change_at"] = now.isoformat()
     try:
-        await db[STATE].update_one({"_id": STATE_KEY}, {"$set": upd}, upsert=True)
+        await db[STATE].update_one({"_id": key}, {"$set": upd}, upsert=True)
     except Exception:
         logger.warning("closing: could not record run state", exc_info=True)
 
@@ -167,12 +351,12 @@ async def refresh_day(day: date_cls = None, client: MISClient = None) -> dict:
         if own_client:
             await client.aclose()
 
-    digest = hashlib.sha256(raw).hexdigest()
     try:
         report = parse_demand_collection(raw, expect_day=day)
     except MISParseError as e:
         await _record_run(False, f"parse failed: {e}", day_str)
         raise
+    digest = _content_digest(report)
 
     warnings = list(report.warnings) + check_expected_branches(report, EXPECTED_BRANCHES)
 
@@ -185,20 +369,7 @@ async def refresh_day(day: date_cls = None, client: MISClient = None) -> dict:
     # and an evening pull with "002 - Chandpur" leaves two rows sharing a code,
     # and the whole deposit half keys on branch_code alone -- one branch's slips
     # then show against the other and one BM is locked out entirely.
-    try:
-        existing = await db[COLL].find(
-            {"date": day_str}, {"_id": 0, "branch_code": 1, "branch_name": 1}).to_list(50)
-        by_code = {}
-        for e in existing:
-            by_code.setdefault(e.get("branch_code"), set()).add(e.get("branch_name"))
-        for b in report.branches:
-            names = by_code.get(b.branch_code, set()) | {b.branch_name}
-            if len(names) > 1:
-                conflicts.append(
-                    f"branch code {b.branch_code!r} is already stored today under a "
-                    f"different name ({', '.join(sorted(names))}) — not overwriting")
-    except Exception:
-        logger.warning("closing: could not check stored branch names", exc_info=True)
+    conflicts += await _cross_pull_conflicts(report, day_str)
     if conflicts:
         detail = "not stored: " + "; ".join(conflicts)
         await _record_run(False, detail, day_str, warnings=warnings + conflicts)
@@ -355,6 +526,17 @@ async def closing_day(
                               if s.get("status") == "confirmed"), 2)
         opening = float(d.get("opening_hold") if d.get("opening_hold") is not None
                         else await _opening_hold(day_str, code))
+        # An APPROVED day shows the ledger that was APPROVED, not a fresh one.
+        #
+        # Recomputing live meant a collection posted after approval silently
+        # reopened a balanced day: the screen showed a shortfall, the permanent
+        # `approved_snapshot` still said it balanced, and nothing could reconcile
+        # them because approved days refuse edits. A branch was left showing a
+        # hole it had no way to close. The signed figure is the one that shows;
+        # the drift is surfaced separately, as its own fact.
+        snap = d.get("approved_snapshot") or {}
+        live = _ledger(float(r.get("expected_deposit") or 0), opening,
+                       deposited, d.get("cash_counted"))
         r["closing"] = {
             "state": d.get("state") or ST_AWAITING,
             "cash_counted": d.get("cash_counted"),
@@ -363,8 +545,9 @@ async def closing_day(
             "approved_at": d.get("approved_at"),
             "approved_by": d.get("approved_by"),
             "slips": slips,
-            "ledger": _ledger(float(r.get("expected_deposit") or 0), opening,
-                              deposited, d.get("cash_counted")),
+            "ledger": (snap.get("ledger") if d.get("state") == ST_APPROVED and snap.get("ledger")
+                       else live),
+            "collections_changed_after_approval": d.get("collections_changed_after_approval"),
         }
 
     return {"date": day_str, "branches": rows, "totals": totals, "warnings": warnings,
@@ -423,13 +606,24 @@ async def closing_status(current_user: dict = Depends(get_current_user)):
     # green strip over figures that did not exist. Running is not the same as
     # working, and the whole point of this endpoint is that a dead fetcher must
     # not look like a quiet one.
+    # ...and "today's numbers", not "some day's numbers". A successful BACKFILL
+    # of last Friday used to stamp last_success_at, clear the failure clock and
+    # turn this green while today's figures sat frozen and nobody was told.
+    today = today_ist().isoformat()
+    success_day = st.get("last_success_date")
+    success_is_today = success_day is None or success_day == today
+
     last_ok = bool(st.get("last_run_ok"))
     healthy = (last_ok
                and stale_min is not None and stale_min < 45
-               and since_success is not None and since_success < 120)
+               and since_success is not None and since_success < 120
+               and success_is_today)
 
     reason = None
-    if not last:
+    if last_ok and not success_is_today:
+        reason = (f"the last successful fetch was for {success_day}, not today — "
+                  "today's figures have not arrived")
+    elif not last:
         reason = "the MIS poller has never run — is the backend restarted and are the credentials set?"
     elif not success:
         reason = ("the poller is running but has never successfully fetched: "
@@ -489,6 +683,7 @@ class DayDecision(BaseModel):
     date: str
     branch_code: str
     reason: Optional[str] = None
+    reopen: bool = False           # only meaningful on /reject of an approved day
 
 
 async def _is_closing_approver(user: dict) -> bool:
@@ -533,9 +728,23 @@ async def _may_touch_branch(user: dict, branch_code: str, day: str):
         # So we fall back to the branch on the person's own employee record and
         # carry expected_deposit = 0, which the ledger surfaces as an unexplained
         # difference rather than silently balancing.
-        if current_user.get("role") == "managers":
-            label, key = await _my_branch(current_user)
+        if user.get("role") == "managers":
+            label, key = await _my_branch(user)
             if key:
+                # Fails closed here too, and it did not before. With no row for
+                # today there is nothing to check `branch_code` against, so the
+                # supplied code was taken on trust -- a BM could post their own
+                # branch name against another branch's code and have the slips
+                # filed under it. That is the same code/name split the storage
+                # guards refuse a report for. Check it against history instead:
+                # the branch has almost always been seen on some earlier day.
+                seen = await db[COLL].find(
+                    {}, {"_id": 0, "branch_code": 1, "branch_name": 1}
+                ).sort("date", -1).to_list(200)
+                mine = {r.get("branch_code") for r in seen
+                        if (r.get("branch_name") or "").upper().strip() == key}
+                if mine and branch_code not in mine:
+                    raise HTTPException(status_code=403, detail="That is not your branch")
                 return {"branch_code": branch_code, "branch_name": key,
                         "expected_deposit": 0.0, "collections_missing": True}
         raise HTTPException(
@@ -881,21 +1090,37 @@ async def reject_day(body: DayDecision, current_user: dict = Depends(get_current
     # Returning is for a day that is WITH Accounts. Without this check an already
     # approved day could be silently reopened, and a day that was never submitted
     # could be "rejected" -- both succeeded and neither means anything.
-    if doc.get("state") != ST_DEPOSITED:
+    # An approved day may be REOPENED, but only deliberately.
+    #
+    # It used to be flatly refused, which was right while the figures could not
+    # move. They can: a collection posted after approval leaves a real difference
+    # that has to be banked, and with no way back the branch was stuck showing a
+    # hole it could not close. So an approver may reopen, the approval survives
+    # in `approval_history`, and reopening is itself recorded.
+    if doc.get("state") == ST_APPROVED:
+        if not (body.reopen or doc.get("collections_changed_after_approval")):
+            raise HTTPException(
+                status_code=409,
+                detail=("That day is approved. Reopening it discards the approval — "
+                        "send reopen=true if that is what you mean."))
+    elif doc.get("state") != ST_DEPOSITED:
         raise HTTPException(
             status_code=409,
-            detail=("That day is already approved — reopening a closed day is not "
-                    "supported." if doc.get("state") == ST_APPROVED
-                    else "That day has not been submitted, so there is nothing to return."))
+            detail="That day has not been submitted, so there is nothing to return.")
 
+    now_iso = datetime.now(IST).isoformat()
+    upd = {
+        "state": ST_AWAITING,
+        "reject_reason": body.reason.strip()[:500],
+        "rejected_by": current_user.get("employee_id"),
+        "rejected_at": now_iso,
+    }
+    if doc.get("state") == ST_APPROVED:
+        upd["reopened_from_approved_at"] = now_iso
+        upd["approved_snapshot"] = None
+        upd["collections_changed_after_approval"] = None
     await db[DAYS].update_one(
-        {"date": body.date, "branch_code": body.branch_code},
-        {"$set": {
-            "state": ST_AWAITING,
-            "reject_reason": body.reason.strip()[:500],
-            "rejected_by": current_user.get("employee_id"),
-            "rejected_at": datetime.now(IST).isoformat(),
-        }})
+        {"date": body.date, "branch_code": body.branch_code}, {"$set": upd})
 
     # Tell the person who can fix it. Best effort: a failed push must not undo a
     # rejection that has already been recorded.
@@ -950,3 +1175,268 @@ async def list_approvers(current_user: dict = Depends(get_current_user)):
          "designation": 1, "branch": 1}).to_list(50)
     return {"granted": granted,
             "note": "hr_admin and management can always approve; these are extra grants"}
+
+
+# ══════════════════════════════════════════════════════════════════
+#  Ingest — the MIS fetcher lives OUTSIDE this app
+# ══════════════════════════════════════════════════════════════════
+#
+# The in-process poller cannot work here. This pod has no direct egress (raw TCP
+# to radhyamfin.com:443 times out) and its only outbound route is a proxy that
+# forwards to whitelisted LLM destinations, answering anything else with 405. So
+# a Cloudflare Worker on the dashboard fetches the workbook and POSTs it here.
+#
+# WHY THE WORKER REPORTS FAILURES TOO, NOT JUST FILES
+# ---------------------------------------------------
+# If it only posted on success, this app could observe absence and nothing else —
+# and "no data arrived" is indistinguishable from "there were genuinely no
+# collections today". That ambiguity already cost a full day of debugging when
+# the poller was in-process. Every run reports, so "unchanged", "failed" and
+# "never ran" stay three different things.
+#
+# The alerting differs by kind because the urgency does. A wrong password is
+# never transient and needs a human immediately; a connection blip at 17:03 does
+# not deserve a push notification.
+#
+# ON THE FILE ITSELF: it carries member names, phone numbers, husbands' names,
+# member IDs and loan numbers -- 35 columns of which this app reads 7. Sending
+# the whole workbook was a deliberate decision, so this endpoint holds up the
+# other end of it: the bytes are parsed in memory and dropped, never written
+# anywhere, and no request body is logged at any level.
+
+INGEST_STATE_KEY = "mis_fetcher"      # shares the state doc with /status
+MAX_INGEST_BYTES = 25 * 1024 * 1024
+
+# Kinds the Worker may report. Anything else is treated as "other".
+#
+# "bug" earns immediate alerting for the same reason "auth" does: it will never
+# fix itself. The fetcher's first live run died on a TypeError in its own code
+# and was reported as "network" -- which waits 30 minutes before telling anyone.
+# A broken deploy at 17:00 would have been indistinguishable from a flaky line
+# on the evening the figures mattered most.
+_ALERT_NOW = {"auth", "blocked", "bug"}   # a human must act; never transient
+_ALERT_IF_SUSTAINED_MIN = 30              # everything else
+
+
+class IngestReport(BaseModel):
+    status: str                        # "ok" | "error"
+    date: Optional[str] = None         # YYYY-MM-DD; defaults to today IST
+    file_b64: Optional[str] = None     # the .xlsx, when status == ok
+    error: Optional[str] = None
+    kind: Optional[str] = None         # auth|blocked|bug|network|shape|other
+    source: Optional[str] = None       # e.g. "cloudflare-worker"
+
+
+def _ingest_token_ok(supplied: Optional[str]) -> bool:
+    """Constant-time compare against CLOSING_INGEST_TOKEN.
+
+    `secrets.compare_digest` rather than `==`: a plain comparison returns as soon
+    as it finds a differing byte, which leaks the length of the shared prefix to
+    anyone willing to time it. Cheap to get right, embarrassing to get wrong on
+    the endpoint that accepts a financial feed.
+    """
+    import secrets as _secrets
+    expected = os.environ.get("CLOSING_INGEST_TOKEN") or ""
+    if not expected or not supplied:
+        return False
+    # compare_digest raises TypeError on a str containing a byte above 0x7F, and
+    # Starlette decodes headers as latin-1 -- so any high byte in the header
+    # produced an UNAUTHENTICATED 500 instead of a 401. Compare bytes.
+    try:
+        return _secrets.compare_digest(supplied.strip().encode("utf-8", "surrogateescape"),
+                                       expected.strip().encode("utf-8", "surrogateescape"))
+    except Exception:
+        return False
+
+
+async def _note_fetch_attempt(day: str, ok: bool, detail: str, kind: str = None,
+                              changed: bool = False, warnings: list = None):
+    """Record an external fetch attempt where /status can see it."""
+    await _stamp_run(INGEST_STATE_KEY, day, ok, detail, kind=kind or "",
+                     changed=changed, warnings=warnings, source="external")
+
+
+async def _alert_fetch_failure(kind: str, detail: str, day: str):
+    """Tell HO and Accounts, but only when it is worth telling them.
+
+    `auth` and `blocked` need a person and will not fix themselves, so they go
+    out on the first occurrence. Everything else waits until it has been failing
+    for half an hour -- a blip during the evening window should not push a
+    notification to four people.
+    """
+    st = await db[STATE].find_one({"_id": INGEST_STATE_KEY}) or {}
+    if kind not in _ALERT_NOW:
+        since = st.get("failing_since")
+        if not since:
+            return
+        try:
+            mins = (datetime.now(IST) - datetime.fromisoformat(since)).total_seconds() / 60
+        except Exception:
+            return
+        if mins < _ALERT_IF_SUSTAINED_MIN:
+            return
+
+    # Don't repeat the same alert every ten minutes for the rest of the evening.
+    #
+    # Throttled PER KIND. One global timestamp meant a sustained network alert at
+    # 17:00 swallowed a genuine `auth` failure at 17:20 -- and auth/blocked/bug
+    # are in _ALERT_NOW precisely because they must not wait. A blip cannot be
+    # allowed to cancel the guarantee for the next hour.
+    last = st.get(f"last_alert_at_{kind}") or (
+        st.get("last_alert_at") if kind not in _ALERT_NOW else None)
+    if last:
+        try:
+            if (datetime.now(IST) - datetime.fromisoformat(last)).total_seconds() < 3600:
+                return
+        except Exception:
+            pass
+
+    msg = {
+        "auth": "The MIS rejected the collections login. Check the password for "
+                "the read-only MIS account — today's figures have stopped.",
+        "blocked": "The MIS is blocking the automated collections fetch. "
+                   "Today's figures have stopped updating.",
+        # Named as ours, not the vendor's. Whoever reads this at 17:05 should not
+        # go and ring the MIS people about a mistake on our side.
+        "bug": "The collections fetcher has crashed — this is a fault in our own "
+               "code, not the MIS. Today's figures have stopped updating.",
+    }.get(kind,f"Collections have not updated for {_ALERT_IF_SUSTAINED_MIN}+ minutes ({detail}).")
+
+    try:
+        from services.fcm import send_to_employee
+        emps = await db.employees.find(
+            {"$or": [{"role": {"$in": ["hr_admin", "management"]}},
+                     {"closing_approver": True}]},
+            {"_id": 0, "employee_id": 1}).to_list(20)
+        if not emps:
+            # An alert with no recipients is the same as no alert, and it would
+            # look identical from here -- the send loop simply runs zero times.
+            # Say so, loudly, rather than believing someone was told.
+            logger.error("closing: fetcher failed (%s) and NOBODY could be alerted "
+                         "— no hr_admin/management/approver found", kind)
+            return
+        for e in emps:
+            await send_to_employee(e.get("employee_id"), "Daily closing", msg)
+        logger.info("closing: alerted %d people about a %s failure", len(emps), kind)
+        stamp = datetime.now(IST).isoformat()
+        await db[STATE].update_one(
+            {"_id": INGEST_STATE_KEY},
+            {"$set": {"last_alert_at": stamp, f"last_alert_at_{kind}": stamp}},
+            upsert=True)
+    except Exception:
+        logger.warning("closing: could not send fetch-failure alert", exc_info=True)
+
+
+@router.post("/ingest")
+async def ingest_report(body: IngestReport, x_ingest_token: str = Header(None)):
+    """Receive a day's workbook — or a report that fetching it failed.
+
+    Deliberately NOT behind get_current_user: the caller is a Worker, not a
+    person. Auth is a shared secret in CLOSING_INGEST_TOKEN.
+    """
+    if not _ingest_token_ok(x_ingest_token):
+        # Same answer whether the token is absent, wrong, or unconfigured — a
+        # different message for each would let a caller map the surface.
+        raise HTTPException(status_code=401, detail="Not authorised")
+
+    try:
+        day = date_cls.fromisoformat(body.date) if body.date else today_ist()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    day_str = day.isoformat()
+
+    # ---- the Worker is telling us it failed -------------------------------
+    if (body.status or "").lower() != "ok":
+        kind = (body.kind or "other").lower()
+        detail = (body.error or "no detail")[:300]
+        await _note_fetch_attempt(day_str, False, f"{kind}: {detail}", kind=kind)
+        await _alert_fetch_failure(kind, detail, day_str)
+        logger.warning("closing: fetcher reported %s for %s: %s", kind, day_str, detail)
+        return {"ok": False, "recorded": True, "kind": kind}
+
+    if not body.file_b64:
+        raise HTTPException(status_code=400, detail="status=ok requires file_b64")
+    if len(body.file_b64) > MAX_INGEST_BYTES:
+        raise HTTPException(status_code=413, detail="workbook too large")
+
+    import base64 as _b64
+    try:
+        raw = _b64.b64decode(body.file_b64, validate=True)
+    except Exception:
+        await _note_fetch_attempt(day_str, False, "shape: file_b64 was not valid base64",
+                                  kind="shape")
+        raise HTTPException(status_code=400, detail="file_b64 is not valid base64")
+
+    # The site answers an expired session with HTTP 200 and a login page, so a
+    # fetcher that trusts status codes will happily post HTML. Check the bytes.
+    if not raw.startswith(b"PK\x03\x04"):
+        await _note_fetch_attempt(
+            day_str, False, f"shape: not an .xlsx ({len(raw)} bytes)", kind="shape")
+        raise HTTPException(
+            status_code=400,
+            detail=f"that is not an .xlsx — {len(raw)} bytes, no ZIP header. "
+                   "An expired MIS session returns HTTP 200 with the login page.")
+
+    try:
+        report = parse_demand_collection(raw, expect_day=day)
+    except MISParseError as e:
+        await _note_fetch_attempt(day_str, False, f"parse failed: {e}", kind="shape")
+        # A vendor column rename stops every figure in the system. Silence here
+        # meant six consecutive failures pushed nothing to anybody, ever.
+        await _alert_fetch_failure("shape", str(e), day_str)
+        raise HTTPException(status_code=422, detail=str(e))
+    digest = _content_digest(report)
+
+    warnings = list(report.warnings) + check_expected_branches(report, EXPECTED_BRANCHES)
+    conflicts = storage_conflicts(report, day) + await _cross_pull_conflicts(report, day_str)
+    if conflicts:
+        detail = "not stored: " + "; ".join(conflicts)
+        await _note_fetch_attempt(day_str, False, detail, kind="shape",
+                                  warnings=warnings + conflicts)
+        await _alert_fetch_failure("shape", detail, day_str)
+        logger.error("closing %s: %s", day_str, detail)
+        # 409, not 200. A refusal to store answered with a success status, and a
+        # caller that keys its retry and its own failure log on the HTTP status
+        # would record a clean run for a day that stored nothing.
+        raise HTTPException(status_code=409, detail=detail)
+
+    # Serialised per day. The digest read, the row writes and the digest write
+    # are a check-then-act: if a retried older body's rows landed after a fresher
+    # body's digest, every later pull would answer "unchanged" against a digest
+    # that was never written for the rows on disk, and the day would sit frozen
+    # on a stale figure forever. This closes it within one process; a second
+    # worker process would need the write to be conditional on the old digest.
+    async with _ingest_lock(day_str):
+        prev = await db[STATE].find_one({"_id": INGEST_STATE_KEY}) or {}
+        if prev.get(f"digest_{day_str}") == digest:
+            # Same figures as last time. Still a successful run -- recording it is
+            # what keeps "nothing changed" apart from "the fetcher died".
+            await _note_fetch_attempt(day_str, True, "unchanged", warnings=warnings)
+            return {"ok": True, "changed": False, "date": day_str,
+                    "branches": len(report.branches), "warnings": warnings}
+
+        now_iso = datetime.now(IST).isoformat()
+        for b in report.branches:
+            doc = b.as_dict()
+            doc["date"] = day_str      # the day asked for, never the row's own
+            doc.update({"fetched_at": now_iso, "source": body.source or "worker",
+                        "warnings": warnings})
+            await db[COLL].update_one(
+                {"date": day_str, "branch_code": doc["branch_code"],
+                 "branch_name": doc["branch_name"]},
+                {"$set": doc}, upsert=True)
+
+        await db[STATE].update_one({"_id": INGEST_STATE_KEY},
+                                   {"$set": {f"digest_{day_str}": digest}}, upsert=True)
+
+    drifted = await _flag_post_approval_drift(day_str, report)
+    await _note_fetch_attempt(day_str, True, f"stored {len(report.branches)} branch(es)",
+                              changed=True, warnings=warnings + drifted)
+    if warnings or drifted:
+        logger.warning("closing %s: %s", day_str, "; ".join(warnings + drifted))
+
+    # `raw` goes out of scope here and is never written anywhere. Only the
+    # per-branch totals above and the digest survive this function.
+    return {"ok": True, "changed": True, "date": day_str,
+            "branches": len(report.branches), "cash": report.total_cash,
+            "upi": report.total_upi, "warnings": warnings + drifted}
