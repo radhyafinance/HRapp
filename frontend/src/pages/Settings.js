@@ -45,6 +45,13 @@ export default function Settings() {
   const [saving, setSaving] = useState(false);
   const [users, setUsers] = useState([]);
   const [activeTab, setActiveTab] = useState("locations");
+  // Who may sign a day's cash off against the bank. Role cannot answer this:
+  // the Accounts Manager is `role: employee`, so gating on role would either
+  // lock out the one person who does the job or hand cash approval to every
+  // field officer. hr_admin and management always qualify; everyone else needs
+  // this explicit grant.
+  const [approvers, setApprovers] = useState(null);   // null = not loaded yet
+  const [approverBusy, setApproverBusy] = useState("");
   const [company, setCompany] = useState(INIT_COMPANY);
   const [companyOriginal, setCompanyOriginal] = useState(INIT_COMPANY);
   const [savingCompany, setSavingCompany] = useState(false);
@@ -104,7 +111,42 @@ export default function Settings() {
   // The centre list is only needed when that tab is opened, and only once.
   useEffect(() => {
     if (activeTab === "centres" && centres === null) loadCentres();
+    // `false` means the load FAILED. Retrying on tab focus matters: without
+    // it a single blip left the column reading "Unknown" for the rest of the
+    // session with no way back short of reloading the page.
+    if (activeTab === "users" && (approvers === null || approvers === false)) loadApprovers();
   }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loadApprovers = async () => {
+    try {
+      const res = await API.get("/closing/approvers");
+      setApprovers((res.data?.granted || []).map(a => a.employee_id));
+    } catch (e) {
+      // An empty list and a failed call must not look the same: an empty list
+      // would render every toggle as "off" and invite someone to grant a right
+      // that may already be held.
+      console.error(e);
+      setApprovers(false);
+    }
+  };
+
+  const toggleApprover = async (employeeId, on) => {
+    if (!employeeId) return;
+    if (!on && !window.confirm(
+      "Remove this person's ability to approve daily closings?\n\n" +
+      "Days they have already approved are unaffected.")) return;
+    setApproverBusy(employeeId);
+    try {
+      await API.post(`/closing/approvers/${employeeId}?on=${on}`);
+      setApprovers(list => {
+        const cur = Array.isArray(list) ? list : [];
+        return on ? [...cur, employeeId] : cur.filter(x => x !== employeeId);
+      });
+    } catch (e) {
+      alert(e?.response?.data?.detail ||
+            "Could not change that. The person needs an employee record.");
+    } finally { setApproverBusy(""); }
+  };
 
   const handleSaveLocation = async (e) => {
     e.preventDefault();
@@ -763,7 +805,7 @@ export default function Settings() {
           <div className="overflow-x-auto">
             <table className="w-full" data-testid="users-table">
               <thead><tr className="bg-slate-50 border-b">
-                {["Name", "Username", "Role", "Emp ID", "Status", "Action"].map(h => (
+                {["Name", "Username", "Role", "Emp ID", "Status", "Closing approval", "Action"].map(h => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500">{h}</th>
                 ))}
               </tr></thead>
@@ -775,6 +817,30 @@ export default function Settings() {
                     <td className="px-4 py-3"><span className="px-2 py-1 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">{u.role}</span></td>
                     <td className="px-4 py-3 text-xs font-mono text-[#E85B1E]">{u.employee_id || "-"}</td>
                     <td className="px-4 py-3"><span className={`px-2 py-1 rounded-full text-xs font-medium ${u.is_active ? "bg-green-100 text-green-700" : "bg-red-100 text-red-700"}`}>{u.is_active ? "Active" : "Inactive"}</span></td>
+                    <td className="px-4 py-3">{(() => {
+                      // HR Admin and Management can already approve by role, so a
+                      // toggle here would imply a grant that does nothing — and
+                      // turning it "off" would read as removing an ability they
+                      // still have.
+                      if (["hr_admin", "management"].includes(u.role))
+                        return <span className="text-xs text-slate-400">By role</span>;
+                      if (!u.employee_id)
+                        return <span className="text-xs text-slate-400">No employee record</span>;
+                      if (approvers === null)
+                        return <span className="text-xs text-slate-400">…</span>;
+                      if (approvers === false)
+                        return <span className="text-xs text-amber-600" title="Could not load the current grants">Unknown</span>;
+                      const on = approvers.includes(u.employee_id);
+                      return (
+                        <button type="button" disabled={approverBusy === u.employee_id}
+                          data-testid={`closing-approver-${u.employee_id}`}
+                          onClick={() => toggleApprover(u.employee_id, !on)}
+                          title={on ? "Can approve daily closings" : "Cannot approve daily closings"}
+                          className={`relative w-11 h-6 rounded-full transition-colors disabled:opacity-50 ${on ? "bg-[#E85B1E]" : "bg-slate-300"}`}>
+                          <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${on ? "translate-x-5" : ""}`} />
+                        </button>
+                      );
+                    })()}</td>
                     <td className="px-4 py-3">
                       {u.username !== user?.username && (
                         <button onClick={() => toggleUser(u._id)} className={`text-xs px-2 py-1 rounded-lg ${u.is_active ? "bg-red-100 text-red-700 hover:bg-red-200" : "bg-green-100 text-green-700 hover:bg-green-200"}`}>

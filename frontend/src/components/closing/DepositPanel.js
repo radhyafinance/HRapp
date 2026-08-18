@@ -44,7 +44,8 @@ async function downscale(file, maxPx = 1600, quality = 0.8) {
   return { b64: dataUrl.split(",")[1], mime: "image/jpeg" };
 }
 
-export default function DepositPanel({ branch, date, onChanged }) {
+export default function DepositPanel({ branch, date, onChanged, onBeforeSubmit,
+                                       onNotice }) {
   const c = branch.closing || {};
   const slips = c.slips || [];
   const ledger = c.ledger || {};
@@ -52,10 +53,24 @@ export default function DepositPanel({ branch, date, onChanged }) {
   const fileRef = useRef(null);
 
   const [busy, setBusy] = useState("");
+  const [phase, setPhase] = useState("");
   const [error, setError] = useState("");
+  const [note, setNote] = useState("");
   const [drafts, setDrafts] = useState({});     // slipId -> typed amount
   const [counted, setCounted] = useState(
     c.cash_counted == null ? "" : String(c.cash_counted));
+  // THE TARGET THE MANAGER WAS LOOKING AT WHEN THEY COUNTED.
+  //
+  // Reading `ledger.should_hold` at click time reads it from live props, and the
+  // parent replaces those on every poll — so a change that landed WHILE they
+  // counted moved the baseline under the guard, and the comparison then checked
+  // the new figure against itself and passed. That is the exact case the guard
+  // was written for. Frozen the moment they touch the box.
+  const seenTarget = useRef(null);
+  const noteTarget = (v) => {
+    if (seenTarget.current === null) seenTarget.current = Number(ledger.should_hold) || 0;
+    setCounted(v);
+  };
 
   const confirmedTotal = slips
     .filter((s) => s.status === "confirmed")
@@ -66,8 +81,15 @@ export default function DepositPanel({ branch, date, onChanged }) {
   const run = async (label, fn) => {
     setBusy(label); setError("");
     try { await fn(); await onChanged(); }
-    catch (e) { setError(e?.response?.data?.detail || "That did not work. Try again."); }
-    finally { setBusy(""); }
+    // e.message matters now: the submit path throws its own Error when the
+    // collections moved while the BM was counting, and that sentence is the
+    // whole point of stopping. Falling through to "that did not work" would
+    // turn the most important message on this screen into a shrug.
+    catch (e) {
+      setError(e?.response?.data?.detail || e?.message
+               || "That did not work. Try again.");
+    }
+    finally { setBusy(""); setPhase(""); }
   };
 
   const onPick = async (e) => {
@@ -112,6 +134,13 @@ export default function DepositPanel({ branch, date, onChanged }) {
       {error && (
         <div className="mb-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
           {error}
+        </div>
+      )}
+
+      {note && (
+        <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+             data-testid="closing-submit-note">
+          {note}
         </div>
       )}
 
@@ -207,7 +236,7 @@ export default function DepositPanel({ branch, date, onChanged }) {
         <label className="text-xs text-slate-600">Cash you are actually holding</label>
         <input
           type="number" inputMode="decimal" placeholder="Count it and enter the amount"
-          value={counted} onChange={(e) => setCounted(e.target.value)}
+          value={counted} onChange={(e) => noteTarget(e.target.value)}
           className="w-full mt-1 border border-slate-300 rounded-lg px-3 py-2.5 text-base tabular-nums outline-none focus:ring-2 focus:ring-[#E85B1E]"
           data-testid="cash-counted"
         />
@@ -218,14 +247,68 @@ export default function DepositPanel({ branch, date, onChanged }) {
 
       <button
         disabled={!!busy || counted === "" || unconfirmed.length > 0}
-        onClick={() => run("submit", () => API.post("/closing/submit", {
-          date, branch_code: branch.branch_code, cash_counted: Number(counted),
-        }))}
+        onClick={() => run("submit", async () => {
+          // Check for late collections BEFORE recording anything.
+          //
+          // An officer posting at 21:44 while the manager counts at 21:40 is not
+          // an edge case — Rs 27,354 of cash landed against 14-Aug three days
+          // after that day closed. Filing against the older figure produces a
+          // shortfall that surfaces days later with nobody able to explain it.
+          const was = seenTarget.current ?? (Number(ledger.should_hold) || 0);
+          setPhase("checking");
+          const r = onBeforeSubmit ? await onBeforeSubmit() : { status: "fresh" };
+
+          const checked = r.day && (r.status === "delivered" || r.status === "fresh");
+          let couldNotCheck = !checked;
+          if (checked) {
+            const row = (r.day.branches || []).find(
+              (b) => b.branch_code === branch.branch_code);
+            const now = Number(row?.closing?.ledger?.should_hold);
+            // No row for this branch, or an unusable figure, is NOT a pass. The
+            // MIS dropping a branch from the report is a documented failure
+            // mode, and it used to skip the comparison silently and set no note
+            // either way — a check that did not happen, indistinguishable from
+            // one that did.
+            if (!row || !Number.isFinite(now)) {
+              couldNotCheck = true;
+            } else if (Math.abs(now - was) >= 0.01) {
+              // Stop and show it. Submitting silently against a number that just
+              // moved is the failure the pull was for.
+              throw new Error(
+                `Collections changed while you were counting: you should now be ` +
+                `holding ${money(now)}, not ${money(was)}. ` +
+                `Check your cash and press Send again.`);
+            }
+          }
+
+          setPhase("sending");
+          await API.post("/closing/submit", {
+            date, branch_code: branch.branch_code, cash_counted: Number(counted),
+          });
+
+          // WE SUBMIT ANYWAY WHEN THE CHECK COULD NOT BE MADE, and say so.
+          //
+          // The alternative is refusing, and a manager standing at a bank at
+          // 21:50 who cannot submit has no fallback at all — whereas one who
+          // submits a figure that later moves is covered by the drift warning
+          // Accounts sees. But it must not pass unremarked: an unmentioned
+          // failed check is indistinguishable from a check that passed.
+          const say = onNotice || setNote;
+          say(couldNotCheck
+            ? "Sent — but we could not check for late collections just now, so this "
+              + "is against the figures already on screen. Check the day before banking."
+            : "");
+        })}
         className="w-full mt-3 inline-flex items-center justify-center gap-2 rounded-lg bg-[#181831] px-4 py-3 text-sm font-medium text-white disabled:opacity-40"
         data-testid="closing-submit"
       >
         {busy === "submit"
-          ? <><Loader2 size={16} className="animate-spin" /> Sending…</>
+          // Not "Sending…" while it is only WAITING. The wait can run to a
+          // couple of minutes, and a label that claims a send has happened when
+          // nothing has left the phone is the wrong thing to show someone
+          // standing at a bank.
+          ? <><Loader2 size={16} className="animate-spin" />{" "}
+              {phase === "checking" ? "Checking for late collections…" : "Sending…"}</>
           : <><Send size={15} /> {state === "deposited" ? "Update and resend" : "Send to Accounts"}</>}
       </button>
       {unconfirmed.length > 0 && (
