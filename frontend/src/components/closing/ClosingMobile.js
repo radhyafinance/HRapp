@@ -1,5 +1,6 @@
 import React from "react";
 import { RefreshCw, AlertTriangle, Clock, Banknote } from "lucide-react";
+import Freshness from "./Freshness";
 import DepositPanel, { StateChip } from "./DepositPanel";
 
 /**
@@ -21,8 +22,8 @@ import DepositPanel, { StateChip } from "./DepositPanel";
 const money = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
 
 export default function ClosingMobile({
-  data, status, loading, onRefresh, refreshing, date, onDateChange, canRefresh, isToday,
-  onChanged,
+  data, status, loading, onRefresh, refreshing, waitedS, date, onDateChange, canRefresh, isToday,
+  onChanged, onBeforeSubmit, onNotice,
 }) {
   const branches = data?.branches || [];
   const t = data?.totals || {};
@@ -48,9 +49,12 @@ export default function ClosingMobile({
           data-testid="closing-refresh-mobile"
         >
           <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
-          {refreshing ? "…" : "Refresh"}
+          {refreshing ? "…" : "Check"}
         </button>
       </div>
+
+      <Freshness updatedAt={data?.updated_at} refreshing={refreshing}
+                 waitedS={waitedS} isToday={isToday} />
 
       <input
         type="date"
@@ -130,7 +134,8 @@ export default function ClosingMobile({
           branch — Head Office looking at four branches is reviewing, not banking. */}
       {single && onChanged && (
         <div className="mb-3">
-          <DepositPanel branch={branches[0]} date={date} onChanged={onChanged} />
+          <DepositPanel branch={branches[0]} date={date} onChanged={onChanged}
+                        onBeforeSubmit={onBeforeSubmit} onNotice={onNotice} />
         </div>
       )}
 

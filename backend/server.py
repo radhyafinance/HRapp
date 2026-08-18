@@ -336,26 +336,28 @@ async def startup():
     # Daily cash closing: keep today's MIS collections current. Starts only when
     # credentials are configured, so a deploy without them is a no-op rather than
     # a task that logs a failure every fifteen minutes forever.
-    if os.environ.get("MIS_USERNAME") and os.environ.get("MIS_PASSWORD"):
-        try:
-            # branch_name is in the key because branch_code is NOT unique: a
-            # Branch cell without the "00n - " prefix yields an empty code, and
-            # every such branch would collide into one document.
-            await db.daily_collections.create_index(
-                [("date", 1), ("branch_code", 1), ("branch_name", 1)],
-                unique=True, name="closing_day_branch")
-            await db.closing_days.create_index(
-                [("date", 1), ("branch_code", 1)], unique=True, name="closing_day_state")
-            await db.deposit_slips.create_index([("id", 1)], unique=True, name="slip_id")
-            await db.deposit_slips.create_index([("date", 1), ("branch_code", 1)],
-                                                name="slip_day_branch")
-        except Exception:
-            pass
-        from routes.closing import collections_poll_loop
-        app.state.collections_task = asyncio.create_task(collections_poll_loop())
-        logger.info("Daily closing: MIS collections poller started")
-    else:
-        logger.info("Daily closing: MIS credentials not set, poller not started")
+    # Daily closing indexes. Created ALWAYS -- they used to be created only when
+    # MIS credentials were set, so a deploy without them left the uniqueness
+    # constraints that stop a branch being stored twice simply absent.
+    try:
+        # branch_name is in the key because branch_code is NOT unique: a Branch
+        # cell without the "00n - " prefix yields an empty code, and every such
+        # branch would collide into one document.
+        await db.daily_collections.create_index(
+            [("date", 1), ("branch_code", 1), ("branch_name", 1)],
+            unique=True, name="closing_day_branch")
+        await db.closing_days.create_index(
+            [("date", 1), ("branch_code", 1)], unique=True, name="closing_day_state")
+        await db.deposit_slips.create_index([("id", 1)], unique=True, name="slip_id")
+        await db.deposit_slips.create_index([("date", 1), ("branch_code", 1)],
+                                            name="slip_day_branch")
+    except Exception:
+        logger.warning("Daily closing: could not create indexes", exc_info=True)
+
+    # NO POLLER. The MIS fetcher runs in a Cloudflare Worker and delivers through
+    # POST /api/closing/ingest; this pod has no route to radhyamfin.com at all.
+    # The loop that used to start here failed every fifteen minutes and stamped
+    # those failures over the Worker's good data.
 
     # Auto-exit: mark employees whose LWD has already passed on startup
     try:

@@ -56,7 +56,7 @@ from pydantic import BaseModel
 
 from auth_utils import get_current_user
 from database import db
-from services.mis_client import (MISClient, MISAuthError, MISError, today_ist, IST)
+from services.mis_client import today_ist, IST
 from services.mis_parse import (parse_demand_collection, check_expected_branches,
                                 storage_conflicts, MISParseError)
 
@@ -106,16 +106,80 @@ EXPECTED_BRANCHES = {"CHANDPUR", "NAJIBABAD", "CHANDAUSI", "BUDAUN"}
 # minutes bought a freshness nobody could perceive and cost 196 pulls a day
 # against a legacy box; at 10 it is 98, and the figure is still never more than
 # ten minutes behind during the only window that matters.
-EVENING_FROM_H = 17
-EVENING_TO_H = 23
-POLL_EVENING_S = 10 * 60
-POLL_DAY_S = 15 * 60
-# Before this hour there is nothing to collect; the first punch-ins are ~06:00.
-QUIET_BEFORE_H = 6
+# On-demand fetching, not a schedule. A pull happens because somebody opened the
+# screen or pressed Submit -- never because a clock struck. The floor is global:
+# five branch managers tapping at 21:00 is one fetch, not five, and the vendor
+# sees a handful of requests an evening instead of ninety-eight a day.
+PULL_FLOOR_S = 5 * 60
+# A request nobody collected within this long is dropped rather than served: by
+# then the person who tapped has given up, and it would otherwise wedge the queue
+# for that day for ever -- rotate the token on the Worker's side only and every
+# heartbeat 401s, while /request-pull answers "already queued" six hours later.
+REQUEST_TTL_MIN = 15
+MAX_QUEUE = 20
+# The furthest back the queue may ever ask for. Bounded because a request spends
+# a login against somebody else's production MIS.
+MAX_BACKFILL_DAYS = 90
+
 
 
 def _roles_ok(user: dict, allowed) -> bool:
     return user.get("role") in allowed
+
+
+def _live_queue(st: dict, now) -> list:
+    """The queue with anything past its TTL dropped."""
+    out = []
+    for q in (st.get("pull_queue") or [])[:MAX_QUEUE]:
+        try:
+            if (now - datetime.fromisoformat(q["at"])).total_seconds() / 60 <= REQUEST_TTL_MIN:
+                out.append(q)
+        except Exception:
+            continue
+    return out
+
+
+def _run_for(st: dict, day_str: str) -> dict:
+    """The last attempt AT THIS DAY, not the last attempt at anything."""
+    return st.get(f"run_{day_str}") or {}
+
+
+def _updated_at_for(st: dict, day_str: str):
+    """When THIS day last landed. Never another day's timestamp."""
+    return _run_for(st, day_str).get("ok_at")
+
+
+def _pending_seconds(st: dict, day_str: str):
+    """How long a queued request for this day has been waiting, or None.
+
+    Shown so a manager can tell "the fetcher has not picked this up" from "the
+    fetcher is working on it" -- the two look identical from a spinner, and one
+    of them means nobody is coming.
+    """
+    now = datetime.now(IST)
+    for q in _live_queue(st, now):
+        if q.get("date") == day_str:
+            try:
+                return int((now - datetime.fromisoformat(q["at"])).total_seconds())
+            except Exception:
+                return 0
+    return None
+
+
+async def _may_see_closing(user: dict, approver: bool = None) -> bool:
+    """Can this person open the Daily Closing screen?
+
+    ONE definition, used by /day and /request-pull alike. They used to disagree:
+    /day required an approver or hr_admin/management/managers, while
+    /request-pull required only a valid token — so a field officer who got a 403
+    from the screen itself could still queue MIS fetches, and combined with the
+    date-alternation floor bypass could drive them in a loop. The set who may
+    make this app talk to a third party's production system must not be larger
+    than the set who may look at the result.
+    """
+    if approver is None:
+        approver = await _is_closing_approver(user)
+    return bool(approver or _roles_ok(user, {"hr_admin", "management", "managers"}))
 
 
 def _content_digest(report) -> str:
@@ -200,6 +264,16 @@ async def _flag_post_approval_drift(day_str: str, report) -> list:
     return out
 
 
+def _gap_hours(ts, now) -> float:
+    """Hours since `ts`, or a large number if it cannot be read."""
+    if not ts:
+        return 1e9
+    try:
+        return (now - datetime.fromisoformat(ts)).total_seconds() / 3600.0
+    except Exception:
+        return 1e9
+
+
 async def _alert_approvers(title: str, msg: str):
     try:
         from services.fcm import send_to_employee
@@ -264,19 +338,6 @@ async def _cross_pull_conflicts(report, day_str: str) -> list:
     return out
 
 
-async def _record_run(ok: bool, detail: str, day: str, changed: bool = False,
-                      warnings: list = None):
-    """Stamp every attempt, so a dead loop is visible rather than merely quiet.
-
-    `warnings` are recorded HERE and not only on the branch rows. A report that
-    parses to zero branches has nowhere to hang a warning, so "the report
-    contained no collection rows at all" used to be discarded — while the screen
-    said "Expected on a Sunday or a holiday" under a green health strip. The one
-    case the warnings exist for was the one case they vanished in.
-    """
-    await _stamp_run(STATE_KEY, day, ok, detail, changed=changed, warnings=warnings)
-
-
 async def _stamp_run(key: str, day: str, ok: bool, detail: str, kind: str = None,
                      changed: bool = False, warnings: list = None,
                      source: str = None):
@@ -311,15 +372,33 @@ async def _stamp_run(key: str, day: str, ok: bool, detail: str, kind: str = None
     # to say why, which is the single state this field exists to prevent.
     if warnings is not None:
         upd[f"warnings_{day}"] = list(warnings)
+
     prev = await db[STATE].find_one({"_id": key}) or {}
+    run = dict(prev.get(f"run_{day}") or {})
+
+    # PER DAY, NOT GLOBAL. The flags used to be one set for the whole document,
+    # so a backfill and today's fetch overwrote each other's verdicts. Both
+    # directions were wrong, and the second is dangerous:
+    #
+    #   a failed backfill of 20-Jul painted "the MIS fetch failed" over today's
+    #   fresh figures on every branch manager's screen;
+    #
+    #   and today's AUTH FAILURE followed by a successful backfill left today
+    #   reading last_attempt_failed:false with no timestamp at all -- a wrong
+    #   password, invisible, while the screen showed frozen figures and the
+    #   client spun out its whole wait with nothing to report.
+    run.update({"ok": ok, "detail": detail, "at": now.isoformat()})
     if ok:
+        run["ok_at"] = now.isoformat()
         upd["last_success_at"] = now.isoformat()
         upd["last_success_date"] = day
-        # Clearing the failure clock only counts for the day that succeeded.
-        if prev.get("last_run_date") == day or prev.get("failing_since") is None:
-            upd["failing_since"] = None
-    elif prev.get("last_run_ok") is not False:
-        upd["failing_since"] = now.isoformat()
+        # The failure clock is per day too. A success on THIS day ends THIS
+        # day's episode and says nothing about any other.
+        run["failing_since"] = None
+    elif not run.get("failing_since"):
+        run["failing_since"] = now.isoformat()
+    upd[f"run_{day}"] = run
+
     if changed:
         upd["last_change_at"] = now.isoformat()
     try:
@@ -328,122 +407,19 @@ async def _stamp_run(key: str, day: str, ok: bool, detail: str, kind: str = None
         logger.warning("closing: could not record run state", exc_info=True)
 
 
-async def refresh_day(day: date_cls = None, client: MISClient = None) -> dict:
-    """Pull one day from the MIS and store it. Returns a summary dict."""
-    day = day or today_ist()
-    day_str = day.isoformat()
-    own_client = client is None
-    client = client or MISClient()
-    try:
-        raw = await client.fetch_report(day)
-    except MISAuthError:
-        raise
-    except Exception as e:
-        # Deliberately broad. This used to catch only MISError, so the two most
-        # likely real failures -- a connection reset and a read timeout on a slow
-        # report -- never stamped the state document. `last_run_ok` stayed True
-        # from the previous success and the UI's "last attempt failed" line never
-        # rendered, leaving only the 45-minute staleness rule to notice, silently
-        # and far too late in an evening window that polls every 3 minutes.
-        await _record_run(False, f"{type(e).__name__}: {e}", day_str)
-        raise
-    finally:
-        if own_client:
-            await client.aclose()
-
-    try:
-        report = parse_demand_collection(raw, expect_day=day)
-    except MISParseError as e:
-        await _record_run(False, f"parse failed: {e}", day_str)
-        raise
-    digest = _content_digest(report)
-
-    warnings = list(report.warnings) + check_expected_branches(report, EXPECTED_BRANCHES)
-
-    # Refuse to store a report whose branches would collide on the storage key.
-    # Publishing a wrong figure is worse than publishing none: the branch acts on
-    # it. Yesterday's correct rows stay untouched and the failure is visible.
-    conflicts = storage_conflicts(report, day)
-    # storage_conflicts only sees ONE report. Two polls on the same day can each
-    # be internally clean and still collide: a morning pull with "002 - CHANDPUR"
-    # and an evening pull with "002 - Chandpur" leaves two rows sharing a code,
-    # and the whole deposit half keys on branch_code alone -- one branch's slips
-    # then show against the other and one BM is locked out entirely.
-    conflicts += await _cross_pull_conflicts(report, day_str)
-    if conflicts:
-        detail = "not stored: " + "; ".join(conflicts)
-        await _record_run(False, detail, day_str, warnings=warnings + conflicts)
-        logger.error("closing %s: %s", day_str, detail)
-        return {"date": day_str, "changed": False, "stored": False,
-                "branches": len(report.branches), "warnings": warnings + conflicts}
-
-    prev = await db[STATE].find_one({"_id": STATE_KEY}) or {}
-    unchanged = prev.get(f"digest_{day_str}") == digest
-    if unchanged:
-        await _record_run(True, "unchanged", day_str, warnings=warnings)
-        return {"date": day_str, "changed": False, "branches": len(report.branches),
-                "warnings": warnings}
-
-    now_iso = datetime.now(IST).isoformat()
-    for b in report.branches:
-        doc = b.as_dict()
-        # The day we ASKED for, never the date carried by whichever row happened
-        # to be first. as_dict()["date"] comes from the branch's first row, and
-        # $set-ing it over the query key filed each branch under a different date
-        # -- the requested day then stored nothing and read as a holiday.
-        doc["date"] = day_str
-        doc.update({"fetched_at": now_iso, "source": "mis", "warnings": warnings})
-        await db[COLL].update_one(
-            # branch_name is part of the key because branch_code alone is not
-            # unique: an unprefixed Branch cell yields "" for every such branch.
-            {"date": day_str, "branch_code": doc["branch_code"],
-             "branch_name": doc["branch_name"]},
-            {"$set": doc},
-            upsert=True,
-        )
-    await db[STATE].update_one(
-        {"_id": STATE_KEY}, {"$set": {f"digest_{day_str}": digest}}, upsert=True
-    )
-    await _record_run(True, f"stored {len(report.branches)} branch(es)", day_str,
-                      changed=True, warnings=warnings)
-    if warnings:
-        logger.warning("closing %s: %s", day_str, "; ".join(warnings))
-    return {"date": day_str, "changed": True, "branches": len(report.branches),
-            "cash": report.total_cash, "upi": report.total_upi,
-            "warnings": warnings}
-
-
-def _poll_interval(now: datetime) -> int:
-    h = now.hour
-    if h < QUIET_BEFORE_H:
-        return POLL_DAY_S * 2
-    if EVENING_FROM_H <= h <= EVENING_TO_H:
-        return POLL_EVENING_S
-    return POLL_DAY_S
-
-
-async def collections_poll_loop():
-    """Keep today's collections current. One login reused across polls."""
-    await asyncio.sleep(30)  # let the app finish starting
-    client = MISClient()
-    while True:
-        try:
-            await refresh_day(today_ist(), client=client)
-        except MISAuthError as e:
-            # Credentials are wrong or revoked. Retrying every three minutes
-            # would lock the account, so back off hard and stay loud.
-            logger.error("closing: MIS auth failed (%s); backing off", e)
-            await client.aclose()
-            client = MISClient()
-            await asyncio.sleep(30 * 60)
-            continue
-        except Exception as e:
-            logger.warning("closing: refresh failed: %s", e)
-        # Interval decided AFTER the fetch, not before it. A slow pull starting
-        # at 16:58 used to be timed as a daytime poll and then sleep 15 minutes,
-        # opening a gap right at the start of the evening window this exists for.
-        await asyncio.sleep(_poll_interval(datetime.now(IST)))
-
+# The in-process poller and refresh_day USED to live here and are deleted.
+#
+# They could not work: this pod has no route to radhyamfin.com. Worse, the loop
+# started on every boot whenever MIS_USERNAME/MIS_PASSWORD were set, failed every
+# fifteen minutes, and stamped that failure onto the SAME state document the
+# Cloudflare Worker writes to -- painting "The MIS fetch failed" over figures that
+# had arrived three minutes earlier and were correct, wiping the day's warnings,
+# and holding /status permanently unhealthy.
+#
+# That is precisely the failure that removing the /refresh button was meant to
+# end, arriving on a timer instead of a tap. Deleted rather than guarded: an
+# environment variable nobody documented as load-bearing is not a safety
+# mechanism. Fetching happens in the Worker and arrives through /ingest.
 
 @router.get("/day")
 async def closing_day(
@@ -457,7 +433,7 @@ async def closing_day(
     # entire control out of the page they approve on — while the sidebar happily
     # showed them the link.
     approver = await _is_closing_approver(current_user)
-    if not approver and not _roles_ok(current_user, {"hr_admin", "management", "managers"}):
+    if not await _may_see_closing(current_user, approver):
         raise HTTPException(status_code=403, detail="Not permitted")
     day_str = date or today_ist().isoformat()
     rows = await db[COLL].find({"date": day_str}, {"_id": 0}).to_list(50)
@@ -550,28 +526,154 @@ async def closing_day(
             "collections_changed_after_approval": d.get("collections_changed_after_approval"),
         }
 
+    # Freshness belongs on this response, not only on the admin-only /status.
+    # The branch manager working at 21:00 is the person who most needs to know
+    # whether the figure in front of them is four minutes or four hours old, and
+    # they cannot see /status at all.
     return {"date": day_str, "branches": rows, "totals": totals, "warnings": warnings,
-            "can_approve": await _is_closing_approver(current_user)}
+            "can_approve": await _is_closing_approver(current_user),
+            # ALL DAY-SCOPED. These used to mix: `updated_at` was per day while
+            # the failure flags were global, so one day's verdict was shown
+            # against another day's figures -- in the worst direction, today's
+            # wrong-password failure vanished the moment a backfill succeeded.
+            "updated_at": _updated_at_for(st, day_str),
+            "pull_pending": _pending_seconds(st, day_str) is not None,
+            "pull_waiting_seconds": _pending_seconds(st, day_str),
+            "last_attempt_failed": _run_for(st, day_str).get("ok") is False,
+            "last_attempt_detail": (_run_for(st, day_str).get("detail")
+                                    if _run_for(st, day_str).get("ok") is False
+                                    else None)}
 
 
-@router.post("/refresh")
-async def closing_refresh(
-    date: str = Query(None),
-    current_user: dict = Depends(get_current_user),
-):
-    """Pull from the MIS right now. For when someone will not wait for the loop."""
-    if not _roles_ok(current_user, {"hr_admin", "management"}):
+@router.post("/request-pull")
+async def request_pull(date: str = Query(None),
+                       current_user: dict = Depends(get_current_user)):
+    """Ask for a fresh pull from the MIS. Anyone who can see the screen may ask.
+
+    THIS DOES NOT FETCH ANYTHING. It cannot: this pod has no outbound route to
+    radhyamfin.com, which is why the fetcher lives in a Cloudflare Worker. All
+    this does is add the day to a queue; the Worker drains it on a heartbeat.
+
+    The old /refresh went straight at the MIS from here. It could not succeed
+    after the fetcher moved out, and pressing it stamped a FAILURE over perfectly
+    good data.
+
+    Branch managers may ask. They are the ones working at 21:00 while Head Office
+    left at 19:00, so gating this on role would leave the figure stale in exactly
+    the hours it moves.
+    """
+    if not await _may_see_closing(current_user):
         raise HTTPException(status_code=403, detail="Not permitted")
     try:
         day = date_cls.fromisoformat(date) if date else today_ist()
     except ValueError:
         raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
-    try:
-        return await refresh_day(day)
-    except MISAuthError as e:
-        raise HTTPException(status_code=502, detail=f"MIS login failed: {e}")
-    except (MISError, MISParseError) as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    # Bound what the queue can ever ask for. A request travels to another system
+    # and spends a login against a third party's production MIS, so a
+    # fat-fingered date in a picker must not become a fetch for the year 2099.
+    today = today_ist()
+    if day > today:
+        raise HTTPException(status_code=400, detail="that day has not happened yet")
+    if (today - day).days > MAX_BACKFILL_DAYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"only the last {MAX_BACKFILL_DAYS} days can be refetched")
+
+    day_str = day.isoformat()
+    now = datetime.now(IST)
+    st = await db[STATE].find_one({"_id": INGEST_STATE_KEY}) or {}
+    queue = _live_queue(st, now)
+    updated_at = _updated_at_for(st, day_str)
+
+    # Already queued and not yet collected.
+    if any(q["date"] == day_str for q in queue):
+        pending = next(q for q in queue if q["date"] == day_str)
+        waited = int((now - datetime.fromisoformat(pending["at"])).total_seconds())
+        return {"queued": False, "already_queued": True,
+                "requested_at": pending["at"], "waiting_seconds": waited,
+                "updated_at": updated_at}
+
+    # Fresh enough for THIS day. Not an error -- the caller is told when it last
+    # updated and how long until asking again would do anything.
+    if updated_at:
+        age = (now - datetime.fromisoformat(updated_at)).total_seconds()
+        if age < PULL_FLOOR_S:
+            return {"queued": False, "fresh": True, "updated_at": updated_at,
+                    "seconds_until_next": int(PULL_FLOOR_S - age)}
+
+    # THE FLOOR IS GLOBAL, AND GLOBAL MEANS ACROSS DAYS TOO.
+    #
+    # It used to be consulted only when the request was for the same day that
+    # last succeeded, so alternating today / yesterday queued ten fetches in ten
+    # taps. That needs no malice: Head Office backfilling last Friday while the
+    # branches work today does exactly that, and the vendor's login sees fifteen
+    # attempts an hour instead of the handful this design exists to produce.
+    last_req = st.get("last_pull_request_at")
+    if last_req:
+        try:
+            since = (now - datetime.fromisoformat(last_req)).total_seconds()
+        except Exception:
+            since = PULL_FLOOR_S
+        if since < PULL_FLOOR_S:
+            return {"queued": False, "throttled": True, "updated_at": updated_at,
+                    "seconds_until_next": int(PULL_FLOOR_S - since)}
+
+    queue.append({"date": day_str, "at": now.isoformat(),
+                  "by": current_user.get("employee_id")})
+    await db[STATE].update_one(
+        {"_id": INGEST_STATE_KEY},
+        {"$set": {"pull_queue": queue, "last_pull_request_at": now.isoformat()}},
+        upsert=True)
+    logger.info("closing: %s asked for a pull of %s",
+                current_user.get("employee_id"), day_str)
+    return {"queued": True, "date": day_str, "updated_at": updated_at}
+
+
+@router.get("/pending-pull")
+async def pending_pull(x_ingest_token: str = Header(None)):
+    """The Worker asking: does anybody want a fetch?
+
+    Called on a heartbeat, so it must be cheap and must never do work. The
+    heartbeat is a schedule that NEVER REACHES THE VENDOR -- the MIS is touched
+    only when a person has asked, which is the whole point of the design.
+    """
+    if not _ingest_token_ok(x_ingest_token):
+        raise HTTPException(status_code=401, detail="Not authorised")
+    now = datetime.now(IST)
+
+    # ATOMIC. Read-then-write was not.
+    #
+    # This used to be a find_one followed by an unconditional $set, which is a
+    # check-then-act: two heartbeats -- and Cloudflare's cron can double-fire --
+    # both read the same request and both returned wanted:true. One tap, two MIS
+    # logins, two ingests. The same window also erased a request that arrived
+    # between the read and the write, so a tap could vanish with "queued": true
+    # already on the manager's screen and no record anywhere that they asked.
+    #
+    # find_one_and_update with $pop is one operation: exactly one caller can
+    # remove a given entry, and nothing else is touched.
+    for _ in range(MAX_QUEUE):      # bounded: drain stale entries, never spin
+        prev = await db[STATE].find_one_and_update(
+            {"_id": INGEST_STATE_KEY, "pull_queue.0": {"$exists": True}},
+            {"$pop": {"pull_queue": -1}})
+        if not prev:
+            return {"wanted": False}
+        entry = (prev.get("pull_queue") or [None])[0]
+        if not entry or not entry.get("date"):
+            continue
+        # A request nobody collected for REQUEST_TTL_MIN is not worth acting on:
+        # by then the manager has given up, and fetching against it spends a
+        # login answering a question nobody is still asking.
+        try:
+            age_min = (now - datetime.fromisoformat(entry["at"])).total_seconds() / 60
+        except Exception:
+            age_min = 0
+        if age_min > REQUEST_TTL_MIN:
+            logger.warning("closing: dropped a stale pull request for %s (%d min old)",
+                           entry["date"], age_min)
+            continue
+        return {"wanted": True, "date": entry["date"], "requested_at": entry["at"]}
+    return {"wanted": False}
 
 
 @router.get("/status")
@@ -1266,7 +1368,16 @@ async def _alert_fetch_failure(kind: str, detail: str, day: str):
     """
     st = await db[STATE].find_one({"_id": INGEST_STATE_KEY}) or {}
     if kind not in _ALERT_NOW:
-        since = st.get("failing_since")
+        # THIS DAY's failure clock, and no reset for a long gap.
+        #
+        # The clock used to be global with a two-hour "new episode" rule, which
+        # made sense for a poller running every ten minutes and is wrong now that
+        # fetches happen when somebody taps. Three hours of a dead MIS with taps
+        # at 18:00, 21:00 and 21:05 restarted the clock at 21:00 and alerted
+        # NOBODY -- a gap between taps is a normal evening, not a quiet night.
+        # And a stale clock left by a failed backfill made a later blip on a
+        # different day read as "failing for 35 minutes" and page everyone.
+        since = (st.get(f"run_{day}") or {}).get("failing_since")
         if not since:
             return
         try:

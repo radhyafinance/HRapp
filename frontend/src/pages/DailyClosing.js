@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
 import ClosingDesktop from "../components/closing/ClosingDesktop";
@@ -11,9 +11,18 @@ import ClosingMobile from "../components/closing/ClosingMobile";
  * on a phone wants the phone layout, and a Branch Manager who happens to be at a
  * desktop wants the table — the deciding factor is the screen, not the wrapper.
  *
- * Auto-refreshes during the evening because that is when the number is actually
- * moving: officers post until 21:00–23:00, so a screen left open at 19:30 would
- * otherwise show a figure that quietly went stale while someone read it.
+ * FETCHING IS ON DEMAND, NOT ON A CLOCK.
+ *
+ * Nothing here polls the MIS on a schedule. A fetch happens because somebody
+ * opened this screen or pressed Submit — the two moments when a stale figure
+ * actually costs something. A Cloudflare Worker does the fetching (this server
+ * has no route to the MIS at all), so "refresh" means recording that a pull is
+ * wanted; the Worker collects it on a short heartbeat and posts the workbook
+ * back. Worst case is about a minute.
+ *
+ * The floor is global and lives on the server: five managers tapping at 21:00
+ * is one fetch, not five, and the vendor sees a handful of requests an evening
+ * rather than ninety-eight a day.
  */
 
 const MOBILE_Q = "(max-width: 767px)";
@@ -57,8 +66,28 @@ export default function DailyClosing() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
+  // Seconds spent waiting on the fetcher. Shown, because Cloudflare's cron is
+  // best-effort and a wait a person can see is a different experience from one
+  // they cannot.
+  const [waitedS, setWaitedS] = useState(0);
+  // Lives HERE, not in the deposit panel. When the MIS drops a branch from the
+  // report the panel unmounts, and a message rendered inside it disappears at
+  // exactly the moment it matters most — the submit went through unchecked and
+  // nobody was told.
+  const [notice, setNotice] = useState("");
+  const runRef = useRef(0);
+  const mountedRef = useRef(true);
+  const dateRef = useRef(null);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   const isToday = date === todayIST();
+  // The date the screen is CURRENTLY showing. A wait that was started for another
+  // day must not write into it: changing the picker mid-wait does not start a new
+  // run (history is never auto-pulled), so the run token alone did not stop the
+  // old loop — it kept polling the old date and painting its money over the new
+  // day for the rest of its 150 seconds. Measured: the picker on 10-Aug showing
+  // 18-Aug's Rs 1,82,438.
+  dateRef.current = date;
 
   const load = useCallback(async (showSpinner = true) => {
     if (showSpinner) setLoading(true);
@@ -84,42 +113,117 @@ export default function DailyClosing() {
 
   useEffect(() => { load(); }, [load]);
 
-  // Keep today's screen live through the evening window, quietly.
+  /**
+   * Ask for a fresh pull and wait for it to land.
+   *
+   * Resolves to {status} — "fresh" (already recent, nothing to wait for),
+   * "delivered" (with the new day payload), "timeout", or "failed". Never
+   * throws: a fetch that did not happen must not block a manager who has cash in
+   * hand and a bank about to close. The CALLER decides what each outcome means.
+   */
+  const pullAndWait = useCallback(async () => {
+    // Every wait carries a token. Two can be in flight at once — the open-pull
+    // and a Submit, or a date change mid-wait — and without this the older loop
+    // kept polling the OLD date and writing its answers into the screen for up
+    // to 150 seconds. Measured: the picker on 10-Aug showing 18-Aug's money, and
+    // a guard message quoting one day's figure against another's.
+    const mine = ++runRef.current;
+    const startedFor = date;
+    const alive = () =>
+      runRef.current === mine && mountedRef.current && dateRef.current === startedFor;
+
+    const readDay = async () => {
+      try {
+        const d = (await API.get(`/closing/day?date=${date}`)).data;
+        if (alive()) setData(d);
+        return d;
+      } catch { return null; }
+    };
+
+    if (alive()) { setWaitedS(0); setRefreshing(true); }
+    try {
+      let before;
+      try {
+        const r = await API.post(`/closing/request-pull?date=${date}`);
+        // ALWAYS RE-READ, including when the server says the figures are already
+        // fresh. "Fresh" is global: another manager's pull, or the heartbeat,
+        // can have delivered new money that THIS page has never seen. Returning
+        // here without reading meant Submit compared its own stale props against
+        // themselves and filed a Rs 1,06,000 gap without a word.
+        if (!r.data?.queued && (r.data?.fresh || r.data?.throttled)) {
+          return { status: "fresh", day: await readDay() };
+        }
+        // The baseline comes from the SERVER, not from whatever this component
+        // happens to be holding. On first load `data` is null, so comparing
+        // against it made the first poll look like a change and returned
+        // instantly with the OLD figures — silently.
+        before = r.data?.updated_at ?? null;
+      } catch (e) {
+        if (alive()) setError(e?.response?.data?.detail || "Could not ask for a fresh pull.");
+        return { status: "failed", day: await readDay() };
+      }
+
+      // Cloudflare's cron is best-effort, not punctual: a firing can be late
+      // under load and can occasionally be skipped. So about a minute is the
+      // TYPICAL wait, not the bound — which is why the elapsed seconds are shown
+      // rather than a spinner, and why this gives up rather than hanging.
+      const started = Date.now();
+      const until = started + 150 * 1000;
+      while (Date.now() < until) {
+        await new Promise((r) => setTimeout(r, 3000));
+        if (!alive()) return { status: "abandoned" };
+        setWaitedS(Math.round((Date.now() - started) / 1000));
+        const fresh = await readDay();
+        if (!fresh) continue;                       // a blip is not a failure
+        if (fresh.updated_at && fresh.updated_at !== before) {
+          return { status: "delivered", day: fresh };
+        }
+        if (fresh.last_attempt_failed) {
+          if (alive()) {
+            setError(fresh.last_attempt_detail
+              ? `The MIS fetch failed: ${fresh.last_attempt_detail}`
+              : "The MIS fetch failed.");
+          }
+          return { status: "failed", day: fresh };
+        }
+      }
+      return { status: "timeout", day: await readDay() };
+    } finally {
+      // Only the newest run owns the shared spinner state. Otherwise the first
+      // loop to finish re-enabled the button while another was still waiting,
+      // and the visible counter jumped backwards between two baselines.
+      if (runRef.current === mine && mountedRef.current) setRefreshing(false);
+    }
+  }, [date]);
+
+  // Opening the screen asks for a pull. This is one of the two moments the
+  // design fetches at — the other is Submit — and it is why there is no clock
+  // anywhere in this file.
   useEffect(() => {
-    if (!isToday) return undefined;
-    const t = setInterval(() => {
-      const h = Number(new Date().toLocaleString("en-GB",
-        { timeZone: "Asia/Kolkata", hour: "2-digit", hour12: false }));
-      // Only while collections are actually landing. Polling all night would
-      // wake a phone for a number that cannot change.
-      if (h >= 8 && h <= 23) load(false);
-    }, 3 * 60 * 1000);
-    return () => clearInterval(t);
-  }, [isToday, load]);
+    if (!isToday) return;                 // history does not move on its own
+    pullAndWait().catch(() => {});
+    // Deliberately only on the date changing. Re-running whenever `data`
+    // changes would start a new pull every time one landed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date, isToday]);
 
   const onRefresh = async () => {
-    // Everyone gets the spinner. It used to be set only for admins, so a branch
-    // manager's tap looked like nothing had happened at all.
-    setRefreshing(true);
     setError("");
-    try {
-      // Only Head Office may make the server go and hit the MIS; a manager's
-      // refresh re-reads what the poller already stored. The backend enforces
-      // this too — this is not the security boundary, just the correct call.
-      if (isAdmin) await API.post(`/closing/refresh?date=${date}`);
-      await load(false);
-    } catch (e) {
-      setError(e?.response?.data?.detail || "The MIS fetch failed.");
-    } finally {
-      setRefreshing(false);
-    }
+    await pullAndWait();
+    await load(false);
   };
 
   const props = {
-    data, status, loading, refreshing, date, isToday,
+    data, status, loading, refreshing, waitedS, date, isToday,
     onRefresh,
     onDateChange: setDate,
     canRefresh: true,
+    // Submit pulls before it records anything. A manager who counted their cash
+    // at 21:40 and presses Submit at 21:45 must not file against a figure that
+    // moved in between — that difference resurfaces later as a shortfall nobody
+    // can explain, which is the whole failure this tool exists to prevent.
+    onBeforeSubmit: pullAndWait,
+    onNotice: setNotice,
     // Re-reads after a slip, a submission or an approval. Passed down rather
     // than each panel refetching itself, so one action refreshes one screen.
     onChanged: () => load(false),
@@ -131,6 +235,12 @@ export default function DailyClosing() {
         <div className="mb-3 rounded-lg border border-red-300 bg-red-50 px-4 py-2.5 text-sm text-red-800"
              data-testid="closing-error">
           {error}
+        </div>
+      )}
+      {notice && (
+        <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-4 py-2.5 text-sm text-amber-900"
+             data-testid="closing-notice">
+          {notice}
         </div>
       )}
       {isMobile ? <ClosingMobile {...props} /> : <ClosingDesktop {...props} />}

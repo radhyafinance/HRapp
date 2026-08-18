@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import { RefreshCw, AlertTriangle, Building2, Clock, Check, X } from "lucide-react";
+import Freshness from "./Freshness";
 import API from "../../utils/api";
-import { StateChip } from "./DepositPanel";
+import DepositPanel, { StateChip } from "./DepositPanel";
 
 /**
  * Head Office view of the day's collections.
@@ -23,8 +24,8 @@ import { StateChip } from "./DepositPanel";
 const money = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
 
 export default function ClosingDesktop({
-  data, status, loading, onRefresh, refreshing, date, onDateChange, canRefresh, isToday,
-  onChanged,
+  data, status, loading, onRefresh, refreshing, waitedS, date, onDateChange, canRefresh, isToday,
+  onChanged, onBeforeSubmit, onNotice,
 }) {
   const branches = data?.branches || [];
   const t = data?.totals || {};
@@ -61,11 +62,17 @@ export default function ClosingDesktop({
               data-testid="closing-refresh"
             >
               <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
-              {refreshing ? "Fetching…" : "Refresh now"}
+              {refreshing ? "Checking…" : "Check for updates"}
             </button>
           )}
         </div>
       </div>
+
+      {/* Freshness, for everybody — not only the admins who can see the health
+          strip. The manager at 21:00 is the person who most needs to know
+          whether this figure is four minutes or four hours old. */}
+      <Freshness updatedAt={data?.updated_at} refreshing={refreshing}
+                 waitedS={waitedS} isToday={isToday} />
 
       {status && (
         <div
@@ -197,6 +204,19 @@ export default function ClosingDesktop({
           </table>
         </div>
       </div>
+
+      {/* THE BM'S OWN JOB, ON THIS LAYOUT TOO.
+          It used to exist only in the mobile layout, and the split is by
+          VIEWPORT WIDTH — so a 375x812 handset turned sideways is 812px wide and
+          became "desktop": the deposit panel vanished mid-count and the typed
+          cash was lost. A manager on a laptop had no way to file a closing at
+          all. */}
+      {branches.length === 1 && onChanged && (
+        <div className="mt-5 max-w-xl">
+          <DepositPanel branch={branches[0]} date={date} onChanged={onChanged}
+                        onBeforeSubmit={onBeforeSubmit} onNotice={onNotice} />
+        </div>
+      )}
 
       <p className="mt-3 text-xs text-slate-500 leading-relaxed max-w-3xl">
         This is what the day <strong>owes</strong>, not proof it was banked — deposit slips are
