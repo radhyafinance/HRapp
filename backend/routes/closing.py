@@ -116,6 +116,11 @@ PULL_FLOOR_S = 5 * 60
 # for that day for ever -- rotate the token on the Worker's side only and every
 # heartbeat 401s, while /request-pull answers "already queued" six hours later.
 REQUEST_TTL_MIN = 15
+# The Worker budgets ninety seconds end to end and allows thirty more for the
+# ingest POST, so anything under about two minutes of silence is a run IN
+# PROGRESS, not a run lost. Four minutes is the honest threshold; below it we
+# would be calling a slow evening a failure.
+FETCHER_SILENT_ALARM_S = 4 * 60
 MAX_QUEUE = 20
 # The furthest back the queue may ever ask for. Bounded because a request spends
 # a login against somebody else's production MIS.
@@ -147,6 +152,25 @@ def _run_for(st: dict, day_str: str) -> dict:
 def _updated_at_for(st: dict, day_str: str):
     """When THIS day last landed. Never another day's timestamp."""
     return _run_for(st, day_str).get("ok_at")
+
+
+def _unanswered_seconds(st: dict, day_str: str):
+    """A fetch was handed out for this day and nothing came back. How long ago?
+
+    None when nothing is outstanding. This is the silent case: the request was
+    consumed, so it is not in the queue, and no run was recorded, so it is not in
+    the failure log either. Without this it is invisible from both ends.
+    """
+    served = st.get(f"served_{day_str}")
+    if not served:
+        return None
+    run_at = (_run_for(st, day_str) or {}).get("at")
+    try:
+        if run_at and datetime.fromisoformat(run_at) >= datetime.fromisoformat(served):
+            return None                       # answered, well or badly
+        return int((datetime.now(IST) - datetime.fromisoformat(served)).total_seconds())
+    except Exception:
+        return None
 
 
 def _pending_seconds(st: dict, day_str: str):
@@ -539,6 +563,8 @@ async def closing_day(
             "updated_at": _updated_at_for(st, day_str),
             "pull_pending": _pending_seconds(st, day_str) is not None,
             "pull_waiting_seconds": _pending_seconds(st, day_str),
+            "fetcher_silent_seconds": _unanswered_seconds(st, day_str),
+            "fetcher_silent": (_unanswered_seconds(st, day_str) or 0) >= FETCHER_SILENT_ALARM_S,
             "last_attempt_failed": _run_for(st, day_str).get("ok") is False,
             "last_attempt_detail": (_run_for(st, day_str).get("detail")
                                     if _run_for(st, day_str).get("ok") is False
@@ -672,6 +698,16 @@ async def pending_pull(x_ingest_token: str = Header(None)):
             logger.warning("closing: dropped a stale pull request for %s (%d min old)",
                            entry["date"], age_min)
             continue
+        # Record that we HANDED THIS OUT. Consumed-on-read means the request is
+        # gone the moment it is read, so a fetcher that dies between reading and
+        # reporting leaves no trace anywhere -- the tap simply never happened as
+        # far as this system is concerned. The Worker found three paths that do
+        # exactly that (a timeout mid-body, a dropped connection, a truncated
+        # response), and none of them can report because the thing that would
+        # report is what failed. This is the only end that can notice.
+        await db[STATE].update_one(
+            {"_id": INGEST_STATE_KEY},
+            {"$set": {f"served_{entry['date']}": now.isoformat()}}, upsert=True)
         return {"wanted": True, "date": entry["date"], "requested_at": entry["at"]}
     return {"wanted": False}
 
@@ -1327,6 +1363,12 @@ class IngestReport(BaseModel):
     error: Optional[str] = None
     kind: Optional[str] = None         # auth|blocked|bug|network|shape|other
     source: Optional[str] = None       # e.g. "cloudflare-worker"
+    # True when the fetcher could not read the date it was working on and had to
+    # guess. It arises from the worst case on that side: a request consumed,
+    # then the read fails mid-body, so the day being reported is salvaged or
+    # assumed. Without this we would have to parse an English sentence to know
+    # whether a failure is a fact about today or a shrug.
+    date_uncertain: bool = False
 
 
 def _ingest_token_ok(supplied: Optional[str]) -> bool:
@@ -1460,10 +1502,18 @@ async def ingest_report(body: IngestReport, x_ingest_token: str = Header(None)):
     if (body.status or "").lower() != "ok":
         kind = (body.kind or "other").lower()
         detail = (body.error or "no detail")[:300]
+        if body.date_uncertain:
+            # Say so on the screen. Filing this as a plain fact about the day
+            # would put "the MIS fetch failed" against figures that may be
+            # perfectly current, for a day the fetcher was not even sure it was
+            # working on.
+            detail = f"{detail} (the fetcher could not confirm which day this was)"
         await _note_fetch_attempt(day_str, False, f"{kind}: {detail}", kind=kind)
         await _alert_fetch_failure(kind, detail, day_str)
-        logger.warning("closing: fetcher reported %s for %s: %s", kind, day_str, detail)
-        return {"ok": False, "recorded": True, "kind": kind}
+        logger.warning("closing: fetcher reported %s for %s%s: %s", kind, day_str,
+                       " (date uncertain)" if body.date_uncertain else "", detail)
+        return {"ok": False, "recorded": True, "kind": kind,
+                "date_uncertain": bool(body.date_uncertain)}
 
     if not body.file_b64:
         raise HTTPException(status_code=400, detail="status=ok requires file_b64")
