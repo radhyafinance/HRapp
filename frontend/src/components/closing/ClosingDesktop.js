@@ -3,6 +3,7 @@ import { RefreshCw, AlertTriangle, Building2, Clock, Check, X } from "lucide-rea
 import Freshness from "./Freshness";
 import API from "../../utils/api";
 import DepositPanel, { StateChip } from "./DepositPanel";
+import SlipModal from "./SlipModal";
 
 /**
  * Head Office view of the day's collections.
@@ -21,6 +22,23 @@ import DepositPanel, { StateChip } from "./DepositPanel";
  *    read at 19:00 is not final, and saying so is the entire reason this exists.
  */
 
+/**
+ * Minutes since an ISO timestamp, computed HERE rather than taken from the
+ * server's own arithmetic.
+ *
+ * `minutes_since_last_run` is correct at the moment the response is built and
+ * then frozen: a screen left open at 16:49 kept saying "checked 2 min ago" while
+ * the freshness line above it, which recomputes, climbed past four. Two numbers
+ * measuring the same instant, disagreeing on screen, is how an evening gets
+ * spent doubting a pipeline that was working.
+ */
+function minsSince(iso) {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return null;
+  return Math.max(0, Math.round((Date.now() - t) / 60000));
+}
+
 const money = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
 
 export default function ClosingDesktop({
@@ -33,7 +51,10 @@ export default function ClosingDesktop({
 
   // A poller that has not run for a while is the failure this screen must not
   // hide. 45 minutes is well past the 15-minute daytime cadence.
-  const stale = status && status.minutes_since_last_run != null && status.minutes_since_last_run >= 45;
+  // Recomputed on every render, so it ages with the page instead of freezing
+  // at whatever the server said when this screen was opened.
+  const ranMinsAgo = minsSince(status && status.last_run_at);
+  const stale = ranMinsAgo != null && ranMinsAgo >= 45;
   const lastPost = branches.reduce(
     (a, b) => (b.last_posted_at && b.last_posted_at > a ? b.last_posted_at : a), "");
 
@@ -86,7 +107,7 @@ export default function ClosingDesktop({
           <span className="inline-flex items-center gap-1.5">
             <Clock size={14} />
             {status.last_run_at
-              ? <>Checked the MIS {status.minutes_since_last_run ?? "?"} min ago</>
+              ? <>Checked the MIS {ranMinsAgo ?? "?"} min ago</>
               : <>The MIS poller has never run</>}
           </span>
           {status.last_change_at && (
@@ -115,7 +136,28 @@ export default function ClosingDesktop({
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 mb-5">
+        {/* FIRST, deliberately. Cash carried from earlier days appears in no
+            other figure on this screen — not in today's collections, not in
+            today's deposit target — so a branch can carry it for days with
+            nobody at Head Office noticing. It is the number that was missing. */}
+        <Stat
+          label="Cash carried forward"
+          value={money(t.carried_in)}
+          sub={t.carried_in ? "Not yet banked, from earlier days" : "Nothing outstanding"}
+          warn={Boolean(t.carried_in)}
+        >
+          {/* Branches with a hold and NO ROW in the table below. The server sends
+              them separately precisely so this can name them — a headline figure
+              with part of it traceable nowhere on the page is worse than no
+              headline at all. */}
+          {(t.carried_elsewhere || []).map((e) => (
+            <div key={e.branch_code} className="text-xs text-amber-900 mt-1">
+              {e.branch_name || e.branch_code || "unnamed branch"} {money(e.amount)}
+              <span className="text-amber-800/70"> — no collections reported today</span>
+            </div>
+          ))}
+        </Stat>
         <Stat label="Demand as per CDS" value={money(t.demand_cds)} sub="What was due today" />
         <Stat label="Collected" value={money(t.collected)} sub={`${branches.length} branch${branches.length === 1 ? "" : "es"}`} />
         <Stat label="UPI — already in a bank" value={money(t.upi)} sub="Not to be deposited" />
@@ -245,57 +287,52 @@ export default function ClosingDesktop({
  */
 function SlipViewer({ slips }) {
   const [open, setOpen] = useState(false);
-  const [images, setImages] = useState({});
+  // The slip ID, not the slip. Holding the object froze it at click time, so
+  // a revision landing while the modal was open left it showing one figure
+  // and the row two inches behind it showing another.
+  const [showingId, setShowingId] = useState(null);
+  const showing = slips.find((x) => x.id === showingId) || null;
   if (!slips.length) return null;
-
-  const toggle = async () => {
-    const next = !open;
-    setOpen(next);
-    if (!next) return;
-    for (const s of slips) {
-      if (images[s.id]) continue;
-      try {
-        const r = await API.get(`/closing/slips/${s.id}/image`);
-        setImages((m) => ({ ...m, [s.id]: `data:${r.data.mime};base64,${r.data.image_b64}` }));
-      } catch {
-        setImages((m) => ({ ...m, [s.id]: "error" }));
-      }
-    }
-  };
 
   return (
     <div className="mt-1">
-      <button onClick={toggle} className="text-slate-500 underline underline-offset-2"
+      <button onClick={() => setOpen(!open)} className="text-slate-500 underline underline-offset-2"
               data-testid="slip-viewer-toggle">
         {open ? "Hide" : `View ${slips.length} slip${slips.length === 1 ? "" : "s"}`}
       </button>
       {open && (
-        <div className="mt-1.5 space-y-2">
+        <div className="mt-1.5 space-y-1">
           {slips.map((s) => (
-            <div key={s.id} className="rounded border border-slate-200 bg-white p-1.5">
+            // The whole row opens the slip. Thumbnails used to load inline for
+            // every slip at once, which fetched several megabytes of receipts to
+            // read a table — and were too small to check a figure against anyway.
+            <button key={s.id} onClick={() => setShowingId(s.id)}
+                    data-testid={`slip-row-${s.id}`}
+                    className="w-full text-left rounded border border-slate-200 bg-white
+                               px-2 py-1.5 hover:border-[#E85B1E] hover:bg-orange-50/40">
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-slate-500">
                   {s.bank_name || "Slip"}{s.reference_no ? ` · ${s.reference_no}` : ""}
                 </span>
-                <span className="tabular-nums font-medium text-slate-900">{money(s.amount)}</span>
+                <span className="tabular-nums font-medium text-slate-900">
+                  {s.status === "confirmed" && s.amount != null ? money(s.amount) : "—"}
+                </span>
               </div>
-              {/* Flagged when the human changed what the model read. An approver
-                  should know which figures were corrected by hand. */}
               {s.amount_was_corrected && (
                 <div className="text-amber-700">amount corrected by the branch</div>
               )}
-              {images[s.id] === "error" && <div className="text-red-600">image unavailable</div>}
-              {images[s.id] && images[s.id] !== "error" && (
-                <a href={images[s.id]} target="_blank" rel="noreferrer">
-                  <img src={images[s.id]} alt="Deposit slip"
-                       className="mt-1 w-full max-h-40 object-contain bg-slate-50 rounded" />
-                </a>
+              {s.remark && <div className="text-slate-500 truncate">“{s.remark}”</div>}
+              {(s.ocr || {}).status === "reading" && (
+                <div className="text-slate-400">being read…</div>
               )}
-              {!images[s.id] && <div className="text-slate-400 mt-1">loading…</div>}
-            </div>
+              {s.status !== "confirmed" && (s.ocr || {}).status !== "reading" && (
+                <div className="text-amber-700">not yet confirmed</div>
+              )}
+            </button>
           ))}
         </div>
       )}
+      {showing && <SlipModal slip={showing} onClose={() => setShowingId(null)} />}
     </div>
   );
 }
@@ -336,10 +373,27 @@ function BankedCell({ branch, date, canApprove, onChanged }) {
     );
   }
   if (c.state !== "deposited") {
+    // A DAY STILL OPEN IS NOT A BLANK DAY.
+    //
+    // This used to return the chip and nothing else, so while a branch manager
+    // was photographing and confirming slips, Head Office saw a status word and
+    // no figures at all — everything appeared only after Send. A confirmed slip
+    // is a fact, and there is no reason to withhold it. It is labelled as still
+    // in progress so a partial set is not mistaken for a finished one.
+    const led = c.ledger || {};
     return (
-      <div className="text-xs text-slate-400">
+      <div className="text-xs text-slate-500">
         <StateChip state={c.state || "awaiting"} />
         {c.reject_reason && <div className="mt-1 text-red-600">returned</div>}
+        {(c.slips || []).length > 0 && (
+          <>
+            <div className="mt-1 tabular-nums text-slate-700">
+              {money(led.deposited)} banked so far
+            </div>
+            <div className="text-slate-400">in progress — not yet sent</div>
+            <SlipViewer slips={c.slips || []} />
+          </>
+        )}
       </div>
     );
   }
@@ -395,14 +449,19 @@ function BankedCell({ branch, date, canApprove, onChanged }) {
   );
 }
 
-function Stat({ label, value, sub, emphasis }) {
+function Stat({ label, value, sub, emphasis, warn, children }) {
+  const box = warn ? "border-amber-300 bg-amber-50"
+            : emphasis ? "border-[#E85B1E]/40 bg-[#E85B1E]/5"
+            : "border-slate-200 bg-white";
+  const fig = warn ? "text-amber-900" : emphasis ? "text-[#E85B1E]" : "text-slate-900";
   return (
-    <div className={`rounded-xl border p-4 ${emphasis ? "border-[#E85B1E]/40 bg-[#E85B1E]/5" : "border-slate-200 bg-white"}`}>
+    <div className={`rounded-xl border p-4 ${box}`}>
       <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
-      <div className={`mt-1 text-2xl font-semibold tabular-nums ${emphasis ? "text-[#E85B1E]" : "text-slate-900"}`}>
+      <div className={`mt-1 text-2xl font-semibold tabular-nums ${fig}`}>
         {value}
       </div>
       {sub && <div className="text-xs text-slate-500 mt-0.5">{sub}</div>}
+      {children}
     </div>
   );
 }

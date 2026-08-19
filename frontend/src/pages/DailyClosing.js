@@ -55,6 +55,31 @@ function todayIST() {
   return s; // en-CA gives ISO order
 }
 
+/**
+ * A report that momentarily loses a branch must not blank the screen.
+ *
+ * The deposit panel unmounts when its branch disappears from the payload, and
+ * everything typed into it — the counted cash, a slip amount mid-keystroke, the
+ * hold reason — goes with it. That was survivable while the page fetched twice an
+ * evening. It is not now: the panel polls every four seconds while a slip is
+ * being read, so every one of those is a chance for the MIS report to be a branch
+ * short, which `check_expected_branches` exists because it happens.
+ *
+ * So: if a day that HAD branches comes back with none, keep what we had and say
+ * so. A genuinely empty day — a Sunday, a holiday — has nothing to keep and shows
+ * empty as before.
+ */
+function keepBranches(prev, next, date, setNotice) {
+  const had = (prev?.branches || []).length;
+  const now = (next?.branches || []).length;
+  if (prev?.date === date && had > 0 && now === 0) {
+    setNotice("The last check came back with no branches at all, so these figures "
+              + "are the ones from a moment ago. Press Check for updates.");
+    return { ...next, branches: prev.branches, totals: prev.totals };
+  }
+  return next;
+}
+
 export default function DailyClosing() {
   const { user } = useAuth();
   const isMobile = useIsMobile();
@@ -94,7 +119,7 @@ export default function DailyClosing() {
     setError("");
     try {
       const res = await API.get(`/closing/day?date=${date}`);
-      setData(res.data);
+      setData((prev) => keepBranches(prev, res.data, date, setNotice));
     } catch (e) {
       // A failed poll must not blank a figure that was on screen a second ago —
       // an empty table reads as "nothing was collected", which is a different
@@ -135,12 +160,14 @@ export default function DailyClosing() {
     const readDay = async () => {
       try {
         const d = (await API.get(`/closing/day?date=${date}`)).data;
-        if (alive()) setData(d);
+        // Same guard as `load`. This path polls every three seconds during a
+        // wait, so it is the likeliest place to catch a report a branch short.
+        if (alive()) setData((prev) => keepBranches(prev, d, date, setNotice));
         return d;
       } catch { return null; }
     };
 
-    if (alive()) { setWaitedS(0); setRefreshing(true); }
+    if (alive()) { setWaitedS(0); setRefreshing(true); setNotice(""); }
     try {
       let before;
       try {
@@ -150,7 +177,23 @@ export default function DailyClosing() {
         // can have delivered new money that THIS page has never seen. Returning
         // here without reading meant Submit compared its own stale props against
         // themselves and filed a Rs 1,06,000 gap without a word.
-        if (!r.data?.queued && (r.data?.fresh || r.data?.throttled)) {
+        if (!r.data?.queued && r.data?.throttled) {
+          // SAY SO. A refused request used to return "fresh", which is what the
+          // screen shows when the data is genuinely current — no message, no
+          // counter, nothing. Pressing Check for a DIFFERENT day inside the
+          // window looked identical to "already up to date" while the request
+          // was silently dropped. A 14-Aug re-pull was asked for four times and
+          // never once reached the fetcher.
+          const wait = Math.ceil((r.data.seconds_until_next || 0) / 60);
+          if (alive()) {
+            setNotice("Somebody checked less than five minutes ago, so this one "
+              + "was not sent"
+              + (wait ? ` — try again in about ${wait} minute${wait === 1 ? "" : "s"}` : "")
+              + ".");
+          }
+          return { status: "throttled", day: await readDay() };
+        }
+        if (!r.data?.queued && r.data?.fresh) {
           return { status: "fresh", day: await readDay() };
         }
         // The baseline comes from the SERVER, not from whatever this component

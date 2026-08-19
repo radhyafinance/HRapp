@@ -1,7 +1,8 @@
-import React from "react";
+import React, { useState } from "react";
 import { RefreshCw, AlertTriangle, Clock, Banknote } from "lucide-react";
 import Freshness from "./Freshness";
 import DepositPanel, { StateChip } from "./DepositPanel";
+import SlipModal from "./SlipModal";
 
 /**
  * The phone view — what a Branch Manager sees at 9pm, standing somewhere.
@@ -19,6 +20,23 @@ import DepositPanel, { StateChip } from "./DepositPanel";
  * who deposits against a 19:00 figure will be short.
  */
 
+/**
+ * Minutes since an ISO timestamp, computed HERE rather than taken from the
+ * server's own arithmetic.
+ *
+ * `minutes_since_last_run` is correct at the moment the response is built and
+ * then frozen: a screen left open at 16:49 kept saying "checked 2 min ago" while
+ * the freshness line above it, which recomputes, climbed past four. Two numbers
+ * measuring the same instant, disagreeing on screen, is how an evening gets
+ * spent doubting a pipeline that was working.
+ */
+function minsSince(iso) {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return null;
+  return Math.max(0, Math.round((Date.now() - t) / 60000));
+}
+
 const money = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
 
 export default function ClosingMobile({
@@ -33,7 +51,10 @@ export default function ClosingMobile({
   // is only one branch the per-branch cards below are skipped, so without this
   // the BM sees a total that is quietly short with nothing explaining it.
   const unknownTotal = branches.reduce((a, b) => a + (Number(b.unknown) || 0), 0);
-  const stale = status && status.minutes_since_last_run != null && status.minutes_since_last_run >= 45;
+  // Recomputed on every render, so it ages with the page instead of freezing
+  // at whatever the server said when this screen was opened.
+  const ranMinsAgo = minsSince(status && status.last_run_at);
+  const stale = ranMinsAgo != null && ranMinsAgo >= 45;
   const lastPost = branches.reduce(
     (a, b) => (b.last_posted_at && b.last_posted_at > a ? b.last_posted_at : a), "");
 
@@ -64,7 +85,40 @@ export default function ClosingMobile({
         data-testid="closing-date-mobile"
       />
 
-      {/* The hero number. For a BM this is their branch; for HO it is everything. */}
+      {/* CARRIED FORWARD, ABOVE THE HERO.
+          Cash from earlier days appears in no other figure here — not in today's
+          collections, not in today's deposit target — so a branch could carry it
+          for days with nobody noticing. It only renders when there IS something
+          outstanding; a zero every night trains people to stop reading it. */}
+      {t.carried_in > 0 && (
+        <div className="rounded-2xl border border-amber-300 bg-amber-50 p-4 mb-3"
+             data-testid="closing-carried">
+          <div className="text-xs uppercase tracking-wide text-amber-800 font-medium">
+            Cash carried forward
+          </div>
+          <div className="mt-0.5 text-2xl font-semibold tabular-nums text-amber-900">
+            {money(t.carried_in)}
+          </div>
+          <div className="text-sm text-amber-900/80 mt-0.5">
+            Not yet banked, from earlier days
+            {single && branches[0]?.closing?.carried_in?.from_date
+              ? ` — held since ${branches[0].closing.carried_in.from_date}` : ""}
+          </div>
+          {(t.carried_elsewhere || []).map((e) => (
+            <div key={e.branch_code} className="text-sm text-amber-900 mt-0.5">
+              {e.branch_name || e.branch_code} {money(e.amount)} — no collections
+              reported today
+            </div>
+          ))}
+          {single && branches[0]?.closing?.carried_in?.remark && (
+            <div className="mt-1.5 text-sm text-amber-900 border-t border-amber-300/60 pt-1.5">
+              “{branches[0].closing.carried_in.remark}”
+            </div>
+          )}
+        </div>
+      )}
+
+            {/* The hero number. For a BM this is their branch; for HO it is everything. */}
       <div className="rounded-2xl border border-[#E85B1E]/40 bg-[#E85B1E]/5 p-5 mb-3">
         <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-[#E85B1E] font-medium">
           <Banknote size={14} /> Cash to deposit
@@ -106,7 +160,7 @@ export default function ClosingMobile({
         <p className="text-xs text-amber-900 bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 mb-3 flex items-start gap-1.5">
           <Clock size={13} className="mt-0.5 shrink-0" />
           <span>
-            Last checked with the MIS {status.minutes_since_last_run} minutes ago —
+            Last checked with the MIS {ranMinsAgo ?? "?"} minutes ago —
             these figures may be out of date.
           </span>
         </p>
@@ -165,6 +219,10 @@ export default function ClosingMobile({
               {money(b.unknown)} unclassified — excluded from the deposit figure
             </div>
           )}
+          {/* What the branch has banked, and the slips behind it. Head Office on
+              a handset used to get totals and a status word — no amounts, no
+              slips, nothing to approve against. */}
+          <BranchDeposit branch={b} />
         </div>
       ))}
 
@@ -182,6 +240,90 @@ function Row({ label, value, muted }) {
       <span className={`tabular-nums ${muted ? "text-slate-700" : "font-medium text-slate-900"}`}>
         {value}
       </span>
+    </div>
+  );
+}
+
+
+/**
+ * One branch's banking, on a phone, for somebody who is not that branch.
+ *
+ * Head Office opening this on a handset used to see a branch name, a figure and
+ * a status chip — no amounts banked, no slips, nothing to approve against. The
+ * per-branch card is where that belongs, because on a phone there is no table to
+ * put it in.
+ */
+function BranchDeposit({ branch }) {
+  const c = branch.closing || {};
+  const slips = c.slips || [];
+  const led = c.ledger || {};
+  // The slip ID, not the slip. Holding the object froze it at click time, so
+  // a revision landing while the modal was open left it showing one figure
+  // and the row two inches behind it showing another.
+  const [showingId, setShowingId] = useState(null);
+  const showing = slips.find((x) => x.id === showingId) || null;
+  const carried = c.carried_in || {};
+
+  if (!slips.length && !c.cash_counted && !carried.amount) return null;
+
+  return (
+    <div className="mt-2 border-t border-slate-100 pt-2 text-xs">
+      {carried.amount > 0 && (
+        <div className="text-amber-800 mb-1">
+          {money(carried.amount)} carried in
+          {carried.from_date ? ` from ${carried.from_date}` : ""}
+          {carried.remark ? ` — “${carried.remark}”` : ""}
+          {/* Both of these are sent by the server and were rendered nowhere. A
+              figure Accounts has REFUSED, or one the earlier day has since been
+              recounted away from, is not the same as a settled balance. */}
+          {carried.disputed && (
+            <div className="text-red-700">Accounts returned that day's count — not settled.</div>
+          )}
+          {carried.recounted_to != null && (
+            <div className="text-amber-900">
+              That day has since been recounted to {money(carried.recounted_to)}.
+            </div>
+          )}
+        </div>
+      )}
+      <div className="text-slate-600 tabular-nums">
+        {money(led.deposited)} banked
+        {c.cash_counted != null && <> · {money(c.cash_counted)} held</>}
+        {c.state !== "deposited" && c.state !== "approved" && (
+          <span className="text-slate-400"> · in progress</span>
+        )}
+      </div>
+      {c.hold_remark && (
+        <div className="text-slate-500 mt-0.5">“{c.hold_remark}”</div>
+      )}
+      {slips.map((s) => (
+        <button key={s.id} onClick={() => setShowingId(s.id)}
+                data-testid={`slip-row-${s.id}`}
+                className="mt-1.5 w-full text-left rounded border border-slate-200 px-3 py-2.5
+                           hover:border-[#E85B1E]">
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="text-slate-500">
+              {s.bank_name || "Slip"}{s.reference_no ? ` · ${s.reference_no}` : ""}
+            </span>
+            <span className="tabular-nums font-medium text-slate-900">
+              {s.status === "confirmed" && s.amount != null ? money(s.amount) : "—"}
+            </span>
+          </div>
+          {s.amount_was_corrected && (
+            <div className="text-amber-700">amount corrected by the branch</div>
+          )}
+          {s.remark && <div className="text-slate-500 truncate">“{s.remark}”</div>}
+          {/* The desktop rows say this and these did not, so a phone showed
+              "Slip Rs 0" with no explanation. */}
+          {(s.ocr || {}).status === "reading" && (
+            <div className="text-slate-400">being read…</div>
+          )}
+          {s.status !== "confirmed" && (s.ocr || {}).status !== "reading" && (
+            <div className="text-amber-700">not yet confirmed</div>
+          )}
+        </button>
+      ))}
+      {showing && <SlipModal slip={showing} onClose={() => setShowingId(null)} />}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import API from "../../utils/api";
 import { Camera, Check, Trash2, AlertTriangle, Loader2, Send } from "lucide-react";
 
@@ -50,13 +50,17 @@ export default function DepositPanel({ branch, date, onChanged, onBeforeSubmit,
   const slips = c.slips || [];
   const ledger = c.ledger || {};
   const state = c.state || "awaiting";
+  const carried = c.carried_in || {};
   const fileRef = useRef(null);
 
   const [busy, setBusy] = useState("");
+  const [uploading, setUploading] = useState(0);
   const [phase, setPhase] = useState("");
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
   const [drafts, setDrafts] = useState({});     // slipId -> typed amount
+  const [notes, setNotes] = useState({});       // slipId -> note, fixed at confirm
+  const [holdRemark, setHoldRemark] = useState(c.hold_remark || "");
   const [counted, setCounted] = useState(
     c.cash_counted == null ? "" : String(c.cash_counted));
   // THE TARGET THE MANAGER WAS LOOKING AT WHEN THEY COUNTED.
@@ -70,7 +74,29 @@ export default function DepositPanel({ branch, date, onChanged, onBeforeSubmit,
   const noteTarget = (v) => {
     if (seenTarget.current === null) seenTarget.current = Number(ledger.should_hold) || 0;
     setCounted(v);
+    // The reason box disappears when the count returns to zero, so the BM
+    // reasonably believes the note went with it. It used to be filed anyway,
+    // and then rendered beside "Rs 0 held".
+    if (!(Number(v) > 0)) setHoldRemark("");
   };
+
+  // Slips are read after they are stored, so the proposal arrives a few seconds
+  // after the slip does. Poll only while at least one is still being read, and
+  // stop as soon as none are — a permanent timer would wake a phone all evening
+  // for a figure that has stopped changing.
+  const reading = slips.filter((s) => (s.ocr || {}).status === "reading").length;
+  useEffect(() => {
+    if (!reading) return undefined;
+    const t = setInterval(() => { onChanged(); }, 4000);
+    return () => clearInterval(t);
+    // `date` and `onChanged` BOTH belong here. With only [reading] the closure
+    // froze at the render where reading began, so switching the picker while a
+    // slip was still being read left this interval fetching the OLD day every
+    // four seconds and painting its money under the new date — one day's cash
+    // under another day's heading, with Confirm and Send carrying the new date.
+    // pullAndWait was fixed for exactly this a patch ago; this poll walked
+    // straight past that guard.
+  }, [reading, date, onChanged]);
 
   const confirmedTotal = slips
     .filter((s) => s.status === "confirmed")
@@ -92,16 +118,37 @@ export default function DepositPanel({ branch, date, onChanged, onBeforeSubmit,
     finally { setBusy(""); setPhase(""); }
   };
 
+  // UPLOADS DO NOT BLOCK EACH OTHER, and none of them blocks the panel.
+  //
+  // The server used to read the slip inside the upload request — thirty seconds
+  // per slip, with the whole panel disabled in between, so four slips was two
+  // minutes of a manager standing at a bank doing nothing. The photograph is
+  // stored immediately now and read afterwards; several can be in flight, and
+  // the amount can be typed the moment a slip appears.
   const onPick = async (e) => {
-    const file = e.target.files?.[0];
+    const files = [...(e.target.files || [])];
     e.target.value = "";               // so the same file can be picked twice
-    if (!file) return;
-    await run("upload", async () => {
-      const { b64, mime } = await downscale(file);
-      await API.post("/closing/slips", {
-        date, branch_code: branch.branch_code, image_b64: b64, mime,
-      });
-    });
+    if (!files.length) return;
+    setError("");
+    setUploading((n) => n + files.length);
+    await Promise.all(files.map(async (file) => {
+      try {
+        const { b64, mime } = await downscale(file);
+        await API.post("/closing/slips", {
+          date, branch_code: branch.branch_code, image_b64: b64, mime,
+        });
+      } catch (err) {
+        // WHICH photograph. One line saying "a slip did not upload" makes
+        // two-of-four indistinguishable from one-of-four, and the BM has no way
+        // to know which to retake.
+        const why = err?.response?.data?.detail || "it did not upload";
+        setError((prev) => [prev, `${file.name || "That slip"}: ${why}`]
+                 .filter(Boolean).join(" · "));
+      } finally {
+        setUploading((n) => n - 1);
+      }
+    }));
+    await onChanged();
   };
 
   if (locked) {
@@ -125,7 +172,42 @@ export default function DepositPanel({ branch, date, onChanged, onBeforeSubmit,
         <StateChip state={state} />
       </div>
 
-      {c.reject_reason && (
+      {/* WHY THERE IS ALREADY CASH IN THE DRAWER, before anything about today.
+          A number on its own invites the question it should have answered: a BM
+          opening to "Rs 50,000 carried in" goes to ask somebody, while "carried
+          from 18-Aug — bank shut after 4" is a fact they can act on. */}
+      {Number(carried.amount) > 0 && (
+        <div className="mb-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm"
+             data-testid="carried-in">
+          <div className="font-medium text-amber-900 tabular-nums">
+            {money(carried.amount)} carried forward
+            {carried.from_date ? <span className="font-normal"> from {carried.from_date}</span> : null}
+          </div>
+          {carried.remark && (
+            <div className="text-amber-900/90 mt-0.5">“{carried.remark}”</div>
+          )}
+          {/* Do not reassure a BM about a figure Accounts has refused. This box
+              used to say "it is included in what you should be holding" over a
+              count that had been returned for a recount. */}
+          {carried.disputed && (
+            <div className="mt-0.5 font-medium text-red-700">
+              Accounts returned that day's count — it is not settled. Check with
+              Head Office before banking to it.
+            </div>
+          )}
+          {carried.recounted_to != null && (
+            <div className="mt-0.5 text-amber-900">
+              That day has since been recounted to {money(carried.recounted_to)}. This
+              figure is the one your closing was submitted against.
+            </div>
+          )}
+          <div className="text-xs text-amber-800/80 mt-0.5">
+            Still to reach a bank. It is included in what you should be holding.
+          </div>
+        </div>
+      )}
+
+            {c.reject_reason && (
         <div className="mb-3 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
           <strong>Returned by Accounts:</strong> {c.reject_reason}
         </div>
@@ -161,7 +243,14 @@ export default function DepositPanel({ branch, date, onChanged, onBeforeSubmit,
               </button>
             </div>
 
-            {o.needs_review && !done && (
+            {o.status === "reading" && !done && (
+              <div className="mt-1 text-xs text-slate-500 flex items-center gap-1.5">
+                <Loader2 size={12} className="animate-spin" />
+                Reading it… you can type the amount without waiting.
+              </div>
+            )}
+
+            {o.needs_review && !done && o.status !== "reading" && (
               <div className="mt-1 text-xs text-amber-800 flex items-start gap-1">
                 <AlertTriangle size={12} className="mt-0.5 shrink-0" />
                 <span>
@@ -174,12 +263,21 @@ export default function DepositPanel({ branch, date, onChanged, onBeforeSubmit,
             )}
 
             {done ? (
-              <div className="mt-1 flex items-center justify-between">
-                <span className="text-lg font-semibold tabular-nums text-slate-900">{money(s.amount)}</span>
-                <span className="text-xs text-emerald-700 flex items-center gap-1">
-                  <Check size={13} /> confirmed
-                </span>
-              </div>
+              <>
+                <div className="mt-1 flex items-center justify-between">
+                  <span className="text-lg font-semibold tabular-nums text-slate-900">{money(s.amount)}</span>
+                  <span className="text-xs text-emerald-700 flex items-center gap-1">
+                    <Check size={13} /> confirmed
+                  </span>
+                </div>
+                {/* Fixed once confirmed. A note written when the amount was
+                    confirmed is a different kind of statement from one added
+                    after seeing the totals, and the record should not blur
+                    them. */}
+                {s.remark && (
+                  <div className="mt-1 text-xs text-slate-600">“{s.remark}”</div>
+                )}
+              </>
             ) : (
               <div className="mt-2 flex items-center gap-2">
                 <input
@@ -191,12 +289,26 @@ export default function DepositPanel({ branch, date, onChanged, onBeforeSubmit,
                 <button
                   disabled={!draft || busy}
                   onClick={() => run("confirm" + s.id, () =>
-                    API.patch(`/closing/slips/${s.id}`, { amount: Number(draft) }))}
+                    API.patch(`/closing/slips/${s.id}`, {
+                      amount: Number(draft),
+                      remark: (notes[s.id] || "").trim() || undefined,
+                    }))}
                   className="rounded-lg bg-[#E85B1E] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
                 >
                   Confirm
                 </button>
               </div>
+            )}
+            {!done && (
+              <input
+                type="text" maxLength={300}
+                placeholder="Note for Accounts (optional)"
+                value={notes[s.id] ?? ""}
+                onChange={(ev) => setNotes((n) => ({ ...n, [s.id]: ev.target.value }))}
+                data-testid={`slip-note-${s.id}`}
+                className="mt-2 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm
+                           outline-none focus:ring-2 focus:ring-[#E85B1E]"
+              />
             )}
           </div>
         );
@@ -207,17 +319,20 @@ export default function DepositPanel({ branch, date, onChanged, onBeforeSubmit,
           by WhatsApp rather than being photographed here, so the BM must be able
           to pick an existing image. Without `capture` the picker still offers
           the camera; with it, half the real sources are unreachable. */}
-      <input ref={fileRef} type="file" accept="image/*,application/pdf"
+      <input ref={fileRef} type="file" accept="image/*,application/pdf" multiple
              onChange={onPick} className="hidden"
              data-testid="slip-file" />
       <button
         onClick={() => fileRef.current?.click()}
-        disabled={!!busy}
-        className="w-full mb-3 inline-flex items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-300 px-4 py-3 text-sm font-medium text-slate-600 disabled:opacity-50"
+        className="w-full mb-3 inline-flex items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-300 px-4 py-3 text-sm font-medium text-slate-600"
         data-testid="slip-add"
       >
-        {busy === "upload"
-          ? <><Loader2 size={16} className="animate-spin" /> Reading the slip…</>
+        {/* NOT DISABLED while a slip uploads. Blocking the button was the whole
+            reason four slips took two minutes: the next photograph could not even
+            be started until the previous one had been read. */}
+        {uploading > 0
+          ? <><Loader2 size={16} className="animate-spin" />
+              Saving {uploading} slip{uploading === 1 ? "" : "s"}… add another now</>
           : <><Camera size={16} /> Add a deposit slip — photo or from WhatsApp</>}
       </button>
 
@@ -243,6 +358,20 @@ export default function DepositPanel({ branch, date, onChanged, onBeforeSubmit,
         {counted !== "" && (
           <Difference counted={Number(counted)} should={Number(ledger.should_hold) || 0} />
         )}
+        {/* Only asked for when there is actually cash staying behind. A box that
+            appears every night gets "cash" typed into it, which looks like
+            information and is not. */}
+        {Number(counted) > 0 && (
+          <input
+            type="text" maxLength={300}
+            placeholder="Why is this cash not banked? (optional)"
+            value={holdRemark}
+            onChange={(e) => setHoldRemark(e.target.value)}
+            data-testid="hold-remark"
+            className="w-full mt-2 border border-slate-300 rounded-lg px-3 py-2 text-sm
+                       outline-none focus:ring-2 focus:ring-[#E85B1E]"
+          />
+        )}
       </div>
 
       <button
@@ -258,7 +387,17 @@ export default function DepositPanel({ branch, date, onChanged, onBeforeSubmit,
           setPhase("checking");
           const r = onBeforeSubmit ? await onBeforeSubmit() : { status: "fresh" };
 
-          const checked = r.day && (r.status === "delivered" || r.status === "fresh");
+          // "throttled" is deliberately NOT in this list. The server refused to look,
+          // so nothing was checked — counting it as a pass would be the same
+          // silent-approval bug in a new costume.
+          // `throttled` counts as looked-at. The server declined to refetch
+          // inside its five-minute floor, but the wait still re-read the stored
+          // day — so we hold the same figures any fetch in that window would
+          // have returned. Calling that "we could not check" was the opposite of
+          // the truth, and it appeared precisely when a BM pressed Send again
+          // after the guard had just caught a change.
+          const checked = r.day && (r.status === "delivered" || r.status === "fresh"
+                                    || r.status === "throttled");
           let couldNotCheck = !checked;
           if (checked) {
             const row = (r.day.branches || []).find(
@@ -272,8 +411,15 @@ export default function DepositPanel({ branch, date, onChanged, onBeforeSubmit,
             if (!row || !Number.isFinite(now)) {
               couldNotCheck = true;
             } else if (Math.abs(now - was) >= 0.01) {
-              // Stop and show it. Submitting silently against a number that just
-              // moved is the failure the pull was for.
+              // Move the baseline to what we just showed them, THEN refuse.
+              //
+              // Without this the refusal was unfollowable: `seenTarget` was set
+              // on the first keystroke and never reset, so after the guard fired
+              // once, every later press re-threw the identical message quoting a
+              // dead figure — the panel agreeing "Matches exactly" all the while.
+              // The only way out was reloading the page. The instruction says
+              // "press Send again", so pressing Send again has to work.
+              seenTarget.current = now;
               throw new Error(
                 `Collections changed while you were counting: you should now be ` +
                 `holding ${money(now)}, not ${money(was)}. ` +
@@ -284,6 +430,7 @@ export default function DepositPanel({ branch, date, onChanged, onBeforeSubmit,
           setPhase("sending");
           await API.post("/closing/submit", {
             date, branch_code: branch.branch_code, cash_counted: Number(counted),
+            hold_remark: holdRemark.trim() || undefined,
           });
 
           // WE SUBMIT ANYWAY WHEN THE CHECK COULD NOT BE MADE, and say so.

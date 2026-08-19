@@ -51,7 +51,8 @@ import uuid
 from datetime import datetime, timedelta, date as date_cls
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import (APIRouter, BackgroundTasks, Depends, Header, HTTPException,
+                     Query)
 from pydantic import BaseModel
 
 from auth_utils import get_current_user
@@ -262,8 +263,14 @@ async def _flag_post_approval_drift(day_str: str, report) -> list:
             {"_id": 0, "state": 1, "approved_snapshot": 1}) or {}
         if doc.get("state") != ST_APPROVED:
             continue
-        was = float(((doc.get("approved_snapshot") or {}).get("ledger") or {})
-                    .get("expected_deposit") or 0)
+        # `cash_collected`, not `expected_deposit`. _ledger has never returned a
+        # key by that name, so this read was ALWAYS 0.0 — every approved day the
+        # fetcher touched again reported its entire day's collections as
+        # post-approval drift, to four people, per branch. A real Rs 100 movement
+        # was indistinguishable from the noise, and the flag it set then bypassed
+        # the reopen interlock below.
+        snap_ledger = (doc.get("approved_snapshot") or {}).get("ledger") or {}
+        was = float(snap_ledger.get("cash_collected") or 0)
         now = float(b.expected_deposit or 0)
         if abs(now - was) < 0.01:
             continue
@@ -459,6 +466,14 @@ async def closing_day(
     approver = await _is_closing_approver(current_user)
     if not await _may_see_closing(current_user, approver):
         raise HTTPException(status_code=403, detail="Not permitted")
+    # /request-pull and /ingest both validate this; /day did not, so `date=lastweek`
+    # answered 200 with empty branches and zero totals — a typo indistinguishable
+    # from a day on which nothing was collected.
+    if date:
+        try:
+            date_cls.fromisoformat(date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
     day_str = date or today_ist().isoformat()
     rows = await db[COLL].find({"date": day_str}, {"_id": 0}).to_list(50)
     notice = ""
@@ -505,6 +520,10 @@ async def closing_day(
         # it is here so a branch can see collection against what was raised.
         "demand": round(sum(r.get("demand", 0) for r in rows), 2),
         "demand_cds": round(sum(r.get("demand_cds", 0) for r in rows), 2),
+        # Filled after the per-branch loop below, which is where the carried
+        # figure is resolved. Declared here so the shape of `totals` is one thing
+        # rather than something the reader has to assemble from two places.
+        "carried_in": 0.0,
     }
     # Warnings come from the state document as well as the rows, because a day
     # that parsed to zero branches has no rows to carry them — and that is
@@ -524,8 +543,27 @@ async def closing_day(
         slips = await _slips_for(day_str, code)
         deposited = round(sum(float(s.get("amount") or 0) for s in slips
                               if s.get("status") == "confirmed"), 2)
-        opening = float(d.get("opening_hold") if d.get("opening_hold") is not None
-                        else await _opening_hold(day_str, code))
+        carried = await _carried_in(day_str, code)
+        # ONE FIGURE, NOT TWO SOURCES.
+        #
+        # The ledger froze `opening_hold` at submit time while the headline box
+        # summed a live recount, so if the earlier day changed afterwards the top
+        # of the screen and the ledger beneath it disagreed -- Rs 35,000 against
+        # Rs 50,000, with nothing to say which was authoritative. The frozen
+        # figure wins, because it is the one the branch banked against, and the
+        # fact that it has since moved is reported rather than silently applied.
+        frozen = d.get("opening_hold")
+        if frozen is not None and abs(float(frozen) - carried["amount"]) >= 0.01:
+            carried = {
+                "amount": float(frozen),
+                "from_date": carried["from_date"],
+                # The old note explained the OLD amount. Carrying it across would
+                # caption one figure with another's reason.
+                "remark": None,
+                "disputed": carried.get("disputed", False),
+                "recounted_to": carried["amount"],
+            }
+        opening = float(frozen if frozen is not None else carried["amount"])
         # An APPROVED day shows the ledger that was APPROVED, not a fresh one.
         #
         # Recomputing live meant a collection posted after approval silently
@@ -548,12 +586,52 @@ async def closing_day(
             "ledger": (snap.get("ledger") if d.get("state") == ST_APPROVED and snap.get("ledger")
                        else live),
             "collections_changed_after_approval": d.get("collections_changed_after_approval"),
+            "hold_remark": d.get("hold_remark"),
+            # Where the opening balance came from and why it is still in hand.
+            "carried_in": carried,
         }
 
     # Freshness belongs on this response, not only on the admin-only /status.
     # The branch manager working at 21:00 is the person who most needs to know
     # whether the figure in front of them is four minutes or four hours old, and
     # they cannot see /status at all.
+    # Cash from earlier days that has still not reached a bank. It is not part of
+    # today's collections, and a branch can carry it for days without anybody at
+    # Head Office seeing it — which is exactly why it is the first figure shown.
+    totals["carried_in"] = round(
+        sum(float(((r.get("closing") or {}).get("carried_in") or {}).get("amount") or 0)
+            for r in rows), 2)
+
+    # A BRANCH HOLDING CASH DOES NOT DISAPPEAR BECAUSE THE MIS SENT NO ROW.
+    #
+    # `rows` comes from the day's collections report. On a Sunday, a holiday, or
+    # a morning before the first fetch there are none — so the headline read
+    # Rs 0 while branches were still sitting on cash, which is the one figure
+    # that must never read zero when it is not. The same happened whenever the
+    # report dropped a branch, which `check_expected_branches` exists because it
+    # does.
+    seen = {r.get("branch_code") for r in rows}
+    extra = []
+    try:
+        held = await db[DAYS].find(
+            {"date": {"$lt": day_str}, "cash_counted": {"$gt": 0}},
+            {"_id": 0, "branch_code": 1, "branch_name": 1}).to_list(200)
+        for code in {h.get("branch_code") for h in held} - seen:
+            c = await _carried_in(day_str, code)
+            if c["amount"] > 0:
+                name = next((h.get("branch_name") for h in held
+                             if h.get("branch_code") == code), None)
+                extra.append({"branch_code": code, "branch_name": name, **c})
+    except Exception:
+        logger.warning("closing: could not total holds for branches with no rows",
+                       exc_info=True)
+    if extra:
+        totals["carried_in"] = round(
+            totals["carried_in"] + sum(e["amount"] for e in extra), 2)
+    # Named separately so a screen can say WHICH branches these are: they have no
+    # row in the table, so a total alone would be a number with nowhere to look.
+    totals["carried_elsewhere"] = extra
+
     return {"date": day_str, "branches": rows, "totals": totals, "warnings": warnings,
             "can_approve": await _is_closing_approver(current_user),
             # ALL DAY-SCOPED. These used to mix: `updated_at` was per day while
@@ -809,12 +887,20 @@ class SlipConfirm(BaseModel):
     amount: float
     bank_name: Optional[str] = None
     reference_no: Optional[str] = None
+    # Whatever the branch wants an approver to know about THIS slip. Optional:
+    # a mandatory note becomes the word "cash" typed every night, which is worse
+    # than nothing because it looks like information.
+    remark: Optional[str] = None
 
 
 class DaySubmit(BaseModel):
     date: str
     branch_code: str
     cash_counted: float
+    # Why cash is still in hand. "Bank shut at 4" and "I do not know" look
+    # identical to Accounts without this, and they are the two most different
+    # answers there are.
+    hold_remark: Optional[str] = None
 
 
 class DayDecision(BaseModel):
@@ -941,11 +1027,41 @@ def _require_open(doc: dict):
             detail="This day is with Accounts. Ask them to return it before changing anything.")
 
 
+def _unstick(slip: dict) -> dict:
+    """A read that has been in flight too long is reported as a failed read.
+
+    The background task dies with the process, and this pod restarts. A slip left
+    saying "reading" for ever is worse than one saying it could not be read: the
+    first invites waiting, the second tells the BM to type the amount, which was
+    always the figure that counts.
+    """
+    ocr = slip.get("ocr") or {}
+    if ocr.get("status") != "reading":
+        return slip
+    started = ocr.get("started_at")
+    try:
+        age = (datetime.now(IST) - datetime.fromisoformat(started)).total_seconds()
+    except Exception:
+        age = OCR_STUCK_S + 1
+    if age <= OCR_STUCK_S:
+        return slip
+    slip = dict(slip)
+    slip["ocr"] = {**ocr, "status": "done", "amount": None, "needs_review": True,
+                   "review_reasons": ["it could not be read — type the amount from "
+                                      "the slip"]}
+    return slip
+
+
 async def _slips_for(day: str, branch_code: str) -> list:
-    return await db[SLIPS].find(
+    # 500, not 100. The old cap silently dropped slip 101 onward from `deposited`
+    # in /day, /submit and /approve alike, so a branch with a long evening would
+    # have under-reported what it banked with nothing to say so. Four or five a
+    # night is normal; 500 is a bound rather than a guess.
+    rows = await db[SLIPS].find(
         {"date": day, "branch_code": branch_code, "status": {"$ne": "void"}},
         {"_id": 0, "image_b64": 0},   # never ship the image in a list
-    ).sort("uploaded_at", 1).to_list(100)
+    ).sort("uploaded_at", 1).to_list(500)
+    return [_unstick(r) for r in rows]
 
 
 async def _opening_hold(day: str, branch_code: str) -> float:
@@ -960,6 +1076,32 @@ async def _opening_hold(day: str, branch_code: str) -> float:
         {"branch_code": branch_code, "date": {"$lt": day}, "cash_counted": {"$ne": None}},
         {"_id": 0, "cash_counted": 1}, sort=[("date", -1)])
     return float((prev or {}).get("cash_counted") or 0.0)
+
+
+async def _carried_in(day: str, branch_code: str) -> dict:
+    """The hold coming into this day, WITH the day it came from and the reason.
+
+    A number on its own invites the question it should have answered. "Carrying
+    Rs 50,000 from Monday — bank shut after 4" is a fact somebody can act on;
+    "opening hold 50,000" is a prompt to go and ask.
+    """
+    prev = await db[DAYS].find_one(
+        {"branch_code": branch_code, "date": {"$lt": day}, "cash_counted": {"$ne": None}},
+        {"_id": 0, "cash_counted": 1, "date": 1, "hold_remark": 1, "state": 1,
+         "reject_reason": 1},
+        sort=[("date", -1)]) or {}
+    # A count Accounts has RETURNED is not a settled fact. It still carries --
+    # refusing to carry it would invent a different wrong number -- but the
+    # doubt travels with it, because a branch opening tomorrow on a figure
+    # Accounts has already refused should be told so rather than banking to it.
+    disputed = bool(prev.get("reject_reason")
+                    and (prev.get("state") or ST_AWAITING) == ST_AWAITING)
+    return {
+        "amount": float(prev.get("cash_counted") or 0.0),
+        "from_date": prev.get("date"),
+        "remark": prev.get("hold_remark"),
+        "disputed": disputed,
+    }
 
 
 def _ledger(expected_cash: float, opening: float, deposited: float, counted):
@@ -982,14 +1124,16 @@ def _ledger(expected_cash: float, opening: float, deposited: float, counted):
 
 
 @router.post("/slips")
-async def upload_slip(payload: dict, current_user: dict = Depends(get_current_user)):
-    """Upload one deposit slip. Reads it, but commits nothing.
+async def upload_slip(payload: dict, background: BackgroundTasks,
+                      current_user: dict = Depends(get_current_user)):
+    """Store one deposit slip and answer immediately. The reading follows.
 
     The extracted amount is a PROPOSAL. It is stored as `ocr` and the slip has no
     confirmed amount until a human sets one — see services/slip_ocr.py for why
-    this cannot be trusted to close a day on its own.
+    this cannot be trusted to close a day on its own. Because of that, there is no
+    reason to make anybody wait for it: the photograph is what must not be lost.
     """
-    from services.slip_ocr import extract_deposit_slip, normalise_image, SlipOCRError
+    from services.slip_ocr import normalise_image
 
     day = (payload or {}).get("date") or today_ist().isoformat()
     branch_code = (payload or {}).get("branch_code") or ""
@@ -1008,13 +1152,77 @@ async def upload_slip(payload: dict, current_user: dict = Depends(get_current_us
                             detail="That image is too large — retake it at a lower quality")
     b64, mime, size_note = normalise_image(b64, mime)
 
+    slip = {
+        "id": str(uuid.uuid4()),
+        "date": day,
+        "branch_code": branch_code,
+        "branch_name": row.get("branch_name", ""),
+        "uploaded_by": current_user.get("employee_id"),
+        "uploaded_at": datetime.now(IST).isoformat(),
+        "image_b64": b64,
+        "mime": mime,
+        # STORED FIRST, READ AFTERWARDS.
+        #
+        # The model used to run inside this request, so the BM stood at a bank
+        # watching a spinner for thirty seconds per slip -- two and a half minutes
+        # for the four or five a branch actually has, one at a time, because the
+        # panel blocked between them. The photograph is the thing that must not be
+        # lost; the reading is a convenience, and the amount does not count until
+        # a human confirms it either way.
+        "ocr": {"status": "reading", "needs_review": True,
+                "started_at": datetime.now(IST).isoformat()},
+        "size_note": size_note,
+        "amount": None,           # set only when a human confirms
+        "status": "pending",
+    }
+    await db[SLIPS].insert_one(dict(slip))
+    background.add_task(_read_slip_later, slip["id"], b64, mime, day)
+    slip.pop("image_b64", None)
+    return slip
+
+
+# How long the model gets, and how long a read may appear to be in flight before
+# the screen stops believing it. The second exists because this pod restarts: a
+# background task dies with it, and a slip left saying "reading" for ever is
+# worse than one that says it could not be read, since only the latter tells the
+# BM to type the amount.
+OCR_TIMEOUT_S = 25
+OCR_STUCK_S = 120
+
+
+async def _read_slip_later(slip_id: str, b64: str, mime: str, day: str):
+    """Read one slip after its upload has already been answered.
+
+    Never raises. Whatever happens, the slip ends up with an `ocr` a human can
+    act on -- a proposal, or a reason there is none.
+    """
+    from services.slip_ocr import extract_deposit_slip, SlipOCRError
+    started = datetime.now(IST)
     try:
-        ocr = await extract_deposit_slip(b64, mime)
+        # BOUNDED. There was no timeout at all, so a model that never answered
+        # left the request hanging and the fallback below -- which exists exactly
+        # for a slip that cannot be read -- was unreachable from that state.
+        ocr = await asyncio.wait_for(extract_deposit_slip(b64, mime),
+                                    timeout=OCR_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        ocr = {"amount": None, "needs_review": True, "legible": False,
+               "is_deposit_receipt": None,
+               "review_reasons": [f"reading it took longer than {OCR_TIMEOUT_S} seconds"]}
     except SlipOCRError as e:
-        # A slip that cannot be read must still be storable — the BM is standing
-        # at a bank at 9pm and the fallback is typing the amount, not giving up.
-        ocr = {"amount": None, "needs_review": True, "review_reasons": [str(e)],
-               "legible": False, "is_deposit_receipt": None}
+        ocr = {"amount": None, "needs_review": True, "legible": False,
+               "is_deposit_receipt": None, "review_reasons": [str(e)]}
+    except Exception as e:
+        logger.warning("closing: slip %s could not be read", slip_id, exc_info=True)
+        ocr = {"amount": None, "needs_review": True, "legible": False,
+               "is_deposit_receipt": None,
+               "review_reasons": [f"{type(e).__name__}: {e}"[:200]]}
+
+    took = (datetime.now(IST) - started).total_seconds()
+    # Timed, because thirty seconds is slow for this model on a clean thermal
+    # receipt and nobody could say which part of the path was spending it.
+    logger.info("closing: slip %s read in %.1fs (amount=%s, needs_review=%s)",
+                slip_id, took, (ocr or {}).get("amount"),
+                (ocr or {}).get("needs_review"))
 
     # A slip dated other than the day being closed is worth flagging, not
     # blocking: a real batch contained a 13-08 slip alongside 14-08 ones, and
@@ -1027,25 +1235,34 @@ async def upload_slip(payload: dict, current_user: dict = Depends(get_current_us
         ocr["review_reasons"] = list(ocr.get("review_reasons") or []) + [
             f"this slip is dated {slip_date}, but you are closing {day}"]
 
-    slip = {
-        "id": str(uuid.uuid4()),
-        "date": day,
-        "branch_code": branch_code,
-        "branch_name": row.get("branch_name", ""),
-        "uploaded_by": current_user.get("employee_id"),
-        "uploaded_at": datetime.now(IST).isoformat(),
-        "image_b64": b64,
-        "mime": mime,
-        "ocr": ocr,
-        "size_note": size_note,
-        "amount": None,           # set only when a human confirms
-        "bank_name": ocr.get("bank_name"),
-        "reference_no": ocr.get("reference_no"),
-        "status": "pending",
-    }
-    await db[SLIPS].insert_one(dict(slip))
-    slip.pop("image_b64", None)
-    return slip
+    ocr = dict(ocr or {})
+    ocr["status"] = "done"
+    ocr["read_seconds"] = round(took, 1)
+    try:
+        # Only if the human has not already typed one. A BM who did not wait --
+        # which is the whole point of this change -- must not have their figure
+        # replaced by the model's a moment later.
+        cur = await db[SLIPS].find_one({"id": slip_id},
+                                       {"_id": 0, "amount": 1, "status": 1}) or {}
+        upd = {"ocr": ocr}
+        if cur.get("status") != "confirmed":
+            upd["bank_name"] = ocr.get("bank_name")
+            upd["reference_no"] = ocr.get("reference_no")
+        else:
+            # THE HUMAN GOT HERE FIRST, which is now the normal case: a BM who
+            # does not wait confirms while `ocr.amount` is still None, so
+            # `amount_was_corrected` was computed against nothing and fixed at
+            # False. An approver's first question about a figure is whether a
+            # person overrode the machine, and a slip typed as Rs 1,80,000 over a
+            # reading of Rs 18,000 answered "no". Settle it now that both numbers
+            # exist.
+            read = (ocr or {}).get("amount")
+            if read is not None and cur.get("amount") is not None:
+                upd["amount_was_corrected"] = abs(float(read) - float(cur["amount"])) >= 1
+        await db[SLIPS].update_one({"id": slip_id}, {"$set": upd})
+    except Exception:
+        logger.warning("closing: could not store the reading for slip %s", slip_id,
+                       exc_info=True)
 
 
 @router.patch("/slips/{slip_id}")
@@ -1058,8 +1275,16 @@ async def confirm_slip(slip_id: str, body: SlipConfirm,
     await _may_touch_branch(current_user, slip["branch_code"], slip["date"])
     doc = await _day_doc(slip["date"], slip)
     _require_open(doc)
-    if body.amount is None or body.amount <= 0:
-        raise HTTPException(status_code=400, detail="Enter the amount actually deposited")
+    # The same guard `cash_counted` has, and for the same reason it was added
+    # there. `nan <= 0` is False and `inf <= 0` is False, so both used to pass:
+    # one NaN slip made `deposited` NaN, and Starlette refuses to serialise that
+    # -- HTTP 500 on /closing/day for EVERY branch on that date until somebody
+    # edited Mongo by hand. The write lands before the response fails, so it
+    # persists. A stuck key producing Rs 5 crore was the quieter version.
+    if (body.amount is None or not math.isfinite(body.amount)
+            or body.amount <= 0 or body.amount > MAX_CASH):
+        raise HTTPException(status_code=400,
+                            detail="Enter the amount actually deposited")
 
     upd = {
         "amount": round(float(body.amount), 2),
@@ -1076,6 +1301,21 @@ async def confirm_slip(slip_id: str, body: SlipConfirm,
         upd["bank_name"] = body.bank_name.strip()[:60]
     if body.reference_no is not None:
         upd["reference_no"] = body.reference_no.strip()[:60]
+    # FIXED AT CONFIRM, not editable afterwards. An approver reading a settled
+    # record needs to know the note was written when the amount was, not after
+    # somebody saw the figures. A slip that has never carried a remark can still
+    # be given one; one that has cannot have it changed.
+    amount_changed = (slip.get("amount") is not None
+                      and abs(float(slip.get("amount")) - float(body.amount)) >= 0.01)
+    if body.remark is not None and (not slip.get("remark") or amount_changed):
+        upd["remark"] = body.remark.strip()[:300]
+    elif amount_changed:
+        # THE NOTE DESCRIBED THE OLD FIGURE. Pinning it while the amount moved
+        # gave an approver a Rs 10,000 slip carrying a note written about
+        # Rs 90,000, timestamped as though written with it — the exact confusion
+        # the "fixed once" rule was added to prevent, arriving from the other
+        # side. A correction clears the note unless a new one comes with it.
+        upd["remark"] = None
     await db[SLIPS].update_one({"id": slip_id}, {"$set": upd})
     return {**slip, **upd}
 
@@ -1145,6 +1385,7 @@ async def submit_day(body: DaySubmit, current_user: dict = Depends(get_current_u
         {"$set": {
             "state": ST_DEPOSITED,
             "cash_counted": round(float(body.cash_counted), 2),
+            "hold_remark": (body.hold_remark or "").strip()[:300] or None,
             "deposited": deposited,
             "opening_hold": opening,
             "ledger": ledger,
@@ -1187,6 +1428,9 @@ async def approve_day(body: DayDecision, current_user: dict = Depends(get_curren
     now_iso = datetime.now(IST).isoformat()
     snapshot = {
         "ledger": live,
+        # Written explicitly so a later reader never has to know which key inside
+        # `ledger` happens to hold it.
+        "expected_deposit": float(row.get("expected_deposit") or 0),
         "ledger_at_submit": doc.get("ledger"),
         "deposited": deposited,
         "cash_counted": doc.get("cash_counted"),
@@ -1236,7 +1480,11 @@ async def reject_day(body: DayDecision, current_user: dict = Depends(get_current
     # hole it could not close. So an approver may reopen, the approval survives
     # in `approval_history`, and reopening is itself recorded.
     if doc.get("state") == ST_APPROVED:
-        if not (body.reopen or doc.get("collections_changed_after_approval")):
+        # ALWAYS deliberate. This used to accept a drift flag as consent, which
+        # meant a bug that set the flag on every approved day silently removed
+        # the interlock entirely: `reopen=false` reopened, discarding a signed
+        # approval. Drift is a reason to reopen, not permission to.
+        if not body.reopen:
             raise HTTPException(
                 status_code=409,
                 detail=("That day is approved. Reopening it discards the approval — "
