@@ -43,11 +43,38 @@ const money = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
 
 export default function ClosingDesktop({
   data, status, loading, onRefresh, refreshing, waitedS, date, onDateChange, canRefresh, isToday,
-  onChanged, onBeforeSubmit, onNotice,
+  onChanged, onBeforeSubmit, onNotice, isAdmin,
 }) {
   const branches = data?.branches || [];
   const t = data?.totals || {};
   const warnings = data?.warnings || [];
+  // Filing a closing is the branch's job, reviewing it is Head Office's. See
+  // the same line in ClosingMobile: counting branches conflated the two, so an
+  // admin opening a day where one branch had reported was handed that branch's
+  // deposit panel.
+  const canAct = branches.length === 1 && !isAdmin && !data?.can_approve && !!onChanged;
+
+  // WHAT HAS REACHED A BANK, AND WHAT HAS NOT.
+  //
+  // Summed from the SAME ledger objects the rows above render, never recomputed
+  // from the raw figures. A footer that does its own arithmetic is a second
+  // source of truth, and this screen has already had one of those: the carried
+  // box summing a live recount while the ledger under it showed the frozen
+  // figure, ₹15,000 apart with nothing to say which was right. An approved day
+  // keeps its frozen ledger, so this total stays equal to what is on screen.
+  //
+  // `should_hold` is opening + collected − deposited, so cash carried from
+  // EARLIER days is already inside it. That is deliberate: a branch quietly
+  // holding ₹50,000 from last Monday is the thing this figure exists to expose.
+  const totalBanked = branches.reduce(
+    (a, b) => a + (Number(b.closing?.ledger?.deposited) || 0), 0);
+  // Branches with cash in hand and no row in today's report contribute nothing
+  // to the loop above — they have no row to loop over — so they are added from
+  // the same list the carried-forward box names them in.
+  const elsewhere = (t.carried_elsewhere || []).reduce(
+    (a, e) => a + (Number(e.amount) || 0), 0);
+  const totalOutstanding = branches.reduce(
+    (a, b) => a + (Number(b.closing?.ledger?.should_hold) || 0), 0) + elsewhere;
 
   // A poller that has not run for a while is the failure this screen must not
   // hide. 45 minutes is well past the 15-minute daytime cadence.
@@ -239,7 +266,28 @@ export default function ClosingDesktop({
                   <td className="px-4 py-3 text-right tabular-nums">{money(t.expected_deposit)}</td>
                   <td className="px-4 py-3" />
                   <td className="px-4 py-3" />
-                  <td className="px-4 py-3" />
+                  {/* The two figures the day is actually judged on, and the only
+                      place they were not shown. The Banked column carried a
+                      per-branch amount with no total under it, and the amount
+                      still owed to a bank appeared nowhere at all. */}
+                  <td className="px-4 py-3" data-testid="closing-footer-banked">
+                    <div className="tabular-nums text-slate-900">
+                      {money(totalBanked)}{" "}
+                      <span className="text-xs font-normal text-slate-500">banked</span>
+                    </div>
+                    <div className="tabular-nums text-amber-800 mt-0.5"
+                         data-testid="closing-footer-outstanding">
+                      {money(totalOutstanding)}{" "}
+                      <span className="text-xs font-normal text-amber-700">
+                        still to deposit
+                      </span>
+                    </div>
+                    {elsewhere > 0 && (
+                      <div className="text-xs font-normal text-amber-700 mt-0.5">
+                        includes {money(elsewhere)} at branches with no collections today
+                      </div>
+                    )}
+                  </td>
                 </tr>
               </tfoot>
             )}
@@ -253,7 +301,7 @@ export default function ClosingDesktop({
           became "desktop": the deposit panel vanished mid-count and the typed
           cash was lost. A manager on a laptop had no way to file a closing at
           all. */}
-      {branches.length === 1 && onChanged && (
+      {canAct && (
         <div className="mt-5 max-w-xl">
           <DepositPanel branch={branches[0]} date={date} onChanged={onChanged}
                         onBeforeSubmit={onBeforeSubmit} onNotice={onNotice} />
@@ -367,7 +415,14 @@ function BankedCell({ branch, date, canApprove, onChanged }) {
     return (
       <div className="text-xs text-emerald-700">
         <StateChip state="approved" />
-        <div className="mt-1 tabular-nums">{money(c.ledger?.deposited)} banked</div>
+        {/* The amount, at the size of an amount. This whole cell inherits
+            text-xs, so the one figure the column exists to show — what the
+            branch actually banked — was rendered smaller than the branch name
+            beside it. */}
+        <div className="mt-1 text-sm font-semibold tabular-nums text-emerald-800">
+          {money(c.ledger?.deposited)}{" "}
+          <span className="text-xs font-normal text-emerald-700">banked</span>
+        </div>
         <SlipViewer slips={c.slips || []} />
       </div>
     );
@@ -387,8 +442,9 @@ function BankedCell({ branch, date, canApprove, onChanged }) {
         {c.reject_reason && <div className="mt-1 text-red-600">returned</div>}
         {(c.slips || []).length > 0 && (
           <>
-            <div className="mt-1 tabular-nums text-slate-700">
-              {money(led.deposited)} banked so far
+            <div className="mt-1 text-sm font-semibold tabular-nums text-slate-800">
+              {money(led.deposited)}{" "}
+              <span className="text-xs font-normal text-slate-500">banked so far</span>
             </div>
             <div className="text-slate-400">in progress — not yet sent</div>
             <SlipViewer slips={c.slips || []} />
@@ -401,8 +457,14 @@ function BankedCell({ branch, date, canApprove, onChanged }) {
   const led = c.ledger || {};
   return (
     <div className="text-xs">
-      <div className="tabular-nums text-slate-700">
-        {money(led.deposited)} banked · {money(c.cash_counted)} held
+      {/* The row an approver decides on. Both figures were 12px grey; the
+          decision is about the amounts, so the amounts are what carry weight. */}
+      <div className="tabular-nums">
+        <span className="text-sm font-semibold text-slate-900">{money(led.deposited)}</span>
+        <span className="text-xs text-slate-500"> banked</span>
+        <span className="text-xs text-slate-400"> · </span>
+        <span className="text-sm font-semibold text-slate-900">{money(c.cash_counted)}</span>
+        <span className="text-xs text-slate-500"> held</span>
       </div>
       <SlipViewer slips={c.slips || []} />
       {led.balanced === false && (

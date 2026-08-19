@@ -35,6 +35,7 @@ slips usually carry both -- and disagreement between them is reported rather
 than resolved. A model that cannot read the slip must say so, not guess.
 """
 
+import asyncio
 import base64
 import binascii
 import json
@@ -43,10 +44,34 @@ import os
 import re
 import tempfile
 import uuid
+from datetime import date as date_cls, timedelta
 
 logger = logging.getLogger(__name__)
 
 MODEL = "gemini-2.5-flash"
+
+# How many slips may be read at once.
+#
+# Not a performance knob -- a guard on the gateway and on memory. Each read holds
+# a worker thread and a decoded image for a few seconds; four covers a branch
+# emptying its pocket at 21:00 without letting a stuck queue open twenty
+# connections at once.
+OCR_CONCURRENCY = 4
+_slots = None
+
+
+def _ocr_slots():
+    """The semaphore, created on first use rather than at import.
+
+    A module-level asyncio.Semaphore() binds to whichever loop is running when
+    it is constructed, and this module is imported at startup -- before the
+    server's loop exists on some versions. Created here, it is always born on
+    the loop that will actually await it.
+    """
+    global _slots
+    if _slots is None:
+        _slots = asyncio.Semaphore(OCR_CONCURRENCY)
+    return _slots
 
 # 12 MB of base64 is roughly a 9 MB photo. Above that it is a screenshot of a
 # video or a scan nobody needs at that size, and it costs a slow upload on a
@@ -101,6 +126,10 @@ Rules you must follow:
   or previous-balance figure printed alongside it.
 - If you cannot read the amount, set amount_digits to null and legible to false.
   Do NOT guess a plausible number.
+- DATES ON THESE SLIPS ARE DAY/MONTH/YEAR, which is how India writes them.
+  "18/08/26" is the 18th of August 2026 -- it is NOT 2018, and it is NOT the
+  26th. A two-digit year is 20xx. Convert to YYYY-MM-DD before returning it, and
+  return null rather than guessing if the date is unclear or absent.
 - Return the JSON only. No explanation, no markdown fence."""
 
 
@@ -198,8 +227,36 @@ def normalise_image(b64: str, mime: str) -> tuple:
         return b64, mime, None
 
 
-async def _gemini_vision(prompt: str, b64: str, mime: str) -> dict:
-    """Same path candidates.py already uses for KYC OCR — proven in this app."""
+def _call_model(prompt: str, path: str, mime: str) -> str:
+    """The model call, start to finish, ON A WORKER THREAD.
+
+    EVERYTHING here happens inside the thread on purpose -- the client is built
+    here too, not passed in, so the session it opens belongs to the same loop
+    that will use it.
+
+    WHY THIS IS NOT SIMPLY AWAITED
+    ------------------------------
+    `chat.send_message` is a coroutine whose insides block. A coroutine that
+    never yields cannot be cancelled, and while it runs NOTHING else in the
+    process runs: not another slip, not an attendance punch, not the dashboard.
+    One branch manager photographing a receipt stalled the whole app.
+
+    Measured on 19-Aug, from the stored read timings:
+
+        14:27:44  BUDAUN     50.6s      <- two uploads, six seconds apart
+        14:27:50  BUDAUN     never finished
+        14:57:46  BUDAUN      5.9s      <- every slip uploaded ALONE
+        15:46:59  NAJIBABAD   3.5s
+        15:59:29  NAJIBABAD   5.6s
+
+    Perfect correlation, and the 50.6s sailed straight past a 25-second
+    asyncio.wait_for that therefore never fired. Concurrent uploads are the
+    feature the deposit panel now invites, and they were the one thing that
+    broke it.
+
+    Running it here restores both halves: reads overlap, and the timeout in the
+    caller can actually interrupt the wait.
+    """
     from emergentintegrations.llm.chat import (LlmChat, UserMessage,
                                                FileContentWithMimeType)
     chat = LlmChat(
@@ -209,17 +266,27 @@ async def _gemini_vision(prompt: str, b64: str, mime: str) -> dict:
                         "and you say when you cannot read something rather than "
                         "guessing. You return only valid JSON."),
     ).with_model("gemini", MODEL)
+    return asyncio.run(chat.send_message(UserMessage(
+        text=prompt,
+        file_contents=[FileContentWithMimeType(file_path=path, mime_type=mime)],
+    )))
 
+
+async def _gemini_vision(prompt: str, b64: str, mime: str) -> dict:
+    """Same path candidates.py already uses for KYC OCR — proven in this app."""
     suffix = ".pdf" if mime == "application/pdf" else (".png" if "png" in mime else ".jpg")
     path = None
     try:
         with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
             f.write(base64.b64decode(b64))
             path = f.name
-        response = await chat.send_message(UserMessage(
-            text=prompt,
-            file_contents=[FileContentWithMimeType(file_path=path, mime_type=mime)],
-        ))
+        # The slot is released on cancellation too -- `async with` unwinds when
+        # the caller's timeout fires. The THREAD cannot be killed and runs to
+        # completion in the background; Python has no way to interrupt one. That
+        # is accepted: it finishes, its answer is dropped, and the slip has
+        # already been settled as unreadable so the BM types the amount.
+        async with _ocr_slots():
+            response = await asyncio.to_thread(_call_model, prompt, path, mime)
     finally:
         if path:
             try:
@@ -315,7 +382,7 @@ async def extract_deposit_slip(b64: str, mime: str) -> dict:
         "amount": amount,
         "receipts_visible": n_receipts,
         "amount_words": words,
-        "deposit_date": raw.get("deposit_date"),
+        "deposit_date": _plausible_date(raw.get("deposit_date")),
         "bank_name": raw.get("bank_name"),
         "account_last4": raw.get("account_last4"),
         "reference_no": raw.get("reference_no"),
@@ -325,6 +392,52 @@ async def extract_deposit_slip(b64: str, mime: str) -> dict:
         "needs_review": bool(reasons),
         "review_reasons": reasons,
     }
+
+
+# How far back a slip's own date may sit before we stop believing we read it.
+# A deposit slip being closed against is days old at most; a year of slack is
+# generous and still rules out a century-scale misread.
+_MAX_SLIP_AGE_DAYS = 400
+
+
+def _plausible_date(value):
+    """The slip's own date, or None when we clearly did not read it.
+
+    A MISREAD DATE MUST NOT BECOME AN ACCUSATION. `/closing/slips` compares this
+    against the day being closed and warns when they differ, which is a real and
+    useful check -- yesterday's slip filed against today's cash is a mistake
+    nothing else here would catch.
+
+    But the model read the printed "18/08/26" as 2018-08-26, taking the day for a
+    year, and produced:
+
+        this slip is dated 2018-08-26, but you are closing 2026-08-18
+
+    on a slip that was perfectly correct. Fired on every slip, that warning
+    becomes wallpaper, and the one genuine instance disappears into it -- the
+    same way the post-approval drift alarm did before it was fixed.
+
+    The prompt now states the day/month/year convention. This is the second
+    line: a date outside the range a deposit slip can sensibly carry is treated
+    as unread rather than reported, because "no date" costs one silent check
+    while a wrong date costs the credibility of all of them.
+    """
+    if not value:
+        return None
+    m = re.match(r"^\s*(\d{4})-(\d{2})-(\d{2})\s*$", str(value))
+    if not m:
+        return None
+    try:
+        d = date_cls(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+    # Two days forward, because the server may be an hour behind IST and a slip
+    # can be photographed just after midnight.
+    today = date_cls.today()
+    if d > today + timedelta(days=2) or d < today - timedelta(days=_MAX_SLIP_AGE_DAYS):
+        logger.info("slip date %s is outside the plausible range; not reporting it", d)
+        return None
+    return d.isoformat()
 
 
 _UNITS = {

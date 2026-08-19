@@ -258,6 +258,12 @@ export default function DailyClosing() {
 
   const props = {
     data, status, loading, refreshing, waitedS, date, isToday,
+    // Head Office REVIEWS a closing; it does not file one. Both layouts decided
+    // that by counting branches, so on a day when only one branch had reported,
+    // an admin was handed the branch manager's own deposit panel — able to
+    // confirm slips and Send a closing for a branch that is not theirs — and the
+    // review card with the approve buttons was hidden instead.
+    isAdmin,
     onRefresh,
     onDateChange: setDate,
     canRefresh: true,

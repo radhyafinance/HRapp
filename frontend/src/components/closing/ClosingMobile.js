@@ -1,5 +1,6 @@
 import React, { useState } from "react";
-import { RefreshCw, AlertTriangle, Clock, Banknote } from "lucide-react";
+import { RefreshCw, AlertTriangle, Clock, Banknote, Check } from "lucide-react";
+import API from "../../utils/api";
 import Freshness from "./Freshness";
 import DepositPanel, { StateChip } from "./DepositPanel";
 import SlipModal from "./SlipModal";
@@ -41,12 +42,34 @@ const money = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
 
 export default function ClosingMobile({
   data, status, loading, onRefresh, refreshing, waitedS, date, onDateChange, canRefresh, isToday,
-  onChanged, onBeforeSubmit, onNotice,
+  onChanged, onBeforeSubmit, onNotice, isAdmin,
 }) {
   const branches = data?.branches || [];
   const t = data?.totals || {};
   const warnings = data?.warnings || [];
   const single = branches.length === 1;
+  const canApprove = !!data?.can_approve;
+  // BANKING IT, OR REVIEWING IT.
+  //
+  // This used to be `single` alone, which means "the report has one branch" and
+  // not "this branch is mine". A branch manager always sees exactly one, so it
+  // worked — until Head Office opened a day on which only one branch had
+  // reported, and got the BM's deposit panel for somebody else's cash while the
+  // review card, which is where the approve buttons live, was skipped as a
+  // duplicate. Reviewing and filing are different jobs and this is now the one
+  // place that decides which you are doing.
+  const canAct = single && !isAdmin && !canApprove && !!onChanged;
+
+  // The desktop puts these two under its table. A phone has no footer, so they
+  // go on the hero card — same figures, summed from the same per-branch ledgers,
+  // so the two layouts can never disagree. See ClosingDesktop for why they are
+  // not recomputed from the raw numbers.
+  const totalBanked = branches.reduce(
+    (a, b) => a + (Number(b.closing?.ledger?.deposited) || 0), 0);
+  const elsewhere = (t.carried_elsewhere || []).reduce(
+    (a, e) => a + (Number(e.amount) || 0), 0);
+  const totalOutstanding = branches.reduce(
+    (a, b) => a + (Number(b.closing?.ledger?.should_hold) || 0), 0) + elsewhere;
   // Money we could not classify is excluded from the deposit figure. When there
   // is only one branch the per-branch cards below are skipped, so without this
   // the BM sees a total that is quietly short with nothing explaining it.
@@ -139,6 +162,20 @@ export default function ClosingMobile({
               missing-character box, i.e. like a rendering fault. */}
           <Row label="UPI — already banked" value={money(t.upi)} muted />
         </div>
+        {/* Banked against still-owed — shown only when it says something the
+            hero figure above does not. On a fresh day with nothing banked and
+            nothing carried, "still to deposit" IS the hero figure, and repeating
+            a number two inches under itself teaches people to skip the block.
+            But a branch carrying ₹50,000 from last week owes ₹2,83,554 against a
+            hero reading ₹2,33,554, and that gap is the entire point. */}
+        {(totalBanked > 0
+          || Math.round(totalOutstanding) !== Math.round(Number(t.expected_deposit) || 0)) && (
+          <div className="mt-3 border-t border-[#E85B1E]/20 pt-3 text-sm space-y-1.5"
+               data-testid="closing-totals-mobile">
+            <Row label="Banked so far" value={money(totalBanked)} />
+            <Row label="Still to deposit" value={money(totalOutstanding)} />
+          </div>
+        )}
         {unknownTotal > 0 && (
           <div className="mt-3 border-t border-[#E85B1E]/20 pt-2.5 text-xs text-amber-800"
                data-testid="closing-unknown-note">
@@ -184,18 +221,20 @@ export default function ClosingMobile({
         </div>
       )}
 
-      {/* The BM's actual job for the evening. Only when this is their own single
-          branch — Head Office looking at four branches is reviewing, not banking. */}
-      {single && onChanged && (
+      {/* The BM's actual job for the evening. Only when this is their own
+          branch — Head Office is reviewing, not banking. */}
+      {canAct && (
         <div className="mb-3">
           <DepositPanel branch={branches[0]} date={date} onChanged={onChanged}
                         onBeforeSubmit={onBeforeSubmit} onNotice={onNotice} />
         </div>
       )}
 
-      {/* Per-branch cards. Skipped when there is only one, since the hero card
-          already IS that branch and repeating it just adds scrolling. */}
-      {!single && branches.map((b) => (
+      {/* Per-branch cards. Skipped only when the deposit panel above already IS
+          this branch, since repeating it just adds scrolling. An approver
+          looking at a single branch still needs this card — it carries the
+          slips and the approve buttons. */}
+      {!canAct && branches.map((b) => (
         <div key={b.branch_code || b.branch_name}
              className="rounded-xl border border-slate-200 bg-white p-4 mb-2.5">
           <div className="flex items-baseline justify-between gap-2">
@@ -222,7 +261,8 @@ export default function ClosingMobile({
           {/* What the branch has banked, and the slips behind it. Head Office on
               a handset used to get totals and a status word — no amounts, no
               slips, nothing to approve against. */}
-          <BranchDeposit branch={b} />
+          <BranchDeposit branch={b} date={date} canApprove={canApprove}
+                         onChanged={onChanged} />
         </div>
       ))}
 
@@ -253,7 +293,7 @@ function Row({ label, value, muted }) {
  * per-branch card is where that belongs, because on a phone there is no table to
  * put it in.
  */
-function BranchDeposit({ branch }) {
+function BranchDeposit({ branch, date, canApprove, onChanged }) {
   const c = branch.closing || {};
   const slips = c.slips || [];
   const led = c.ledger || {};
@@ -263,8 +303,25 @@ function BranchDeposit({ branch }) {
   const [showingId, setShowingId] = useState(null);
   const showing = slips.find((x) => x.id === showingId) || null;
   const carried = c.carried_in || {};
+  const [busy, setBusy] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
+  const [reason, setReason] = useState("");
+  const [err, setErr] = useState("");
 
-  if (!slips.length && !c.cash_counted && !carried.amount) return null;
+  const act = async (path, body) => {
+    setBusy(true); setErr("");
+    try {
+      await API.post(`/closing/${path}`, { date, branch_code: branch.branch_code, ...body });
+      setRejecting(false); setReason("");
+      if (onChanged) await onChanged();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "That did not work.");
+    } finally { setBusy(false); }
+  };
+
+  // A day waiting on Accounts is worth showing even with nothing else on it.
+  const awaitingApproval = canApprove && c.state === "deposited";
+  if (!slips.length && !c.cash_counted && !carried.amount && !awaitingApproval) return null;
 
   return (
     <div className="mt-2 border-t border-slate-100 pt-2 text-xs">
@@ -286,13 +343,34 @@ function BranchDeposit({ branch }) {
           )}
         </div>
       )}
-      <div className="text-slate-600 tabular-nums">
-        {money(led.deposited)} banked
-        {c.cash_counted != null && <> · {money(c.cash_counted)} held</>}
+      {/* THE FIGURE, AT A SIZE SOMEBODY CAN READ.
+          Banked and held were 12px grey body text — the two amounts an approver
+          is actually deciding on, set smaller than the branch name above them.
+          A shortfall is called out in words for the same reason the desktop
+          does it: "₹-2,680" puts the whole meaning on one character. */}
+      <div className="flex items-baseline justify-between gap-3 mt-0.5">
+        <div>
+          <div className="text-base font-semibold tabular-nums text-slate-900">
+            {money(led.deposited)}{" "}
+            <span className="text-xs font-normal text-slate-500">banked</span>
+          </div>
+          {c.cash_counted != null && (
+            <div className="text-sm tabular-nums text-slate-700">
+              {money(c.cash_counted)} <span className="text-xs text-slate-500">still held</span>
+            </div>
+          )}
+        </div>
         {c.state !== "deposited" && c.state !== "approved" && (
-          <span className="text-slate-400"> · in progress</span>
+          <span className="text-xs text-slate-400 shrink-0">in progress</span>
         )}
       </div>
+      {led.balanced === false && (
+        <div className="text-amber-700 tabular-nums text-sm mt-0.5">
+          {led.difference < 0
+            ? `${money(-led.difference)} SHORT`
+            : `${money(led.difference)} more than expected`}
+        </div>
+      )}
       {c.hold_remark && (
         <div className="text-slate-500 mt-0.5">“{c.hold_remark}”</div>
       )}
@@ -323,6 +401,54 @@ function BranchDeposit({ branch }) {
           )}
         </button>
       ))}
+      {err && <div className="text-red-600 mt-1.5">{err}</div>}
+
+      {/* APPROVAL, ON A PHONE.
+          This existed only in the desktop table, so the Accounts Manager who
+          signs off every branch's cash could open the day on a handset, read the
+          figures, tap a slip — and have no way to approve it. The one control
+          this whole pipeline exists to provide was desktop-only.
+          Sized for a thumb rather than scaled down from the table: 44px targets,
+          full width, and the destructive one is never the easy tap. */}
+      {canApprove && c.state === "deposited" && !rejecting && (
+        <div className="mt-2.5 flex gap-2">
+          <button disabled={busy} onClick={() => act("approve")}
+                  data-testid={`approve-mobile-${branch.branch_code}`}
+                  className="flex-1 inline-flex items-center justify-center gap-1.5 rounded-lg
+                             bg-emerald-600 px-3 py-2.5 text-sm font-medium text-white
+                             disabled:opacity-50">
+            <Check size={15} /> {busy ? "…" : "Approve"}
+          </button>
+          <button disabled={busy} onClick={() => setRejecting(true)}
+                  data-testid={`return-mobile-${branch.branch_code}`}
+                  className="rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-600">
+            Return
+          </button>
+        </div>
+      )}
+      {canApprove && rejecting && (
+        <div className="mt-2.5 flex flex-col gap-2">
+          <input value={reason} onChange={(e) => setReason(e.target.value)}
+                 placeholder="What is wrong?" autoFocus
+                 data-testid={`reject-reason-mobile-${branch.branch_code}`}
+                 /* text-base, not text-xs: iOS zooms the whole page in on any
+                    input under 16px, and the BM is left scrolled sideways. */
+                 className="border border-slate-300 rounded-lg px-3 py-2.5 text-base
+                            outline-none focus:ring-2 focus:ring-[#E85B1E]" />
+          <div className="flex gap-2">
+            <button disabled={busy || !reason.trim()} onClick={() => act("reject", { reason })}
+                    className="flex-1 rounded-lg bg-red-600 px-3 py-2.5 text-sm font-medium
+                               text-white disabled:opacity-50">
+              Send back
+            </button>
+            <button onClick={() => { setRejecting(false); setReason(""); }}
+                    className="rounded-lg border border-slate-300 px-3 py-2.5 text-sm text-slate-600">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {showing && <SlipModal slip={showing} onClose={() => setShowingId(null)} />}
     </div>
   );
