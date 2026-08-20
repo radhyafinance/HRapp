@@ -27,9 +27,26 @@ TWO RULES THIS FILE EXISTS TO ENFORCE
 
 2. NO CUSTOMER DATA IS READ. The workbook carries member names, husbands' names,
    phone numbers, member IDs and loan numbers. A cash reconciliation needs none
-   of it, so only seven columns are ever touched (see _NEEDED). Putting 3,000
+   of it, so only nine columns are ever touched (see _NEEDED). Putting 3,000
    borrowers' phone numbers into a closing tool would be an easy accident to
    make by loading the sheet wholesale, and a bad one to explain afterwards.
+
+   `status` and `Posted_by_user` were added later and do not breach this: one is
+   the state of a loan, the other is which of OUR staff keyed the entry. The
+   loan number would have made the grouping below exact, and is deliberately
+   still not read -- see the note on `special`.
+
+3. A LOAN'S STATUS IS NOT A TRANSACTION'S NATURE. `status` describes the loan
+   when the report was GENERATED, not what happened at the counter. On 30-Jul a
+   field officer collected an ordinary Rs 2,620 instalment at 17:20; Head Office
+   had preclosed that loan at 09:54, so the report labels the afternoon's real
+   cash `preclosed` too. Excluding money by status alone would have taken Rs
+   2,620 of a branch manager's cash out of their deposit target -- and money
+   quietly removed from a target is money nobody ever looks for.
+
+   So this file only REPORTS status and who posted it. What that means for the
+   deposit figure is decided in routes/closing.py, where it can be checked
+   against who actually works at Head Office.
 
 Columns are located BY HEADER NAME, not by position. The ad-hoc analysis this
 was built from used fixed indices, which works right up until the vendor inserts
@@ -62,7 +79,23 @@ _NEEDED = (
     "TotalDemandAsPerCDS",
     "Total_Collect",
     "Posted_by",
+    "status",
+    "Posted_by_user",
 )
+
+# Loan states where the money may not be the branch's to bank.
+#
+#   deathclose -- the borrower died and the insurer settles the outstanding
+#                 principal. It lands in the report looking exactly like a
+#                 collection; no branch manager ever touched it.
+#   preclosed  -- either the borrower really did pay off the loan (cash, to the
+#                 BM) or the balance was netted off against a new loan, in which
+#                 case nothing moved at all. The workbook cannot tell these
+#                 apart; a person at Head Office can.
+#
+# Rs 5,55,190 of July's Rs 64,43,918 of "cash" was one of these -- 8.6%, across
+# 20 of 69 branch-days, and on 20-Jul it was CHANDPUR's entire stated deposit.
+UNSETTLED_STATUSES = {"preclosed", "deathclose"}
 
 # "002 - CHANDPUR" -> ("002", "CHANDPUR")
 _BRANCH_RE = re.compile(r"^\s*(\d+)\s*-\s*(.+?)\s*$")
@@ -86,6 +119,20 @@ class BranchDay:
     uncollected_count: int = 0
     last_posted_at: Optional[str] = None
     unknown_modes: set = field(default_factory=set)
+    # Cash-mode collections on a preclosed or deathclose loan, GROUPED.
+    #
+    # Grouped rather than listed one by one because the only fields we are
+    # willing to read -- time, amount, and which member of staff posted it --
+    # collide: on 18-Jul two preclosures of Rs 5,343 were posted in the same
+    # second by the same user. The loan number would separate them and is not
+    # read (rule 2).
+    #
+    # It does not matter. Two identical rows are INTERCHANGEABLE here: if Head
+    # Office says one of the two Rs 5,343 preclosures was netted off, which one
+    # is a question with no consequence — the arithmetic is the same either way.
+    # So the group carries a count, and Head Office answers "how many", which for
+    # 33 of July's 40 groups is simply "the one".
+    special: dict = field(default_factory=dict)
 
     @property
     def collected(self) -> float:
@@ -117,6 +164,9 @@ class BranchDay:
             "uncollected_count": self.uncollected_count,
             "last_posted_at": self.last_posted_at,
             "unknown_modes": sorted(self.unknown_modes),
+            # Sorted so the content digest that decides "did anything change?"
+            # does not flip on dict ordering alone and re-alert every pull.
+            "special": [self.special[k] for k in sorted(self.special)],
         }
 
 
@@ -256,6 +306,8 @@ def parse_demand_collection(data: bytes, expect_day: Optional[date] = None) -> D
         i_cds = index["TotalDemandAsPerCDS"]
         i_collect = index["Total_Collect"]
         i_mode = index["Posted_by"]
+        i_status = index["status"]
+        i_user = index["Posted_by_user"]
 
         by_branch: dict[str, BranchDay] = {}
         days: set = set()
@@ -285,6 +337,23 @@ def parse_demand_collection(data: bytes, expect_day: Optional[date] = None) -> D
         # Detecting this properly means ingesting a member or loan identifier,
         # which Rule 2 exists to prevent. The trade is made knowingly: no false
         # alarms, and duplicate cash rows are not caught here.
+
+        # THE GUARD DID NOT MOVE, and that is deliberate.
+        #
+        # status (28) and Posted_by_user (30) sit to the right of Posted_by (29),
+        # so widening this to the new columns would skip any row too short to
+        # reach them — and a skipped row is CASH REMOVED from a branch's deposit
+        # target with nothing on screen to say so. Every row in the July file is
+        # full width, but that is one file's evidence for a rule that decides how
+        # much money someone carries to a bank.
+        #
+        # So the guard still covers only the columns the figures need, and the
+        # two new ones are read defensively below. A row too short to say who
+        # posted it still contributes its cash; it just cannot be classified, and
+        # `_cell` returning None routes it to "ask Head Office" rather than to
+        # silence.
+        def _cell(r, i):
+            return r[i] if i < len(r) else None
 
         for row in rows:
             if row is None or len(row) <= i_mode:
@@ -335,6 +404,7 @@ def parse_demand_collection(data: bytes, expect_day: Optional[date] = None) -> D
                 unknown_modes.add(mode or "(blank)")
 
             t = row[i_time]
+            ts = ""
             if t is not None:
                 # Zero-pad before comparing. These are clock strings compared as
                 # strings, which is fine only while every one is HH:MM:SS -- the
@@ -343,6 +413,23 @@ def parse_demand_collection(data: bytes, expect_day: Optional[date] = None) -> D
                 ts = _norm_time(str(t).strip())
                 if ts and (bd.last_posted_at is None or ts > bd.last_posted_at):
                     bd.last_posted_at = ts
+
+            # Only CASH-mode rows are recorded. A preclosure paid by UPI is
+            # already in a bank and was never going to be deposited, so it
+            # cannot inflate anybody's deposit target.
+            _st = _cell(row, i_status)
+            status = ("" if _st is None else str(_st)).strip()
+            if norm in CASH_MODES and amount > 0 and status.lower() in UNSETTLED_STATUSES:
+                _pu = _cell(row, i_user)
+                poster = ("" if _pu is None else str(_pu)).strip()
+                k = f"{ts}|{amount:.2f}|{status.lower()}|{poster}"
+                g = bd.special.get(k)
+                if g is None:
+                    g = bd.special[k] = {
+                        "key": k, "time": ts, "amount": round(amount, 2),
+                        "status": status.lower(), "posted_by_user": poster, "count": 0,
+                    }
+                g["count"] += 1
     finally:
         wb.close()
 

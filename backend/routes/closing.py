@@ -47,6 +47,7 @@ import json
 import os
 import math
 import logging
+import re
 import uuid
 from datetime import datetime, timedelta, date as date_cls
 from typing import Optional
@@ -69,6 +70,15 @@ STATE = "closing_state"
 STATE_KEY = "mis_fetcher"
 SLIPS = "deposit_slips"
 DAYS = "closing_days"
+# One document per (date, branch, group) that Head Office has ruled on.
+SPECIAL = "closing_special_decisions"
+
+# Posting accounts that are Head Office by definition rather than by employee
+# record. "0-Super User" carries no employee id to look up and posted five of
+# July's preclosures.
+_HO_POSTERS = {"0-super user", "super user"}
+# Matches the "RMF0005-ROOPAM GUPTA" shape the MIS writes into Posted_by_user.
+_POSTER_ID_RE = re.compile(r"^\s*([A-Za-z]{2,5}\d{2,6})\s*-")
 
 # A branch-day walks these in order. Nothing skips: a day cannot be approved
 # without having been submitted, because approval means "I checked the bank
@@ -572,6 +582,16 @@ async def closing_day(
         # them because approved days refuse edits. A branch was left showing a
         # hole it had no way to close. The signed figure is the one that shows;
         # the drift is surfaced separately, as its own fact.
+        # MONEY THAT WAS NEVER THE BRANCH'S TO BANK COMES OUT HERE, before the
+        # ledger sees it — an insurer's settlement of a dead borrower's loan, and
+        # a preclosure that was netted off against a new loan rather than paid.
+        # Across July that was 8.6% of stated cash, and on 20-Jul it was the
+        # whole of CHANDPUR's Rs 42,033 target.
+        adjusted, special = await _bankable(day_str, code, r)
+        r["expected_deposit_raw"] = round(float(r.get("expected_deposit") or 0), 2)
+        r["expected_deposit"] = adjusted
+        r["special"] = special
+
         snap = d.get("approved_snapshot") or {}
         live = _ledger(float(r.get("expected_deposit") or 0), opening,
                        deposited, d.get("cash_counted"))
@@ -631,6 +651,17 @@ async def closing_day(
     # Named separately so a screen can say WHICH branches these are: they have no
     # row in the table, so a total alone would be a number with nowhere to look.
     totals["carried_elsewhere"] = extra
+
+    # RECOMPUTED, not summed earlier. `totals` is built before the per-branch
+    # loop, so its deposit figure is the raw one; leaving it would put a total on
+    # the screen that does not equal the column above it, which is the exact
+    # complaint that produced the frozen-carry fix.
+    totals["expected_deposit"] = round(
+        sum(float(r.get("expected_deposit") or 0) for r in rows), 2)
+    totals["special"] = {
+        k: round(sum(float((r.get("special") or {}).get(k) or 0) for r in rows), 2)
+        for k in ("insurance", "netted", "cash_with_branch", "pending", "excluded")
+    }
 
     return {"date": day_str, "branches": rows, "totals": totals, "warnings": warnings,
             "can_approve": await _is_closing_approver(current_user),
@@ -910,6 +941,16 @@ class DayDecision(BaseModel):
     reopen: bool = False           # only meaningful on /reject of an approved day
 
 
+class SpecialDecision(BaseModel):
+    """Head Office ruling on one group of identical preclosure postings."""
+    date: str
+    branch_code: str
+    key: str
+    netted_count: int              # how many of the group were netted off
+    count: int                     # the group size the ruling was made against
+    note: Optional[str] = None
+
+
 async def _is_closing_approver(user: dict) -> bool:
     """May this person confirm a day against the bank?
 
@@ -1102,6 +1143,146 @@ async def _carried_in(day: str, branch_code: str) -> dict:
         "remark": prev.get("hold_remark"),
         "disputed": disputed,
     }
+
+
+async def _bankable(day: str, branch_code: str, row: dict) -> tuple:
+    """The cash figure this branch is actually answerable for, and why.
+
+    THE ONE PLACE THAT ANSWERS THIS. `/day`, `/submit` and `/approve` each build
+    their own ledger — deliberately, so a late collection cannot leave the screen
+    and the signed record disagreeing — but they must all subtract the same
+    things. Left to three copies, the approver would sign a snapshot computed
+    from the raw MIS figure while the screen above it showed the adjusted one,
+    which is precisely the two-sources-of-truth fault this file keeps having.
+    """
+    special = await _resolve_special(day, branch_code, (row or {}).get("special") or [])
+    raw = float((row or {}).get("expected_deposit") or 0)
+    return round(max(0.0, raw - special["excluded"]), 2), special
+
+
+_ho_branch_cache: dict = {}
+
+
+async def _posted_at_head_office(poster: str) -> bool:
+    """Was this entry keyed by Head Office rather than by a field officer?
+
+    THIS, NOT THE LOAN'S STATUS, IS THE SIGNAL.
+
+    `status` describes the loan when the report was generated. On 30-Jul a field
+    officer collected an ordinary Rs 2,620 instalment at 17:20 on a loan Head
+    Office had preclosed at 09:54 — the report calls that cash `preclosed`, but
+    it is in a branch manager's drawer and somebody has to bank it. Classifying
+    by status alone would have quietly removed it from their target, and money
+    removed from a target is money nobody goes looking for.
+
+    Who keyed it is the honest question, and HRapp already knows the answer: the
+    MIS writes "RMF0005-ROOPAM GUPTA", and our own employee record says where
+    RMF0005 works. Derived rather than configured, so it stays true as people
+    move branches instead of rotting in a list nobody remembers to edit.
+    """
+    p = (poster or "").strip()
+    if not p:
+        # No poster at all. Treat as Head Office, i.e. ASK rather than assume:
+        # the failure of assuming "branch cash" is a false shortfall, and the
+        # failure of assuming otherwise is money silently dropped. Asking is the
+        # only option that cannot be silently wrong.
+        return True
+    if p.lower() in _HO_POSTERS:
+        return True
+    if p in _ho_branch_cache:
+        return _ho_branch_cache[p]
+    m = _POSTER_ID_RE.match(p)
+    if not m:
+        _ho_branch_cache[p] = True
+        return True
+    emp = await db.employees.find_one({"employee_id": m.group(1)},
+                                      {"_id": 0, "branch": 1})
+    if not emp:
+        # An unknown poster is not evidence of a field collection.
+        _ho_branch_cache[p] = True
+        return True
+    branch = (emp.get("branch") or "").strip().lower()
+    ho = ("head office" in branch) or branch in ("ho", "corporate", "")
+    _ho_branch_cache[p] = ho
+    return ho
+
+
+async def _resolve_special(day: str, branch_code: str, groups: list) -> dict:
+    """Split preclosure and death-settlement money into what the branch owes.
+
+    Returns the four buckets plus the items a Head Office screen has to answer.
+    Nothing here guesses: an unanswered preclosure is `pending`, which comes OUT
+    of the deposit target and BLOCKS approval.
+
+    Why out of the target rather than in it: an inflated target produces a
+    shortfall the branch cannot explain, and a tool that cries shortfall on a
+    good night teaches people to stop reading shortfalls -- the same failure the
+    post-approval drift alarm had. Blocking approval is what stops the other
+    direction, money quietly dropped and never chased.
+    """
+    # `excluded` is set HERE, not only on the way out. The early return below is
+    # the common path -- most branches on most days have none of this -- and
+    # leaving the key off it made _bankable raise KeyError, which is a 500 on
+    # /closing/day for every branch on an ordinary evening.
+    out = {"insurance": 0.0, "netted": 0.0, "cash_with_branch": 0.0,
+           "pending": 0.0, "excluded": 0.0, "items": []}
+    if not groups:
+        return out
+    rulings = await db[SPECIAL].find(
+        {"date": day, "branch_code": branch_code}, {"_id": 0}).to_list(200)
+    decided = {d.get("key"): d for d in rulings}
+
+    for g in groups:
+        amount = float(g.get("amount") or 0)
+        count = int(g.get("count") or 1)
+        total = round(amount * count, 2)
+        status = (g.get("status") or "").lower()
+        poster = g.get("posted_by_user") or ""
+        item = {"key": g.get("key"), "time": g.get("time"), "amount": amount,
+                "count": count, "total": total, "status": status,
+                "posted_by_user": poster, "branch_code": branch_code, "date": day}
+
+        if not await _posted_at_head_office(poster):
+            # A field officer collected it. It is cash, whatever the loan's
+            # status has since become, and there is nothing to ask anybody.
+            out["cash_with_branch"] += total
+            item["resolution"] = "field"
+            out["items"].append(item)
+            continue
+
+        if status == "deathclose":
+            # The insurer settles the outstanding principal. No branch manager
+            # ever held this, and no human judgement is needed to know that.
+            out["insurance"] += total
+            item["resolution"] = "insurance"
+            out["items"].append(item)
+            continue
+
+        d = decided.get(g.get("key"))
+        if not d or d.get("count") != count:
+            # No ruling, or the group has changed size since one was made — the
+            # same reason the late-collections guard re-asks when a figure moves.
+            out["pending"] += total
+            item["resolution"] = "pending"
+            if d and d.get("count") != count:
+                item["reopened_from"] = d.get("count")
+            out["items"].append(item)
+            continue
+
+        n_netted = max(0, min(count, int(d.get("netted_count") or 0)))
+        out["netted"] += round(amount * n_netted, 2)
+        out["cash_with_branch"] += round(amount * (count - n_netted), 2)
+        item["resolution"] = "decided"
+        item["netted_count"] = n_netted
+        item["decided_by"] = d.get("decided_by")
+        item["decided_at"] = d.get("decided_at")
+        item["note"] = d.get("note")
+        out["items"].append(item)
+
+    for k in ("insurance", "netted", "cash_with_branch", "pending"):
+        out[k] = round(out[k], 2)
+    out["excluded"] = round(out["insurance"] + out["netted"] + out["pending"], 2)
+    return out
 
 
 def _ledger(expected_cash: float, opening: float, deposited: float, counted):
@@ -1377,8 +1558,10 @@ async def submit_day(body: DaySubmit, current_user: dict = Depends(get_current_u
 
     deposited = round(sum(float(s.get("amount") or 0) for s in slips), 2)
     opening = await _opening_hold(body.date, body.branch_code)
-    ledger = _ledger(float(row.get("expected_deposit") or 0), opening, deposited,
-                     body.cash_counted)
+    # Same subtraction the screen showed them. A BM who was told to bank
+    # Rs 91,470 must not be filed against the MIS's raw Rs 1,86,410.
+    bankable, _sp = await _bankable(body.date, body.branch_code, row)
+    ledger = _ledger(bankable, opening, deposited, body.cash_counted)
 
     await db[DAYS].update_one(
         {"date": body.date, "branch_code": body.branch_code},
@@ -1422,8 +1605,23 @@ async def approve_day(body: DayDecision, current_user: dict = Depends(get_curren
     deposited = round(sum(float(x.get("amount") or 0) for x in slips
                           if x.get("status") == "confirmed"), 2)
     opening = float(doc.get("opening_hold") or 0)
-    live = _ledger(float(row.get("expected_deposit") or 0), opening, deposited,
-                   doc.get("cash_counted"))
+    bankable, special = await _bankable(body.date, body.branch_code, row)
+
+    # A DAY WITH AN UNANSWERED PRECLOSURE CANNOT BE SIGNED OFF.
+    #
+    # Pending money is held out of the deposit target, which is the safe
+    # direction for the branch manager — no phantom shortfall — but it means the
+    # day balances without it. Approving there would quietly retire a question
+    # nobody answered, and the amounts are not small: Rs 94,940 of NAJIBABAD's
+    # Rs 1,86,410 on 31-Jul. Approval is the last moment anyone looks, so it is
+    # where the question has to be paid.
+    if special["pending"] > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"Rs {special['pending']:,.2f} of preclosures on this day have not been "
+                    "marked by Head Office as cash or netted off. Settle those first."))
+
+    live = _ledger(bankable, opening, deposited, doc.get("cash_counted"))
 
     now_iso = datetime.now(IST).isoformat()
     snapshot = {
@@ -1561,6 +1759,95 @@ async def list_approvers(current_user: dict = Depends(get_current_user)):
          "designation": 1, "branch": 1}).to_list(50)
     return {"granted": granted,
             "note": "hr_admin and management can always approve; these are extra grants"}
+
+
+@router.get("/special")
+async def list_special(date: str = Query(None), current_user: dict = Depends(get_current_user)):
+    """Preclosures and death settlements for a day, across every branch.
+
+    Head Office's screen. Only the people who can approve a closing see it, for
+    the same reason they are the ones who approve: marking a collection "netted
+    off" REDUCES what a branch has to walk into a bank, so it must not be the
+    person holding the cash. A branch manager confirms their own slips and never
+    approves them; this is the same separation.
+    """
+    if not (await _is_closing_approver(current_user)
+            or _roles_ok(current_user, {"hr_admin", "management"})):
+        raise HTTPException(status_code=403, detail="Not permitted")
+    if date:
+        try:
+            date_cls.fromisoformat(date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+    day = date or today_ist().isoformat()
+
+    rows = await db[COLL].find({"date": day}, {"_id": 0}).to_list(50)
+    items, totals = [], {"insurance": 0.0, "netted": 0.0, "pending": 0.0,
+                         "cash_with_branch": 0.0}
+    for r in rows:
+        sp = await _resolve_special(day, r.get("branch_code"), r.get("special") or [])
+        for it in sp["items"]:
+            it["branch_name"] = r.get("branch_name")
+            items.append(it)
+        for k in totals:
+            totals[k] = round(totals[k] + sp[k], 2)
+    # Unanswered first: this screen exists to get those answered, and burying
+    # them under thirty settled rows is how they stay unanswered.
+    order = {"pending": 0, "decided": 1, "insurance": 2, "field": 3}
+    items.sort(key=lambda x: (order.get(x.get("resolution"), 9), x.get("time") or ""))
+    return {"date": day, "items": items, "totals": totals}
+
+
+@router.post("/special/decide")
+async def decide_special(body: SpecialDecision,
+                         current_user: dict = Depends(get_current_user)):
+    """Head Office: 'that preclosure was netted off' — or 'no, it was cash'."""
+    if not (await _is_closing_approver(current_user)
+            or _roles_ok(current_user, {"hr_admin", "management"})):
+        raise HTTPException(status_code=403, detail="Not permitted")
+    try:
+        date_cls.fromisoformat(body.date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+
+    row = await db[COLL].find_one({"date": body.date, "branch_code": body.branch_code},
+                                  {"_id": 0, "special": 1, "branch_name": 1})
+    group = next((g for g in ((row or {}).get("special") or [])
+                  if g.get("key") == body.key), None)
+    if not group:
+        raise HTTPException(status_code=404,
+                            detail="No such preclosure on that day and branch")
+    count = int(group.get("count") or 1)
+    # The ruling is recorded against the group SIZE it was made against. If a
+    # later pull splits or merges the group, _resolve_special reopens it rather
+    # than applying an old answer to a new number -- the same rule the
+    # late-collections guard follows when a figure moves under a decision.
+    if int(body.count) != count:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"That group now has {count} posting(s), not {body.count}. "
+                    "Reload the day and answer it again."))
+    if not (0 <= int(body.netted_count) <= count):
+        raise HTTPException(status_code=400,
+                            detail=f"Between 0 and {count} of these can be netted off")
+    if (group.get("status") or "").lower() != "preclosed":
+        raise HTTPException(status_code=400,
+                            detail="Only a preclosure needs this decision")
+
+    await db[SPECIAL].update_one(
+        {"date": body.date, "branch_code": body.branch_code, "key": body.key},
+        {"$set": {
+            "date": body.date, "branch_code": body.branch_code, "key": body.key,
+            "count": count,
+            "netted_count": int(body.netted_count),
+            "amount": float(group.get("amount") or 0),
+            "note": (body.note or "").strip()[:300] or None,
+            "decided_by": current_user.get("employee_id"),
+            "decided_at": datetime.now(IST).isoformat(),
+        }},
+        upsert=True)
+    return {"ok": True, "key": body.key, "netted_count": int(body.netted_count),
+            "count": count}
 
 
 # ══════════════════════════════════════════════════════════════════

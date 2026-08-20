@@ -4,6 +4,7 @@ import API from "../../utils/api";
 import Freshness from "./Freshness";
 import DepositPanel, { StateChip } from "./DepositPanel";
 import SlipModal from "./SlipModal";
+import SpecialPanel, { SpecialNote } from "./SpecialPanel";
 
 /**
  * The phone view — what a Branch Manager sees at 9pm, standing somewhere.
@@ -162,6 +163,8 @@ export default function ClosingMobile({
               missing-character box, i.e. like a rendering fault. */}
           <Row label="UPI — already banked" value={money(t.upi)} muted />
         </div>
+        {/* Why the big number is lower than what was collected. */}
+        <SpecialNote totals={t} />
         {/* Banked against still-owed — shown only when it says something the
             hero figure above does not. On a fresh day with nothing banked and
             nothing carried, "still to deposit" IS the hero figure, and repeating
@@ -219,6 +222,10 @@ export default function ClosingMobile({
           No collections recorded for this day.
           <div className="text-xs text-slate-400 mt-1">Expected on a Sunday or a holiday.</div>
         </div>
+      )}
+
+      {(isAdmin || canApprove) && (
+        <SpecialPanel date={date} onChanged={onChanged} compact />
       )}
 
       {/* The BM's actual job for the evening. Only when this is their own

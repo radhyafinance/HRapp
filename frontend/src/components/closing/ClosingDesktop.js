@@ -4,6 +4,7 @@ import Freshness from "./Freshness";
 import API from "../../utils/api";
 import DepositPanel, { StateChip } from "./DepositPanel";
 import SlipModal from "./SlipModal";
+import SpecialPanel, { SpecialNote } from "./SpecialPanel";
 
 /**
  * Head Office view of the day's collections.
@@ -193,8 +194,17 @@ export default function ClosingDesktop({
           value={money(t.expected_deposit)}
           sub="What the slips must add up to"
           emphasis
-        />
+        >
+          {/* Why this is lower than Collected. Without it the figure just
+              looks wrong, and a BM who cannot explain a number stops
+              trusting the screen that shows it. */}
+          <SpecialNote totals={t} />
+        </Stat>
       </div>
+
+      {(isAdmin || data?.can_approve) && (
+        <SpecialPanel date={date} onChanged={onChanged} />
+      )}
 
       <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
         <div className="overflow-x-auto">
