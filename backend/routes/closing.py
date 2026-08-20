@@ -273,14 +273,34 @@ async def _flag_post_approval_drift(day_str: str, report) -> list:
             {"_id": 0, "state": 1, "approved_snapshot": 1}) or {}
         if doc.get("state") != ST_APPROVED:
             continue
-        # `cash_collected`, not `expected_deposit`. _ledger has never returned a
-        # key by that name, so this read was ALWAYS 0.0 — every approved day the
-        # fetcher touched again reported its entire day's collections as
-        # post-approval drift, to four people, per branch. A real Rs 100 movement
-        # was indistinguishable from the noise, and the flag it set then bypassed
-        # the reopen interlock below.
-        snap_ledger = (doc.get("approved_snapshot") or {}).get("ledger") or {}
-        was = float(snap_ledger.get("cash_collected") or 0)
+        # COMPARE LIKE WITH LIKE — the RAW MIS figure on both sides.
+        #
+        # This has now been wrong twice, in opposite ways, and both times it
+        # reported a whole day as drift:
+        #
+        #   first, it read `ledger.expected_deposit`, a key _ledger has never
+        #   returned, so `was` was always 0.0 and every approved day the fetcher
+        #   touched again alarmed at its entire collections;
+        #
+        #   then it read `ledger.cash_collected`, which was right until preclosure
+        #   handling arrived and /approve began signing against the ADJUSTED
+        #   figure. `b.expected_deposit` is the raw parse. On CHANDPUR's 20-Jul —
+        #   Rs 42,033 stated, Rs 23,677 of it an insurer settling a dead
+        #   borrower's loan — an approval against Rs 18,356 made every later pull
+        #   announce Rs 23,677 of drift with not one rupee moved, and a genuine
+        #   Rs 9,144 late collection would have been reported as Rs 32,821.
+        #
+        # The snapshot has stored the raw figure all along, one level up, with a
+        # comment saying it exists so nobody has to guess which key inside
+        # `ledger` holds it. Read that.
+        snap = doc.get("approved_snapshot") or {}
+        snap_ledger = snap.get("ledger") or {}
+        raw_at_approval = snap.get("expected_deposit")
+        # `is None`, not `or` — a branch that legitimately owed nothing has a raw
+        # figure of 0.0, and falling through on that would compare against a
+        # ledger key written under different rules.
+        was = float(raw_at_approval if raw_at_approval is not None
+                    else (snap_ledger.get("cash_collected") or 0))
         now = float(b.expected_deposit or 0)
         if abs(now - was) < 0.01:
             continue
@@ -951,6 +971,13 @@ class SpecialDecision(BaseModel):
     note: Optional[str] = None
 
 
+class SpecialUndo(BaseModel):
+    """Take a ruling back. Same three fields identify the group."""
+    date: str
+    branch_code: str
+    key: str
+
+
 async def _is_closing_approver(user: dict) -> bool:
     """May this person confirm a day against the bank?
 
@@ -1160,11 +1187,13 @@ async def _bankable(day: str, branch_code: str, row: dict) -> tuple:
     return round(max(0.0, raw - special["excluded"]), 2), special
 
 
-_ho_branch_cache: dict = {}
+ORIGIN_FIELD = "field"
+ORIGIN_HO = "head_office"
+ORIGIN_UNKNOWN = "unknown"
 
 
-async def _posted_at_head_office(poster: str) -> bool:
-    """Was this entry keyed by Head Office rather than by a field officer?
+async def _poster_origin(poster: str) -> str:
+    """Who keyed this entry: a field officer, Head Office, or we cannot tell.
 
     THIS, NOT THE LOAN'S STATUS, IS THE SIGNAL.
 
@@ -1172,39 +1201,55 @@ async def _posted_at_head_office(poster: str) -> bool:
     officer collected an ordinary Rs 2,620 instalment at 17:20 on a loan Head
     Office had preclosed at 09:54 — the report calls that cash `preclosed`, but
     it is in a branch manager's drawer and somebody has to bank it. Classifying
-    by status alone would have quietly removed it from their target, and money
-    removed from a target is money nobody goes looking for.
+    by status alone would quietly remove it from their target, and money removed
+    from a target is money nobody goes looking for.
 
-    Who keyed it is the honest question, and HRapp already knows the answer: the
-    MIS writes "RMF0005-ROOPAM GUPTA", and our own employee record says where
-    RMF0005 works. Derived rather than configured, so it stays true as people
-    move branches instead of rotting in a list nobody remembers to edit.
+    THREE ANSWERS, NOT TWO, and the third is why this was rewritten.
+    ---------------------------------------------------------------
+    This used to fold "we cannot tell" into "Head Office", on the reasoning that
+    Head Office means ASK. That is true for a preclosure — it goes to `pending`,
+    which blocks approval until a person answers. It is the exact opposite for a
+    death settlement, which Head Office means DELETE: excluded automatically, no
+    pending, no block, nothing on screen.
+
+    So an unresolvable poster silently erased cash. And it was not a corner case:
+    the employee form ships an explicit "— Not Assigned —" option that stores an
+    empty branch, which the old code read as Head Office. A field officer with no
+    branch set collects Rs 27,230 on a loan Head Office death-closed that
+    morning; the branch is told to bank Rs 2,770 instead of Rs 30,000, the day
+    balances, Accounts approves, and nobody ever looks for the difference.
+
+    Unknown now means unknown, and unknown always asks.
+
+    NO CACHE. There was one, keyed on the whole "RMF0005-ROOPAM GUPTA" string and
+    never invalidated, and it defeated the very thing this function exists for:
+    a poster looked up before their employee record existed stayed Head Office
+    for the life of the pod, so their real field cash sat `pending` and the branch
+    could not be approved until someone restarted the process; an officer who
+    moved TO Head Office stayed `field`, and their Rs 14,138 was charged to a
+    branch as cash. Neither was fixable by HR. There are at most a few dozen of
+    these rows a day, against an indexed lookup — the cache bought nothing and
+    cost correctness.
     """
     p = (poster or "").strip()
     if not p:
-        # No poster at all. Treat as Head Office, i.e. ASK rather than assume:
-        # the failure of assuming "branch cash" is a false shortfall, and the
-        # failure of assuming otherwise is money silently dropped. Asking is the
-        # only option that cannot be silently wrong.
-        return True
+        return ORIGIN_UNKNOWN
     if p.lower() in _HO_POSTERS:
-        return True
-    if p in _ho_branch_cache:
-        return _ho_branch_cache[p]
+        return ORIGIN_HO
     m = _POSTER_ID_RE.match(p)
     if not m:
-        _ho_branch_cache[p] = True
-        return True
+        return ORIGIN_UNKNOWN
     emp = await db.employees.find_one({"employee_id": m.group(1)},
                                       {"_id": 0, "branch": 1})
     if not emp:
-        # An unknown poster is not evidence of a field collection.
-        _ho_branch_cache[p] = True
-        return True
+        return ORIGIN_UNKNOWN
     branch = (emp.get("branch") or "").strip().lower()
-    ho = ("head office" in branch) or branch in ("ho", "corporate", "")
-    _ho_branch_cache[p] = ho
-    return ho
+    if not branch:
+        # "— Not Assigned —". Not evidence of anything.
+        return ORIGIN_UNKNOWN
+    if ("head office" in branch) or branch in ("ho", "corporate", "head-office"):
+        return ORIGIN_HO
+    return ORIGIN_FIELD
 
 
 async def _resolve_special(day: str, branch_code: str, groups: list) -> dict:
@@ -1238,11 +1283,13 @@ async def _resolve_special(day: str, branch_code: str, groups: list) -> dict:
         total = round(amount * count, 2)
         status = (g.get("status") or "").lower()
         poster = g.get("posted_by_user") or ""
+        origin = await _poster_origin(poster)
         item = {"key": g.get("key"), "time": g.get("time"), "amount": amount,
                 "count": count, "total": total, "status": status,
-                "posted_by_user": poster, "branch_code": branch_code, "date": day}
+                "posted_by_user": poster, "branch_code": branch_code, "date": day,
+                "origin": origin}
 
-        if not await _posted_at_head_office(poster):
+        if origin == ORIGIN_FIELD:
             # A field officer collected it. It is cash, whatever the loan's
             # status has since become, and there is nothing to ask anybody.
             out["cash_with_branch"] += total
@@ -1250,16 +1297,23 @@ async def _resolve_special(day: str, branch_code: str, groups: list) -> dict:
             out["items"].append(item)
             continue
 
-        if status == "deathclose":
+        if status == "deathclose" and origin == ORIGIN_HO:
             # The insurer settles the outstanding principal. No branch manager
             # ever held this, and no human judgement is needed to know that.
+            #
+            # ONLY when we positively know Head Office keyed it. This is the one
+            # branch that DELETES money without asking, so it may not run on a
+            # guess: an unresolvable poster falls through to `pending` below,
+            # where a person has to say so out loud.
             out["insurance"] += total
             item["resolution"] = "insurance"
             out["items"].append(item)
             continue
 
         d = decided.get(g.get("key"))
-        if not d or d.get("count") != count:
+        # `cleared` is an UNDONE ruling. The document stays, so who decided what
+        # and who reversed it survives; only its effect is withdrawn.
+        if not d or d.get("cleared") or d.get("count") != count:
             # No ruling, or the group has changed size since one was made — the
             # same reason the late-collections guard re-asks when a figure moves.
             out["pending"] += total
@@ -1600,8 +1654,21 @@ async def approve_day(body: DayDecision, current_user: dict = Depends(get_curren
     # submitted meant the approver saw a red shortfall while the stored snapshot
     # said the day balanced -- the permanent record disagreeing with the screen it
     # claims to copy. With no bank feed this record is the whole audit trail.
-    row = await db[COLL].find_one(
-        {"date": body.date, "branch_code": body.branch_code}, {"_id": 0}) or {}
+    # find, not find_one. /closing/day SUMS every row for a branch-day while this
+    # read only one of them, so a duplicated (date, branch_code) — two spellings
+    # of one branch name, from before the storage guards existed — let an
+    # approver sign off against the row that carried no pending preclosure while
+    # the screen showed Rs 42,033 waiting. Ingest cannot create such a pair now;
+    # rows written before it could still exist, and this is the last gate.
+    _rows = await db[COLL].find(
+        {"date": body.date, "branch_code": body.branch_code}, {"_id": 0}).to_list(10)
+    if len(_rows) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(f"This branch has {len(_rows)} collection rows for {body.date} "
+                    "(the MIS reported it under more than one name). Head Office must "
+                    "resolve that before the day can be approved."))
+    row = _rows[0] if _rows else {}
     deposited = round(sum(float(x.get("amount") or 0) for x in slips
                           if x.get("status") == "confirmed"), 2)
     opening = float(doc.get("opening_hold") or 0)
@@ -1830,24 +1897,134 @@ async def decide_special(body: SpecialDecision,
     if not (0 <= int(body.netted_count) <= count):
         raise HTTPException(status_code=400,
                             detail=f"Between 0 and {count} of these can be netted off")
-    if (group.get("status") or "").lower() != "preclosed":
+    # A FIELD OFFICER'S COLLECTION IS NOT ANYBODY'S TO RULE ON.
+    #
+    # Status alone does not mean the money is in question: on 30-Jul a field
+    # officer collected an ordinary Rs 2,620 instalment on a loan Head Office had
+    # preclosed that morning, so the workbook labels real cash `preclosed`.
+    # Without this, that key could be posted here and a ruling of "netted off"
+    # stored against a branch manager's own cash.
+    #
+    # `_resolve_special` checks the poster BEFORE it looks for a ruling, so such
+    # a ruling is inert today and no money moves. That is a reason to refuse it
+    # here rather than rely on it: the day somebody reorders those two checks,
+    # Rs 2,620 of a manager's cash would vanish with a signed-looking decision
+    # behind it.
+    g_status = (group.get("status") or "").lower()
+    origin = await _poster_origin(group.get("posted_by_user"))
+    if origin == ORIGIN_FIELD:
+        raise HTTPException(
+            status_code=400,
+            detail=("A field officer collected this, so it is the branch's cash "
+                    "and there is nothing to decide."))
+    if g_status == "deathclose" and origin == ORIGIN_HO:
+        raise HTTPException(
+            status_code=400,
+            detail="Head Office booked this as an insurance settlement; it is already excluded.")
+    if g_status not in ("preclosed", "deathclose"):
         raise HTTPException(status_code=400,
-                            detail="Only a preclosure needs this decision")
+                            detail="Only a preclosure or a death settlement needs this decision")
 
+    # A RULING MAY NOT MOVE AFTER THE DAY IS SIGNED OFF.
+    #
+    # Nothing here looked at the day's state. So after a branch was approved,
+    # flipping a ruling silently moved its deposit target: /closing/day would
+    # show Rs 91,470 beside a frozen approved ledger saying Rs 1,86,410, with
+    # `collections_changed_after_approval` unset, `approval_history` untouched
+    # and no alert to anybody — the drift machinery only runs on ingest. The
+    # dangerous direction is "netted" corrected to "it was cash", which raises
+    # what a branch owes by Rs 94,940 against a record still saying it balanced.
+    day_doc = await db[DAYS].find_one(
+        {"date": body.date, "branch_code": body.branch_code},
+        {"_id": 0, "state": 1}) or {}
+    if day_doc.get("state") == ST_APPROVED:
+        raise HTTPException(
+            status_code=409,
+            detail=("That day has been approved. Ask Accounts to reopen it before "
+                    "changing how this collection is treated."))
+
+    now_iso = datetime.now(IST).isoformat()
+    entry = {
+        "count": count,
+        "netted_count": int(body.netted_count),
+        "note": (body.note or "").strip()[:300] or None,
+        "decided_by": current_user.get("employee_id"),
+        "decided_at": now_iso,
+    }
     await db[SPECIAL].update_one(
         {"date": body.date, "branch_code": body.branch_code, "key": body.key},
         {"$set": {
             "date": body.date, "branch_code": body.branch_code, "key": body.key,
-            "count": count,
-            "netted_count": int(body.netted_count),
             "amount": float(group.get("amount") or 0),
-            "note": (body.note or "").strip()[:300] or None,
-            "decided_by": current_user.get("employee_id"),
-            "decided_at": datetime.now(IST).isoformat(),
-        }},
+            # Cleared by an undo, and now ruled on again. Without this the new
+            # ruling would be written and then ignored — `_resolve_special`
+            # treats `cleared` as "no ruling", so the group would sit in the
+            # pending queue looking unanswered however many times you answered it.
+            "cleared": False, "cleared_by": None, "cleared_at": None,
+            **entry,
+        },
+         # APPENDED, NOT OVERWRITTEN. A ruling here decides whether a branch owes
+         # Rs 94,940 to a bank, and `$set` alone let a second ruling replace the
+         # first with no trace of who had said what. /approve pushes its own
+         # history for exactly this reason; a decision that moves the same money
+         # deserves the same treatment.
+         "$push": {"history": entry}},
         upsert=True)
     return {"ok": True, "key": body.key, "netted_count": int(body.netted_count),
             "count": count}
+
+
+@router.post("/special/undo")
+async def undo_special(body: SpecialUndo, current_user: dict = Depends(get_current_user)):
+    """Take a ruling back, and put the group back in the queue.
+
+    These are one-tap buttons that move money — "netted off" on a Rs 94,940
+    preclosure changes what a branch owes a bank by Rs 94,940, and on a group of
+    three the difference between tapping 1 and tapping 2 is a whole posting. A
+    misfire has to be cheap to reverse, or people hesitate over every one and
+    stop using the screen.
+
+    The ruling document is NOT deleted. It is marked `cleared`, so the record of
+    who said what, and who took it back, survives — a decision that moves a
+    branch's obligation should not be erasable, only reversible.
+    """
+    if not (await _is_closing_approver(current_user)
+            or _roles_ok(current_user, {"hr_admin", "management"})):
+        raise HTTPException(status_code=403, detail="Not permitted")
+    try:
+        date_cls.fromisoformat(body.date)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="date must be YYYY-MM-DD")
+
+    existing = await db[SPECIAL].find_one(
+        {"date": body.date, "branch_code": body.branch_code, "key": body.key},
+        {"_id": 0, "cleared": 1})
+    if not existing:
+        raise HTTPException(status_code=404, detail="There is no ruling here to undo")
+    if existing.get("cleared"):
+        raise HTTPException(status_code=409, detail="That ruling has already been undone")
+
+    # The same interlock /special/decide has. Undoing a ruling moves the deposit
+    # target exactly as making one does, and an approved day's signed ledger must
+    # not drift out from under it.
+    day_doc = await db[DAYS].find_one(
+        {"date": body.date, "branch_code": body.branch_code},
+        {"_id": 0, "state": 1}) or {}
+    if day_doc.get("state") == ST_APPROVED:
+        raise HTTPException(
+            status_code=409,
+            detail=("That day has been approved. Ask Accounts to reopen it before "
+                    "changing how this collection is treated."))
+
+    now_iso = datetime.now(IST).isoformat()
+    await db[SPECIAL].update_one(
+        {"date": body.date, "branch_code": body.branch_code, "key": body.key},
+        {"$set": {"cleared": True, "cleared_by": current_user.get("employee_id"),
+                  "cleared_at": now_iso},
+         "$push": {"history": {"action": "undo",
+                               "decided_by": current_user.get("employee_id"),
+                               "decided_at": now_iso}}})
+    return {"ok": True, "key": body.key, "cleared": True}
 
 
 # ══════════════════════════════════════════════════════════════════

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import API from "../../utils/api";
-import { AlertTriangle, Check, HeartPulse, Landmark } from "lucide-react";
+import { AlertTriangle, Check, HeartPulse, Landmark, RotateCcw } from "lucide-react";
 
 /**
  * Collections that may not be the branch's cash to bank.
@@ -65,10 +65,65 @@ export default function SpecialPanel({ date, onChanged, compact }) {
     } finally { setBusy(""); }
   };
 
-  if (!data) return null;
+  // These are one-tap buttons that change what a branch owes a bank. On a group
+  // of three, tapping 2 instead of 1 is a whole posting; "Netted off" instead of
+  // "Cash" on a Rs 94,940 preclosure is Rs 94,940. Undo has to be one tap too,
+  // or people hesitate over every decision and the queue stops being cleared.
+  const undo = async (item) => {
+    setBusy(item.key + item.branch_code); setErr("");
+    try {
+      await API.post("/closing/special/undo", {
+        date: item.date, branch_code: item.branch_code, key: item.key,
+      });
+      await load();
+      if (onChanged) await onChanged();
+    } catch (e) {
+      setErr(e?.response?.data?.detail || "That could not be undone.");
+    } finally { setBusy(""); }
+  };
+
+  // A FAILED LOAD MUST SAY SO.
+  //
+  // This used to `return null` whenever `data` was null, which is exactly the
+  // state a failed fetch leaves behind — so the error set above was thrown away
+  // and the panel rendered nothing at all. On a day holding Rs 94,940 of
+  // unanswered preclosures, "nothing on screen" and "nothing to answer" looked
+  // identical, and the money would have sat there with the day unapprovable and
+  // no explanation anywhere.
+  if (err && !data) {
+    return (
+      <div className="rounded-xl border border-red-300 bg-red-50 p-4 mb-3 text-sm text-red-800"
+           data-testid="special-error">
+        Could not load preclosures for this day — {err}
+        <button onClick={load} className="ml-2 underline">Try again</button>
+      </div>
+    );
+  }
+  // SAY THAT IT IS LOOKING.
+  //
+  // This request takes about 1.4 seconds against the live server, and until it
+  // lands the panel rendered nothing at all — identical to a day that genuinely
+  // has no preclosures. Changing the date and seeing an empty space is not
+  // evidence of anything, and it cost an evening of console commands to work
+  // out that the answer was "wait".
+  if (!data) {
+    return (
+      <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 mb-3
+                      text-sm text-slate-500"
+           data-testid="special-loading">
+        Checking {date} for preclosures and death settlements…
+      </div>
+    );
+  }
   const items = data.items || [];
   const pending = items.filter((i) => i.resolution === "pending");
-  const settled = items.filter((i) => i.resolution === "decided" || i.resolution === "insurance");
+  // Split, because these are different in kind. A ruling somebody made can be
+  // taken back; an insurer settling a dead borrower's loan is a fact with no
+  // control attached. `compact` (the phone) hides only the second — a decision
+  // you cannot reach to undo is worse on a phone than on a desktop, not better.
+  const decided = items.filter((i) => i.resolution === "decided");
+  const informational = items.filter((i) => i.resolution === "insurance");
+  const settled = decided.concat(compact ? [] : informational);
   // A field-posted row needs no decision and no explanation; showing it would
   // pad this list with rows nobody has to act on.
   if (!pending.length && !settled.length) return null;
@@ -147,7 +202,7 @@ export default function SpecialPanel({ date, onChanged, compact }) {
         </div>
       )}
 
-      {!compact && settled.length > 0 && (
+      {settled.length > 0 && (
         <div>
           <div className="text-xs uppercase tracking-wide text-slate-500 font-medium mb-1.5">
             Settled
@@ -175,6 +230,21 @@ export default function SpecialPanel({ date, onChanged, compact }) {
                 </span>
                 {i.decided_by && <span className="text-slate-400">— {i.decided_by}</span>}
                 {i.note && <span className="text-slate-500">“{i.note}”</span>}
+                {/* Only a human ruling can be undone. An insurance settlement is
+                    not a decision anybody made, so there is nothing to take back. */}
+                {i.resolution === "decided" && (
+                  <button
+                    disabled={!!busy}
+                    onClick={() => undo(i)}
+                    data-testid={`undo-${i.branch_code}`}
+                    title="Put this back in the queue"
+                    className="inline-flex items-center gap-1 rounded border border-slate-300
+                               bg-white px-2 py-1 text-xs text-slate-700
+                               hover:border-[#E85B1E] disabled:opacity-50"
+                  >
+                    <RotateCcw size={12} /> Undo
+                  </button>
+                )}
               </div>
             ))}
           </div>
