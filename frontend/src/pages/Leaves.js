@@ -161,6 +161,7 @@ export default function Leaves() {
   const [selectedEmp, setSelectedEmp] = useState(null); // { employee_id, name } for drill-down
   const [empLeaves, setEmpLeaves] = useState([]);
   const [empLeavesLoading, setEmpLeavesLoading] = useState(false);
+  const [empLeavesError, setEmpLeavesError] = useState("");
   const [approvalLeave, setApprovalLeave] = useState(null);
   const [approvalType, setApprovalType] = useState("el");
   const [approvalRemarks, setApprovalRemarks] = useState("");
@@ -178,8 +179,19 @@ export default function Leaves() {
 
   const isManager = ["hr_admin", "management", "managers"].includes(user?.role);
 
+  // A LEAVE LIST THAT FAILED TO LOAD MUST NOT LOOK LIKE AN EMPTY ONE.
+  //
+  // Every fetch below used to end in console.error and nothing else, so a failed
+  // request rendered a tab reading "No approved leaves found." — which is a
+  // claim about the company, not about the network. Somebody checking whether an
+  // employee's leave was recorded would have been told, in effect, that it was
+  // not. The console is not where that belongs.
+  const [loadError, setLoadError] = useState("");
+
   const fetchData = async () => {
     setLoading(true);
+    setLoadError("");
+    const failed = [];
     try {
       const [leavesRes, balRes] = await Promise.all([
         API.get("/leaves"),
@@ -202,12 +214,23 @@ export default function Leaves() {
           setApprovedLeaves(apRes.data);
         } catch (e) {
           console.error("approved fetch failed:", e);
+          // Named individually: the rest of the page is still trustworthy, and
+          // saying WHICH list is missing is the difference between "check
+          // again" and "distrust everything on screen".
+          failed.push("approved leaves");
         }
       }
     } catch (e) {
       console.error("fetchData failed:", e);
+      failed.push("your leaves, balances or the pending queue");
     } finally {
       setLoading(false);
+      if (failed.length) {
+        setLoadError(
+          `Could not load ${failed.join(" and ")}. What you see below may be `
+          + `incomplete — reload before acting on it.`
+        );
+      }
     }
   };
 
@@ -281,8 +304,12 @@ export default function Leaves() {
     try {
       const res = await API.get(`/leaves?employee_id=${emp.employee_id}`);
       setEmpLeaves(res.data);
+      setEmpLeavesError("");
     } catch (e) {
       console.error(e);
+      // Same reason as fetchData: an empty drill-down that failed reads as "this
+      // employee has taken no leave", which is a statement about a person.
+      setEmpLeavesError(e?.response?.data?.detail || "Could not load this employee's leaves.");
     } finally {
       setEmpLeavesLoading(false);
     }
@@ -565,7 +592,16 @@ export default function Leaves() {
         </button>
       </div>
 
+      {loadError && (
+        <div className="mb-4 flex items-start gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+             data-testid="leaves-load-error">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+          <span>{loadError}</span>
+        </div>
+      )}
+
       {/* Leave Balance — hide for admin/management since they don't apply leaves */}
+
       {balance && !isAdminOrMgmt && (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           {BALANCE_DISPLAY.map(({ key, label, color }) => (
@@ -756,6 +792,8 @@ export default function Leaves() {
                 <tbody>
                   {empLeavesLoading
                     ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">Loading...</td></tr>
+                    : empLeavesError
+                      ? <tr><td colSpan={7} className="px-4 py-8 text-center text-red-600 text-sm">{empLeavesError}</td></tr>
                     : empLeaves.length === 0
                       ? <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">No leave applications found.</td></tr>
                       : empLeaves.map(l => (
@@ -941,7 +979,14 @@ export default function Leaves() {
                   })
                 : activeTab === "approved"
                   ? filteredApproved.length === 0
-                    ? <tr><td colSpan={8} className="px-4 py-12 text-center text-slate-400">No approved leaves found.</td></tr>
+                    ? <tr><td colSpan={8} className="px-4 py-12 text-center text-slate-400">
+                        {/* Do not assert an absence we cannot vouch for. When the
+                            fetch failed, "No approved leaves found." is a claim
+                            about the company made on the strength of a network
+                            error, and somebody checking whether an employee's
+                            leave was recorded would act on it. */}
+                        {loadError ? "This list could not be loaded — see the message above." : "No approved leaves found."}
+                      </td></tr>
                     : filteredApproved.map(l => (
                     <tr key={l.id} className="border-b border-slate-100 hover:bg-slate-50">
                       <td className="px-4 py-3">
@@ -986,7 +1031,18 @@ export default function Leaves() {
                       </td>
                     </tr>
                   ))
-                  : leaves.map(l => {
+                  /* MY leaves — mine, not my team's.
+                     `/leaves` returns a MANAGER their whole reporting sub-tree
+                     plus themselves (hierarchy.get_manager_scope_excluding_ho),
+                     which is what the Team tab above is built from. This branch
+                     rendered that same array unfiltered, and its columns are
+                     Type/From/To/Days/Status/Certificate/Applied — there is no
+                     Employee column — so a report's leave appeared here as the
+                     manager's own with nothing to say whose it was.
+                     Observed: a manager saw six of her officer's pending
+                     applications listed as hers and reported them as leaves she
+                     had never applied for. */
+                  : leaves.filter(l => l.employee_id === user?.employee_id).map(l => {
                     const needsCert = l.leave_type === "SL" && l.days > 2;
                     const hasCert = !!l.medical_certificate;
                     return (

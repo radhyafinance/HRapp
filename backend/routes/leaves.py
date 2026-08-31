@@ -7,8 +7,11 @@ from auth_utils import get_current_user
 from datetime import datetime, timezone, date, timedelta
 from bson import ObjectId
 import io
+import logging
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -614,7 +617,19 @@ async def pending_leaves(current_user: dict = Depends(get_current_user)):
         scope = await get_manager_scope_excluding_ho(me_id)
         query["employee_id"] = {"$in": scope}
 
-    leaves = await db.leave_applications.find(query).sort("applied_at", -1).to_list(500)
+    # A CAP THAT TRUNCATES SILENTLY IS A QUEUE THAT LOSES REQUESTS.
+    #
+    # This was 500, with no indication when it was reached — past that, the
+    # oldest pending applications simply stopped appearing for approval and
+    # nobody was told. The people whose leave was dropped are the ones who have
+    # been waiting longest, which is the worst possible selection. Raised to
+    # match /approved, and it now says so in the log if it is ever hit.
+    PENDING_CAP = 2000
+    leaves = await db.leave_applications.find(query).sort("applied_at", -1).to_list(PENDING_CAP)
+    if len(leaves) >= PENDING_CAP:
+        logger.warning(
+            "leaves: pending list hit the %s cap - the oldest pending applications "
+            "are NOT being shown for approval", PENDING_CAP)
     enriched = await _enrich_leaves_with_employee(leaves)
 
     # Attach remaining balance for the requested leave type so approvers can see it
@@ -1203,6 +1218,18 @@ async def credit_monthly_el(current_user: dict = Depends(get_current_user)):
 
 
 
+# DEAD CODE — NO @router DECORATOR, NO CALLER. Deliberately left unreachable
+# rather than deleted, because the rule it encodes (3 years' service, minimum 30
+# EL) is real and someone will want it.
+#
+# READ THIS BEFORE WIRING IT UP: it inserts into `leave_applications` -- the leave
+# collection -- with `type: "EL_encashment"` and NO `leave_type`, `start_date`,
+# `end_date` or `applied_at`. Nothing reads those rows back: there is no endpoint
+# that lists encashment requests and none that processes one, so `processed_by`
+# and `processed_at` would stay null for ever. What WOULD happen is that every
+# row appears in the employee's own leave list -- which filters by nothing -- as
+# a blank-dated "leave" they never applied for, and in /leaves/pending as an
+# approvable item with no dates. Give it its own collection first.
 async def request_el_encashment(data: EncashmentRequest, current_user: dict = Depends(get_current_user)):
     """
     Rule 7: EL encashment after 3 years of service, min 30 EL accumulated.
