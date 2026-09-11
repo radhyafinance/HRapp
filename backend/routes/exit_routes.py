@@ -77,17 +77,248 @@ def calc_notice_period(emp: dict) -> int:
         return 60
 
 
-def add_timeline_event(timeline: list, event: str, actor: str, description: str) -> list:
-    timeline.append({
+def add_timeline_event(timeline: list, event: str, actor: str, description: str,
+                       comment: Optional[str] = None,
+                       comment_author_id: Optional[str] = None) -> list:
+    """Append a timeline event. A comment goes in its OWN field, never the text.
+
+    Comments used to be glued onto `description` ("... Remarks: <text>"), which put
+    an approver's private remark in front of everybody who could open the exit,
+    and made it impossible to hide without parsing prose. Kept separate, with its
+    author, it can be shown to exactly the people entitled to it -- see _redact_for.
+    """
+    ev = {
         "event": event,
         "actor": actor,
         "description": description,
         "timestamp": datetime.now(timezone.utc).isoformat()
-    })
+    }
+    if comment:
+        ev["comment"] = comment
+        ev["comment_author_id"] = comment_author_id
+    timeline.append(ev)
     return timeline
 
 
-def exit_to_dict(e: dict) -> dict:
+# ──────────────────────────────────────────────────────────────
+#  Who may see what on an exit
+# ──────────────────────────────────────────────────────────────
+# ONE RULE, applied to every exit that leaves this module: a comment is seen by
+# the person who wrote it, and by HR Admin and Management -- nobody else. The rest
+# follows from who the viewer is to THIS exit (the person leaving, one of their
+# approvers, a NOC owner), which is why it is worked out per exit, not per role.
+#
+# It lives here, on the way out, because hiding things on screen alone leaves them
+# one devtools click away: the whole exit document used to go to anyone allowed to
+# open it -- including NOC owners in other departments -- with every approver's
+# remarks, every NOC note, the resignation reason and the notice period inside.
+_PRIVILEGED_ROLES = ("hr_admin", "management")
+# Final approval sets status -> noc_in_progress and the last working day in the
+# same write, so "accepted, with a last working day" is exactly this.
+_ACCEPTED_STATUSES = ("noc_in_progress", "noc_complete", "completed")
+# Timeline entries written before comments had their own field carry them INSIDE
+# the description. Five writers did it: approvals ("Remarks:"), exit-type changes
+# ("Comment:"), and direct exit / undo / reinstate ("Reason:"). Nothing else in
+# this module writes these markers, so cutting from the first one is safe.
+_COMMENT_MARKERS = (" Remarks: ", " Comment: ", " Reason: ")
+_LEVEL_EVENT_RE = re.compile(r"^level_(\d+)_")
+# Besides the noc_* events: things that can only happen after every NOC clears,
+# so showing them to the person leaving would announce "NOC complete".
+_LEAVER_HIDDEN_EVENTS = ("all_nocs_cleared", "fnf_uploaded", "relieving_uploaded")
+
+
+def _norm_id(x):
+    """An employee id as compared, not as typed.
+
+    Logins created from HR's create-user screen store `employee_id` exactly as it
+    was typed ("rmf0400"), while employee records hold the canonical "RMF0400".
+    Compared raw, the person leaving was not recognised as the person leaving and
+    was shown the view meant for someone else: owner names, the real status, the
+    whole NOC trail.
+    """
+    return str(x).strip().upper() if x else None
+
+
+def _level_author(item: dict):
+    """Who wrote the remark on an approval level, as far as the record can say.
+
+    `acted_by_id` is recorded from now on. Older levels only know the approver it
+    was assigned to -- so where HR acted on a manager's level in the past, that
+    remark is attributed to the manager. It cannot be told apart after the fact.
+    """
+    if not item:
+        return None
+    if item.get("acted_by_id"):
+        return item["acted_by_id"]
+    aid = item.get("approver_id")
+    return aid if aid and aid != "admin" else None
+
+
+def _viewer(e: dict, user: dict) -> dict:
+    """What this user is to this exit. Everything visible is decided from this."""
+    role = (user or {}).get("role")
+    me = _norm_id((user or {}).get("employee_id"))
+    privileged = role in _PRIVILEGED_ROLES
+    chain = [i for i in (e.get("approval_chain") or []) if isinstance(i, dict)]
+    return {
+        "me": me,
+        "privileged": privileged,
+        # Not role-based: a branch manager who resigns is `managers`, and is still
+        # the person leaving.
+        "departing": bool(me) and _norm_id(e.get("employee_id")) == me and not privileged,
+        "approver": bool(me) and any(_norm_id(i.get("approver_id")) == me for i in chain),
+        "completed": e.get("status") == "completed",
+        # ── 3. `is_direct_exit` was only added on 2026-08-03; direct exits from
+        # the month before carry no flag. Every RESIGNATION has at least the HR
+        # level in its approval chain (_build_approval_chain always appends it), so
+        # an empty chain is a direct exit whatever the flag says. Without this, the
+        # employee on one of those older exits was shown HR's own note as their
+        # "reason".
+        "direct": bool(e.get("is_direct_exit")) or not chain,
+    }
+
+
+def _may_read_reason(v: dict) -> bool:
+    """The resignation reason and letter: the employee, their approvers, HR.
+
+    A deliberate exception to "only your own comments": an approver asked to
+    decide on a resignation has to be able to read why. NOC owners do not. On a
+    direct exit the "reason" is HR's own note, so only HR and Management.
+    """
+    if v["privileged"]:
+        return True
+    if v["direct"]:
+        return False
+    return v["departing"] or v["approver"]
+
+
+def _may_download_final(v: dict) -> bool:
+    """F&F sheet and relieving letter: HR/Management, or the employee once done."""
+    return v["privileged"] or (v["departing"] and v["completed"])
+
+
+def _strip_embedded_comment(text: str) -> str:
+    """Cut an old-style comment out of a timeline description.
+
+    Cuts from the FIRST marker to the end: if it errs, it hides too much, never
+    too little.
+    """
+    cuts = [i for i in (text.find(m) for m in _COMMENT_MARKERS) if i != -1]
+    return text[:min(cuts)].rstrip() if cuts else text
+
+
+def _redact_for(e: dict, user: dict) -> dict:
+    """Return the exit as `user` is allowed to see it. Never mutates the input."""
+    e = dict(e)
+    v = _viewer(e, user)
+    me = v["me"]
+    # TOLERANT OF BAD SHAPES. Every writer since April stores proper objects, but
+    # a hand-edited or imported record -- a string timeline entry, a null approval
+    # step -- used to render and must not now raise: this runs inside the LIST, so
+    # one bad record would blank the exit page for everyone, HR included.
+    chain = [i for i in (e.get("approval_chain") or []) if isinstance(i, dict)]
+    # The person leaving sees their clearance only as pending until F&F is done.
+    noc_hidden = v["departing"] and not v["completed"]
+
+    # NOTICE PERIOD -- nobody, HR included, until the resignation is accepted with
+    # a last working day. Never on a direct exit (it stores 0: there is no notice).
+    accepted = e.get("status") in _ACCEPTED_STATUSES and bool(e.get("last_working_day"))
+    if not accepted or v["direct"] or not e.get("notice_period_days"):
+        e["notice_period_days"] = None
+
+    reason_ok = _may_read_reason(v)
+    if not reason_ok:
+        e["reason"] = None
+        e["resignation_letter"] = None
+
+    if not v["privileged"]:
+        # Approval remarks: your own level only.
+        e["approval_chain"] = [
+            {**i, "remarks": i.get("remarks") if (me and _norm_id(_level_author(i)) == me) else None}
+            for i in chain
+        ]
+
+        # NOC: your own section's remarks only. The person leaving sees every
+        # section as plain "pending" -- no ticks, no owners, no notes -- until F&F.
+        noc = {}
+        src = e.get("noc_clearances") if isinstance(e.get("noc_clearances"), dict) else {}
+        for sec, d in src.items():
+            d = dict(d) if isinstance(d, dict) else {}
+            if noc_hidden:
+                noc[sec] = {"status": "pending"}
+                continue
+            # Who cleared it. `submitted_by_id` was only recorded from 2026-06-12.
+            # Before that the clearer was the section's owner -- a cleared section
+            # cannot be reassigned -- so an older cleared section falls back to its
+            # assignee. Otherwise owners lost sight of their own May remarks.
+            author = d.get("submitted_by_id") or (
+                d.get("assignee_id") if d.get("status") == "cleared" else None)
+            if not (me and _norm_id(author) == me):
+                d["overall_remarks"] = ""
+                d["items"] = [{"name": i.get("name"), "done": i.get("done")}
+                              for i in (d.get("items") or []) if isinstance(i, dict)]
+            noc[sec] = d
+        e["noc_clearances"] = noc
+        if noc_hidden:
+            e["noc_assignments"] = {}
+            # "NOC Complete" would tell them every department had signed off.
+            if e.get("status") == "noc_complete":
+                e["status"] = "noc_in_progress"
+
+        # Exit-type changes are written by HR/Management only.
+        e["exit_type_log"] = []
+        # HR's own words when reinstating someone or undoing a direct exit. They
+        # are stored beside the status as well as in the timeline, so hiding the
+        # timeline copy alone left them in the "reverted" banner for everyone.
+        e["revert_reason"] = None
+
+    # Documents you cannot download are not described to you either. For the
+    # person leaving this matters beyond file names: HR can only upload them once
+    # every NOC has cleared, so their mere presence announced "NOC complete" to
+    # someone whose clearance must read as pending until F&F.
+    can_final = _may_download_final(v)
+    if not can_final:
+        e["final_documents"] = {"fnf_sheet": None, "relieving_letter": None}
+
+    authors = {i.get("level"): _norm_id(_level_author(i)) for i in chain}
+    timeline = []
+    for ev in e.get("timeline") or []:
+        if isinstance(ev, str):
+            ev = {"event": "", "description": ev}
+        elif not isinstance(ev, dict):
+            continue
+        ev = dict(ev)
+        name = ev.get("event") or ""
+        if noc_hidden and (name.startswith("noc_") or name in _LEAVER_HIDDEN_EVENTS):
+            continue
+        if not v["privileged"]:
+            if not (me and _norm_id(ev.get("comment_author_id")) == me):
+                ev.pop("comment", None)
+                ev.pop("comment_author_id", None)
+            # "F&F Settlement Sheet uploaded: <file name>" -- HR's file names can
+            # carry an amount. Keep the fact, drop the name.
+            if name in ("fnf_uploaded", "relieving_uploaded") and not can_final:
+                ev["description"] = (ev.get("description") or "").split(":")[0].rstrip() + "."
+            m = _LEVEL_EVENT_RE.match(name)
+            own_level = bool(m) and bool(me) and authors.get(int(m.group(1))) == me
+            if not own_level:
+                ev["description"] = _strip_embedded_comment(ev.get("description") or "")
+        timeline.append(ev)
+    e["timeline"] = timeline
+
+    # Hints for the screen, so it can say "Pending" rather than a misleading
+    # "0/5 cleared", and not offer buttons that would only fail.
+    e["view"] = {
+        "noc_hidden": noc_hidden,
+        "can_see_ffs": v["privileged"],
+        "can_download_letter": reason_ok and isinstance(e.get("resignation_letter"), dict)
+                               and bool(e["resignation_letter"].get("has_file")),
+        "can_download_final": can_final,
+    }
+    return e
+
+
+def exit_to_dict(e: dict, user: dict) -> dict:
     e = dict(e)
     e["id"] = str(e.pop("_id"))
     # Strip binary file data — return only metadata
@@ -102,10 +333,13 @@ def exit_to_dict(e: dict) -> dict:
         "fnf_sheet": {"has_file": True, "file_name": (fd["fnf_sheet"] or {}).get("file_name", "")} if fd.get("fnf_sheet") else None,
         "relieving_letter": {"has_file": True, "file_name": (fd["relieving_letter"] or {}).get("file_name", "")} if fd.get("relieving_letter") else None,
     }
-    return e
+    # `user` is REQUIRED, not optional: a caller that forgets it should fail
+    # loudly, not quietly send an unredacted exit.
+    return _redact_for(e, user)
 
 
-async def _dept_owner(department: str, fallback_label: str) -> dict:
+async def _dept_owner(department: str, fallback_label: str,
+                      exclude: Optional[str] = None) -> dict:
     """First active person in a department, or a placeholder if there is none.
 
     Resolved by DEPARTMENT, never by designation text. Matching on titles is what
@@ -113,17 +347,20 @@ async def _dept_owner(department: str, fallback_label: str) -> dict:
     retitled, and the Audit owner was hardcoded to RMF0022. Departments are stable;
     titles are not.
     """
-    emp = await db.employees.find_one(
-        {"department": department, "status": {"$in": ["active", "probation"]}},
-        {"employee_id": 1, "first_name": 1, "last_name": 1},
-    )
+    # `exclude` is the person leaving. "First active person in Accounts" used to
+    # pick them when an Accountant resigned -- making them the owner of their own
+    # Accounts clearance, able to sign off their own dues.
+    q = {"department": department, "status": {"$in": ["active", "probation"]}}
+    if exclude:
+        q["employee_id"] = {"$ne": exclude}
+    emp = await db.employees.find_one(q, {"employee_id": 1, "first_name": 1, "last_name": 1})
     if not emp:
         return {"id": None, "name": fallback_label}
     return {"id": emp["employee_id"],
             "name": f"{emp.get('first_name','')} {emp.get('last_name','')}".strip() or fallback_label}
 
 
-async def _get_noc_assignments(reporting_to: str) -> dict:
+async def _get_noc_assignments(reporting_to: str, exclude: Optional[str] = None) -> dict:
     """Suggested NOC owners. HR Admin can change any of them (see set_noc_assignees)."""
     mgr_name = "Reporting Manager"
     if reporting_to:
@@ -134,9 +371,9 @@ async def _get_noc_assignments(reporting_to: str) -> dict:
 
     return {
         "branch_manager": {"id": reporting_to, "name": mgr_name},
-        "accounts": await _dept_owner("Accounts", "Accounts Team"),
-        "it": await _dept_owner("IT", "IT Team"),
-        "audit": await _dept_owner("Risk and Credit", "Risk & Credit Team"),
+        "accounts": await _dept_owner("Accounts", "Accounts Team", exclude),
+        "it": await _dept_owner("IT", "IT Team", exclude),
+        "audit": await _dept_owner("Risk and Credit", "Risk & Credit Team", exclude),
         "admin": {"id": None, "name": "HR Admin"},   # any hr_admin
     }
 
@@ -296,7 +533,7 @@ async def submit_resignation(
         }
 
     approval_chain = await _build_approval_chain(emp)
-    assignments = await _get_noc_assignments(emp.get("reporting_to", ""))
+    assignments = await _get_noc_assignments(emp.get("reporting_to", ""), exclude=target_emp_id)
 
     # Build initial NOC clearances
     noc_clearances = {}
@@ -347,7 +584,9 @@ async def submit_resignation(
     if doc.get("resignation_letter"):
         doc["resignation_letter"] = {"has_file": True, "file_name": file.filename if file else ""}
     doc["final_documents"] = {"fnf_sheet": None, "relieving_letter": None}
-    return doc
+    # Through the same rule as every other read: this used to hand the employee
+    # their own notice period in the submit response, before anyone had accepted.
+    return _redact_for(doc, current_user)
 
 
 @router.get("")
@@ -377,7 +616,7 @@ async def list_exits(
         query["status"] = status
 
     exits = await db.exit_requests.find(query).sort("created_at", -1).to_list(500)
-    return [exit_to_dict(e) for e in exits]
+    return [exit_to_dict(e, current_user) for e in exits]
 
 
 @router.get("/noc-sections")
@@ -442,15 +681,25 @@ async def get_exit(exit_id: str, current_user: dict = Depends(get_current_user))
     exit_req = await db.exit_requests.find_one({"_id": ObjectId(exit_id)})
     if not exit_req:
         raise HTTPException(status_code=404, detail="Not found")
-    role = current_user.get("role")
-    emp_id = current_user.get("employee_id")
-    if role in ["employee", "field_agent"] and exit_req["employee_id"] != emp_id:
-        # ...unless they own a NOC section on it.
-        assigned = any((exit_req.get("noc_clearances", {}).get(sec) or {}).get("assignee_id") == emp_id
-                       for sec in NOC_SECTIONS)
-        if not assigned:
+    # SCOPED LIKE THE LIST. This used to restrict only `employee` and
+    # `field_agent`, so any manager could open any exit by id that the list would
+    # never have shown them. And the NOC-owner test compared the viewer's id with
+    # each owner -- the HR section's owner is None, so a login with no employee id
+    # matched it and could open every exit in the company.
+    if current_user.get("role") not in _PRIVILEGED_ROLES:
+        v = _viewer(exit_req, current_user)
+        me = v["me"]
+        owns_noc = bool(me) and any(
+            _norm_id(((exit_req.get("noc_clearances") or {}).get(sec) or {}).get("assignee_id")) == me
+            for sec in NOC_SECTIONS)
+        allowed = v["departing"] or v["approver"] or owns_noc
+        if not allowed and me and current_user.get("role") == "managers":
+            from services.hierarchy import get_descendant_employee_ids
+            desc = await get_descendant_employee_ids(current_user.get("employee_id"))
+            allowed = exit_req.get("employee_id") in (desc or set())
+        if not allowed:
             raise HTTPException(status_code=403, detail="Access denied")
-    return exit_to_dict(exit_req)
+    return exit_to_dict(exit_req, current_user)
 
 
 @router.put("/{exit_id}/approve")
@@ -486,14 +735,19 @@ async def approve_exit(exit_id: str, data: ApproveExitRequest, current_user: dic
     pending_item["status"] = data.action
     pending_item["remarks"] = data.remarks
     pending_item["timestamp"] = now
+    # Who actually acted, which is not always the assigned approver: HR and
+    # Management can act on any level. Without it, a remark HR wrote on a
+    # manager's level would be shown to that manager as their own.
+    acted_by = emp_id or current_user.get("username")
+    pending_item["acted_by_id"] = acted_by
 
     timeline = exit_req.get("timeline", [])
     action_label = "approved" if data.action == "approve" else "rejected"
     add_timeline_event(
         timeline, f"level_{pending_item['level']}_{action_label}",
         current_user.get("name", emp_id or "Admin"),
-        f"Level {pending_item['level']} ({pending_item['approver_name']}) {action_label} the resignation."
-        + (f" Remarks: {data.remarks}" if data.remarks else "")
+        f"Level {pending_item['level']} ({pending_item['approver_name']}) {action_label} the resignation.",
+        comment=data.remarks, comment_author_id=acted_by,
     )
 
     updates = {"approval_chain": chain, "timeline": timeline, "updated_at": now}
@@ -609,6 +863,9 @@ async def set_noc_assignees(exit_id: str, data: NOCAssigneesRequest,
         if sec.get("status") == "cleared":
             continue                       # already done; don't rewrite history
         new_id = (new_id or "").strip() or None
+        if new_id and _norm_id(new_id) == _norm_id(exit_req.get("employee_id")):
+            raise HTTPException(status_code=400,
+                                detail="The person leaving cannot be given a clearance on their own exit")
         if new_id == sec.get("assignee_id"):
             continue
         name = "HR Admin"
@@ -661,7 +918,11 @@ async def submit_noc_section(
     if role != "hr_admin":
         if section == "admin":
             raise HTTPException(status_code=403, detail="Only HR Admin can submit HR Clearance")
-        if not assignee_id or emp_id != assignee_id:
+        # Even if an older exit already names them as owner: signing off your own
+        # clearance is not a clearance. HR reassigns the section.
+        if _norm_id(emp_id) and _norm_id(emp_id) == _norm_id(exit_req.get("employee_id")):
+            raise HTTPException(status_code=403, detail="You cannot clear a section of your own exit")
+        if not assignee_id or _norm_id(emp_id) != _norm_id(assignee_id):
             raise HTTPException(status_code=403, detail="You are not the assigned NOC owner for this section")
 
     now = datetime.now(timezone.utc).isoformat()
@@ -774,9 +1035,14 @@ async def download_document(exit_id: str, doc_type: str, current_user: dict = De
     if not exit_req:
         raise HTTPException(status_code=404, detail="Not found")
 
-    role = current_user.get("role")
-    emp_id = current_user.get("employee_id")
-    if role in ["employee", "field_agent"] and exit_req["employee_id"] != emp_id:
+    # Same rule as what the screen shows -- decided by _viewer, not by role. This
+    # used to restrict only `employee` and `field_agent`, so ANY manager could
+    # download ANY exit's resignation letter, F&F sheet and relieving letter.
+    if doc_type not in ("resignation_letter", "fnf_sheet", "relieving_letter"):
+        raise HTTPException(status_code=400, detail="Invalid document type")
+    v = _viewer(exit_req, current_user)
+    allowed = _may_read_reason(v) if doc_type == "resignation_letter" else _may_download_final(v)
+    if not allowed:
         raise HTTPException(status_code=403, detail="Access denied")
 
     file_data = None
@@ -828,7 +1094,9 @@ async def change_exit_type(exit_id: str, data: UpdateExitTypeRequest, current_us
     add_timeline_event(
         timeline, "exit_type_changed",
         current_user.get("name", "Admin"),
-        f"Exit type changed to '{data.final_exit_type.title()}'. Comment: {data.comment}"
+        f"Exit type changed to '{data.final_exit_type.title()}'.",
+        comment=data.comment,
+        comment_author_id=current_user.get("employee_id") or current_user.get("username"),
     )
     await db.exit_requests.update_one(
         {"_id": oid},
@@ -893,7 +1161,9 @@ async def direct_exit(data: DirectExitRequest, current_user: dict = Depends(get_
     lwd = data.last_working_day or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     timeline = []
     add_timeline_event(timeline, "submitted", current_user.get("name", "Admin"),
-                       f"Direct exit marked by HR. Type: {data.final_exit_type.title()}. Reason: {data.reason}")
+                       f"Direct exit marked by HR. Type: {data.final_exit_type.title()}.",
+                       comment=data.reason,
+                       comment_author_id=current_user.get("employee_id") or current_user.get("username"))
     add_timeline_event(timeline, "fully_approved", "System",
                        f"Direct exit — no approval chain required. Last working day: {lwd}.")
 
@@ -940,7 +1210,7 @@ async def direct_exit(data: DirectExitRequest, current_user: dict = Depends(get_
         {"employee_id": data.employee_id},
         {"$set": {"is_active": False}}
     )
-    return doc
+    return _redact_for(doc, current_user)
 
 
 @router.post("/{exit_id}/undo-direct-exit")
@@ -1035,7 +1305,8 @@ async def undo_direct_exit(exit_id: str, data: UndoDirectExitRequest,
 
     timeline = exit_req.get("timeline", [])
     add_timeline_event(timeline, "reverted", current_user.get("name", "Admin"),
-                       f"Direct exit undone. Reason: {reason}")
+                       "Direct exit undone.", comment=reason,
+                       comment_author_id=current_user.get("employee_id") or current_user.get("username"))
     await db.exit_requests.update_one(
         {"_id": oid},
         {"$set": {
@@ -1136,7 +1407,8 @@ async def reinstate_employee(employee_id: str, data: ReinstateRequest,
     if exit_req:
         timeline = exit_req.get("timeline", [])
         add_timeline_event(timeline, "reverted", current_user.get("name", "Admin"),
-                           f"Employee reinstated by HR. Reason: {reason}")
+                           "Employee reinstated by HR.", comment=reason,
+                           comment_author_id=current_user.get("employee_id") or current_user.get("username"))
         await db.exit_requests.update_one(
             {"_id": exit_req["_id"]},
             {"$set": {"status": "reverted", "reverted_at": now, "reverted_by": actor,
@@ -1287,6 +1559,11 @@ async def run_auto_exit(current_user: dict = Depends(get_current_user)):
 
 @router.get("/{exit_id}/ffs")
 async def full_final_settlement(exit_id: str, current_user: dict = Depends(get_current_user)):
+    # There was NO check here: any logged-in user with an exit id got that
+    # person's gross salary, leave balance and gratuity -- and exit ids are in the
+    # list response for anyone who can see the exit, NOC owners included.
+    if current_user.get("role") not in _PRIVILEGED_ROLES:
+        raise HTTPException(status_code=403, detail="Only HR Admin or Management can see the F&F estimate")
     exit_req = await db.exit_requests.find_one({"_id": ObjectId(exit_id)})
     if not exit_req:
         raise HTTPException(status_code=404, detail="Not found")

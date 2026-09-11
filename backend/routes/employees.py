@@ -88,6 +88,12 @@ def emp_to_dict(emp):
     return emp
 
 
+# HR's own notes, written onto the EMPLOYEE record by the exit module when someone is
+# reinstated or stale exit fields are cleared. Comments, like every comment on an
+# exit: HR Admin and Management only.
+_HR_NOTE_FIELDS = ("reinstate_reason", "exit_fields_cleared_reason")
+
+
 def _strip_salary_unless_authorised(emp_dict: dict, current_user: dict) -> dict:
     """Sensitive field visibility rules:
        - hr_admin and management: see everything (full access).
@@ -99,6 +105,11 @@ def _strip_salary_unless_authorised(emp_dict: dict, current_user: dict) -> dict:
     role = current_user.get("role")
     if role in ("hr_admin", "management"):
         return emp_dict
+    # BEFORE the self-view return, deliberately: these were readable by ANY
+    # logged-in user through GET /employees/{id}, and the employee they are about
+    # is not entitled to HR's note either.
+    for k in _HR_NOTE_FIELDS:
+        emp_dict.pop(k, None)
     if current_user.get("employee_id") and emp_dict.get("employee_id") == current_user.get("employee_id"):
         return emp_dict
     emp_dict.pop("salary", None)

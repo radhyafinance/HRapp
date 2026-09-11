@@ -46,8 +46,13 @@ function formatDate(d) {
   catch { return d; }
 }
 
-function StatusBadge({ status }) {
-  const m = STATUS_META[status] || { label: status, color: "bg-slate-100 text-slate-600 border-slate-200" };
+function StatusBadge({ status, nocHidden }) {
+  const base = STATUS_META[status] || { label: status, color: "bg-slate-100 text-slate-600 border-slate-200" };
+  // The person leaving sees their clearance only as pending until F&F. The
+  // server already reports noc_complete as noc_in_progress to them; the label
+  // says it in words rather than naming a stage that implies departments.
+  const m = nocHidden && (status === "noc_in_progress" || status === "noc_complete")
+    ? { ...base, label: "Clearances pending" } : base;
   return (
     <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${m.color}`}>
       {m.label}
@@ -131,7 +136,7 @@ function ResignationModal({ onClose, onSubmit, currentUser }) {
           </label>
         </div>
         <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-700">
-          Notice period will be auto-calculated based on your grade. Your resignation will go for approval to your reporting manager.
+          Your resignation will go for approval to your reporting manager.
         </div>
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-3 pt-1">
@@ -741,8 +746,10 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
   };
 
   useEffect(() => {
-    if (activeTab === "documents") loadFFS();
-  }, [activeTab]);
+    // Only for those the server allows. Everyone else would collect a 403 every
+    // time they opened the Documents tab.
+    if (activeTab === "documents" && exit?.view?.can_see_ffs) loadFFS();
+  }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A direct exit is the only one a single mistaken click can complete, so it is
   // the only one that is reversible — and only inside its window.
@@ -792,7 +799,9 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
   const tabs = [
     { id: "overview", label: "Overview" },
     { id: "approvals", label: "Approvals" },
-    { id: "noc", label: `NOC (${Object.values(exit?.noc_clearances || {}).filter(s => s.status === "cleared").length}/5)` },
+    { id: "noc", label: exit?.view?.noc_hidden
+        ? "NOC"
+        : `NOC (${Object.values(exit?.noc_clearances || {}).filter(s => s.status === "cleared").length}/5)` },
     { id: "documents", label: "Documents" },
   ];
 
@@ -805,7 +814,7 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
           <p className="font-bold text-white text-sm truncate">{exit?.employee_name}</p>
           <p className="text-xs text-slate-300 truncate">{exit?.designation} · {exit?.department}</p>
         </div>
-        <StatusBadge status={exit?.status} />
+        <StatusBadge status={exit?.status} nocHidden={exit?.view?.noc_hidden} />
       </div>
 
       {/* Tabs */}
@@ -831,7 +840,10 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
                   ["Joined", formatDate(exit?.joining_date)],
                   ["Resigned On", formatDate(exit?.resignation_date)],
                   ["Last Working Day", exit?.last_working_day ? formatDate(exit.last_working_day) : "Pending"],
-                  ["Notice Period", `${exit?.notice_period_days} days`],
+                  // Sent only once the resignation is accepted with a last
+                  // working day. Omitted otherwise — not "—", which would still
+                  // tell the reader there is a figure being kept from them.
+                  ...(exit?.notice_period_days ? [["Notice Period", `${exit.notice_period_days} days`]] : []),
                 ].map(([label, value]) => (
                   <div key={label}>
                     <p className="text-xs text-slate-500">{label}</p>
@@ -938,6 +950,9 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
                     </div>
                     <div className="pb-4 flex-1 min-w-0">
                       <p className="text-sm text-slate-700">{event.description}</p>
+                      {event.comment && (
+                        <p className="text-xs text-slate-600 mt-0.5 italic">"{event.comment}"</p>
+                      )}
                       <p className="text-xs text-slate-400 mt-0.5">{formatDate(event.timestamp)} · {event.actor}</p>
                     </div>
                   </div>
@@ -1005,12 +1020,24 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
                               </option>
                             ))}
                           </select>
-                        ) : (
+                        ) : exit?.view?.noc_hidden ? null : (
                           <p className="text-xs text-slate-500">{sectionData.assignee_name || "—"}</p>
                         )}
                         {isAdmin && !cleared && !sectionData.assignee_id && sectionKey !== "admin" && (
                           <p className="text-[10px] text-amber-700 font-semibold mt-0.5">
                             Nobody assigned — only HR Admin can clear this.
+                          </p>
+                        )}
+                        {/* Older exits can name the person leaving as an owner (the
+                            first active person in their own department). They are
+                            now refused if they try to clear it, so without this the
+                            section would simply wait, with nothing saying why. */}
+                        {isAdmin && !cleared && sectionData.assignee_id &&
+                          String(sectionData.assignee_id).trim().toUpperCase() ===
+                            String(exit?.employee_id || "").trim().toUpperCase() && (
+                          <p className="text-[10px] text-red-700 font-semibold mt-0.5"
+                             data-testid={`noc-self-owner-${sectionKey}`}>
+                            This is the person leaving — they cannot clear their own exit. Reassign it.
                           </p>
                         )}
                       </div>
@@ -1070,8 +1097,8 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
               </div>
             )}
 
-            {/* FFS Calculator */}
-            {["noc_in_progress","noc_complete","completed"].includes(exit?.status) && (
+            {/* FFS Calculator — HR Admin and Management only; it shows salary. */}
+            {exit?.view?.can_see_ffs && ["noc_in_progress","noc_complete","completed"].includes(exit?.status) && (
               <div className="border border-slate-200 rounded-xl overflow-hidden">
                 <div className="px-4 py-3 bg-slate-50 border-b border-slate-200">
                   <p className="text-sm font-semibold text-[#1E2A47]">F&F Settlement Estimate</p>
@@ -1101,7 +1128,9 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
               </div>
             )}
 
-            {/* Final Documents (admin upload / employee download) */}
+            {/* Final Documents (admin upload / employee download) — HR, Management,
+                and the person leaving once F&F is done. Nobody else. */}
+            {(isAdmin || exit?.view?.can_download_final) && (
             <div className="border border-slate-200 rounded-xl overflow-hidden">
               <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
                 <p className="text-sm font-semibold text-[#1E2A47]">Final Documents</p>
@@ -1141,6 +1170,7 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
                 })}
               </div>
             </div>
+            )}
           </div>
         )}
       </div>
@@ -1202,7 +1232,7 @@ function ExitCard({ exit, onClick, currentUser }) {
           <p className="text-xs text-slate-500 truncate">{exit.designation}</p>
         </div>
         <div className="flex flex-col items-end gap-1.5">
-          <StatusBadge status={exit.status} />
+          <StatusBadge status={exit.status} nocHidden={exit.view?.noc_hidden} />
           {showAlert && (
             <span className="flex items-center gap-1 text-xs text-red-600 font-semibold">
               <AlertCircle size={11} />
@@ -1221,7 +1251,7 @@ function ExitCard({ exit, onClick, currentUser }) {
           <span className="ml-1 font-medium">{exit.last_working_day ? formatDate(exit.last_working_day) : "—"}</span>
         </div>
       </div>
-      {exit.status === "noc_in_progress" && (
+      {exit.status === "noc_in_progress" && !exit.view?.noc_hidden && (
         <div className="mt-2 pt-2 border-t border-slate-100">
           <NOCProgress clearances={exit.noc_clearances} />
         </div>
