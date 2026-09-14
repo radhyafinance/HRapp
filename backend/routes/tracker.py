@@ -1275,10 +1275,9 @@ async def toggle_active(employee_id: str, current_user: dict = Depends(get_curre
 # ══════════════════════════════════════════════════════════════════
 #  Distance travelled + odometer (reimbursement)
 # ══════════════════════════════════════════════════════════════════
-# GPS straight-line distance thresholds (jitter filtering)
-_MIN_MOVE_M = 30        # sub-30 m hops = GPS jitter while stationary → ignore
-_MAX_ACCURACY_M = 100   # drop fixes worse than 100 m
-_MAX_SPEED_MS = 42.0    # ~150 km/h; faster-implied segments are bad fixes
+# GPS distance thresholds (accuracy, jitter, impossible speed) live with the
+# route cleaning in services/route_clean.py, so the map and the kilometres
+# are filtered by one set of rules.
 def _today() -> str:
     """Today's date in IST.
 
@@ -1294,40 +1293,18 @@ def _haversine_m(lat1, lon1, lat2, lon2):
     dlmb = math.radians(lon2 - lon1)
     a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
     return 2 * R * math.asin(math.sqrt(a))
-def _ts_seconds(ts):
-    if not ts:
-        return None
-    try:
-        return datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp()
-    except Exception:
-        return None
 async def _gps_distance_km(employee_id: str, date_str: str) -> float:
-    """Filtered straight-line distance (km) from the day's location pings."""
-    cur = db.location_logs.find(
+    """Distance (km) along the day's cleaned route — the one the map draws.
+
+    Stops count as zero: the wobble of an officer sitting still used to add a
+    median 0.65 km a day (1.7 km at p90). See services/route_clean.py.
+    """
+    from services.route_clean import clean_day
+    logs = await db.location_logs.find(
         {"employee_id": employee_id, "date": date_str},
-        {"_id": 0, "latitude": 1, "longitude": 1, "accuracy": 1, "timestamp": 1},
-    ).sort("timestamp", 1)
-    total = 0.0
-    prev = None  # (lat, lon, secs)
-    async for d in cur:
-        lat, lon = d.get("latitude"), d.get("longitude")
-        if lat is None or lon is None:
-            continue
-        acc = d.get("accuracy")
-        if acc is not None and acc > _MAX_ACCURACY_M:
-            continue
-        secs = _ts_seconds(d.get("timestamp"))
-        if prev is not None:
-            seg = _haversine_m(prev[0], prev[1], lat, lon)
-            if seg < _MIN_MOVE_M:
-                continue  # stationary jitter — keep the previous anchor
-            if secs is not None and prev[2] is not None:
-                dt = secs - prev[2]
-                if dt > 0 and (seg / dt) > _MAX_SPEED_MS:
-                    continue  # implausible jump — skip this fix, keep the anchor
-            total += seg
-        prev = (lat, lon, secs)
-    return round(total / 1000.0, 2)
+        {"_id": 0, "latitude": 1, "longitude": 1, "accuracy": 1, "speed": 1, "timestamp": 1},
+    ).to_list(5000)
+    return clean_day(logs)["distance_km"]
 async def _att_punch_state(employee_id: str, date_str: str):
     """(punched_in_today, punched_out_today) from the attendance record."""
     att = await db.attendance_records.find_one({"employee_id": employee_id, "date": date_str})

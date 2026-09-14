@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
 import { MapPin, Activity, Clock, AlertCircle, ArrowLeft, RefreshCw, Battery, Smartphone, Search } from "lucide-react";
@@ -220,6 +220,10 @@ export default function FieldTracking() {
   const [histSelected, setHistSelected] = useState(null);
   const [histTrack, setHistTrack] = useState(null);
   const [histLoading, setHistLoading] = useState(false);
+  // A stop number clicked in the table: the map flies to it. `nonce` makes a
+  // second click on the same number fly back after the map has been panned.
+  const [focusStop, setFocusStop] = useState(null);
+  const mapBoxRef = useRef(null);
   // Access comes from the server, not from the role alone: a Risk & Credit
   // manager can be granted read-only tracking without being made an admin.
   // Until it answers, fall back to the role so admins see no flicker.
@@ -392,6 +396,12 @@ export default function FieldTracking() {
   }, [isManager, selected, tab]);
   useEffect(() => { if (selected) fetchTrack(selected.employee_id, date); }, [selected, date]);
   useEffect(() => { if (histSelected) fetchHistTrack(histSelected.employee_id, histDate); }, [histSelected, histDate]);
+  // A focus from one person's day must not fly the next person's map somewhere.
+  useEffect(() => { setFocusStop(null); }, [selected, histSelected, date, histDate]);
+  const goToStop = (index) => {
+    setFocusStop({ index, nonce: Date.now() });
+    if (mapBoxRef.current) mapBoxRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
   if (!isManager) {
     return (
       <div style={{ fontFamily: "'Work Sans', sans-serif" }} className="text-center py-12">
@@ -507,7 +517,7 @@ export default function FieldTracking() {
               Export month (Excel)
             </button>
           </div>
-          <p className="text-xs text-slate-400 -mt-2 px-1">GPS distance is a filtered straight-line estimate from 3-min pings. Odometer km (for tracked staff) is the reimbursement figure.</p>
+          <p className="text-xs text-slate-400 -mt-2 px-1">GPS distance is measured along the cleaned route (stops count as zero) from 2-min pings. Odometer km (for tracked staff) is the reimbursement figure.</p>
           <div className="bg-white border border-slate-200 rounded-xl shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full">
@@ -1088,13 +1098,20 @@ export default function FieldTracking() {
                 <p className="text-xs text-slate-400">Tracker may have been off or the employee didn't punch in.</p>
               </div>
             ) : (
-              <RouteMap
-                locations={selected ? locations : histLocations}
-                trustedLocations={(selected ? trackData : histTrack)?.trusted_locations}
-                droppedLowAccuracy={(selected ? trackData : histTrack)?.dropped_low_accuracy || 0}
-                centres={centres}
-                stops={selected ? stops : histStops}
-                attendance={(selected ? trackData : histTrack)?.attendance} />
+              <div ref={mapBoxRef}>
+                <RouteMap
+                  locations={selected ? locations : histLocations}
+                  trustedLocations={(selected ? trackData : histTrack)?.trusted_locations}
+                  droppedLowAccuracy={(selected ? trackData : histTrack)?.dropped_low_accuracy || 0}
+                  centres={centres}
+                  stops={selected ? stops : histStops}
+                  route={(selected ? trackData : histTrack)?.route}
+                  pauses={(selected ? trackData : histTrack)?.pauses || []}
+                  offices={(selected ? trackData : histTrack)?.offices || []}
+                  isLive={(selected ? trackData : histTrack)?.is_live}
+                  focusStop={focusStop}
+                  attendance={(selected ? trackData : histTrack)?.attendance} />
+              </div>
             )}
           </div>
           {(selected ? stops : histStops).length > 0 && (
@@ -1112,7 +1129,16 @@ export default function FieldTracking() {
                 <tbody>
                   {(selected ? stops : histStops).map((s, i) => (
                     <tr key={`stop-${s.latitude}-${s.longitude}-${i}`} className="border-b border-slate-100 hover:bg-slate-50">
-                      <td className="px-4 py-3 text-sm font-medium text-[#1E2A47]">{i + 1}</td>
+                      <td className="px-4 py-3 text-sm font-medium text-[#1E2A47]">
+                        {/* Same number as the pin, and a way to find that pin. */}
+                        <button type="button" onClick={() => goToStop(s.index ?? i + 1)}
+                          data-testid={`stop-goto-${s.index ?? i + 1}`}
+                          title="Show this stop on the map"
+                          aria-label={`Show stop ${s.index ?? i + 1} on the map`}
+                          className="inline-flex items-center justify-center min-w-[26px] h-[26px] px-1.5 rounded-full bg-[#E85B1E] text-white text-xs font-bold hover:bg-[#D04A15] focus:outline-none focus:ring-2 focus:ring-[#E85B1E]/40">
+                          {s.index ?? i + 1}
+                        </button>
+                      </td>
                       <td className="px-4 py-3 text-sm text-slate-600">{new Date(s.start).toLocaleTimeString("en-IN")}</td>
                       <td className="px-4 py-3 text-sm text-slate-600">{new Date(s.end).toLocaleTimeString("en-IN")}</td>
                       <td className="px-4 py-3 text-sm font-semibold text-[#E85B1E]">{s.duration_minutes} min</td>

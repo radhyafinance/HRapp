@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
-import { MapContainer, TileLayer, Polyline, Marker, Popup, CircleMarker } from "react-leaflet";
+import { MapContainer, TileLayer, Polyline, Marker, Popup, CircleMarker, Circle } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { MapPin } from "lucide-react";
@@ -22,6 +22,58 @@ const startIcon = new L.DivIcon({
   iconSize: [18, 18],
   iconAnchor: [9, 9],
 });
+
+// ── Latest position ─────────────────────────────────────────────────────────
+// A pulsing blue dot while the officer is live: punched in, and the phone sent a
+// fix in the last 10 minutes (decided by the server, on the server's clock).
+// Blue, not orange, because orange is a stop, and a pulse, because "where is he
+// NOW" is the first thing anyone opening this map looks for.
+const PULSE_CSS_ID = "routemap-live-pulse";
+function ensurePulseCss() {
+  if (typeof document === "undefined" || document.getElementById(PULSE_CSS_ID)) return;
+  const el = document.createElement("style");
+  el.id = PULSE_CSS_ID;
+  el.textContent = `
+    @keyframes rm-live-pulse { 0% { transform: scale(0.6); opacity: 0.6; } 100% { transform: scale(3.2); opacity: 0; } }
+    .rm-live { position: relative; width: 18px; height: 18px; }
+    .rm-live-ring { position: absolute; inset: 0; border-radius: 50%; background: #1a73e8;
+      animation: rm-live-pulse 1.8s ease-out infinite; }
+    .rm-live-dot { position: absolute; inset: 2px; border-radius: 50%; background: #1a73e8;
+      border: 3px solid white; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
+    @media (prefers-reduced-motion: reduce) { .rm-live-ring { animation: none; opacity: 0.25; transform: scale(2); } }
+  `;
+  document.head.appendChild(el);
+}
+const liveIcon = new L.DivIcon({
+  className: "rm-live-pin",
+  html: '<div class="rm-live"><div class="rm-live-ring"></div><div class="rm-live-dot"></div></div>',
+  iconSize: [18, 18],
+  iconAnchor: [9, 9],
+});
+// Punched in but quiet for 10+ minutes: where the phone last was, without
+// claiming that is where the officer is now.
+const lastKnownIcon = new L.DivIcon({
+  className: "custom-pin",
+  html: '<div style="background:#94A3B8;width:16px;height:16px;border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.3)"></div>',
+  iconSize: [16, 16],
+  iconAnchor: [8, 8],
+});
+
+// Branches and head office. Navy, square and larger than anything else: they
+// are fixed places, drawn for orientation, and 60 km+ apart, so every one of
+// them can be on the map without clutter.
+const officeIcon = new L.DivIcon({
+  className: "office-pin",
+  html: `<div style="width:24px;height:24px;background:#1E2A47;border:2px solid white;border-radius:6px;
+    display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,.35)">
+    <svg viewBox="0 0 16 16" width="14" height="14"><path d="M3 14V3.5L8 1.5l5 2V14h-3.5v-3h-3v3z" fill="white"/></svg></div>`,
+  iconSize: [24, 24],
+  iconAnchor: [12, 12],
+});
+const OFFICE_CIRCLE_OPTIONS = { color: "#1E2A47", weight: 1, opacity: 0.5, fillColor: "#1E2A47", fillOpacity: 0.06 };
+// A short visit (5-15 min): grey, small and unnumbered, so it reads as less than
+// a stop but is not lost the way it would be if the stop swallowed it.
+const PAUSE_PATH_OPTIONS = { color: "white", weight: 2, fillColor: "#64748B", fillOpacity: 0.95 };
 
 const endIcon = new L.DivIcon({
   className: "custom-pin",
@@ -157,8 +209,11 @@ const centreIcon = new L.DivIcon({
 
 export default function RouteMap({ locations = [], stops = [], attendance,
                                    trustedLocations, droppedLowAccuracy = 0,
-                                   centres = [] }) {
+                                   centres = [], route, pauses = [], offices = [],
+                                   isLive: isLiveProp, focusStop }) {
+  ensurePulseCss();
   const mapRef = useRef(null);
+  const stopMarkers = useRef({});
   const [baseLayer, setBaseLayer] = useState("road");
   const [useOsm, setUseOsm] = useState(googleBlocked);
   // Per layer choice: a tile that loaded proves Google is serving us, so later
@@ -182,7 +237,14 @@ export default function RouteMap({ locations = [], stops = [], attendance,
   // a parked officer look like he visited ten places. Falls back to the raw set
   // so an older backend response still renders.
   const drawn = (trustedLocations && trustedLocations.length) ? trustedLocations : locations;
-  const points = drawn.map((l) => [l.latitude, l.longitude]);
+  // The cleaned route from the server: every stop and short visit collapsed to
+  // one vertex, lone out-and-back jumps removed. Joining every fix instead drew
+  // a star around each stop — an officer sitting in a branch all day looked as
+  // if he had darted 150 m in every direction. Falls back to the fixes when an
+  // older backend sends no route.
+  const cleaned = Array.isArray(route) && route.length ? route : null;
+  const path = cleaned || drawn;
+  const points = path.map((l) => [l.latitude, l.longitude]);
 
   // Arrows mark TRAVEL, so they are placed only on segments that actually went
   // somewhere. Spacing them evenly by index instead put most of them inside the
@@ -254,10 +316,36 @@ export default function RouteMap({ locations = [], stops = [], attendance,
       const bounds = L.latLngBounds(points);
       mapRef.current.fitBounds(bounds, { padding: [40, 40] });
     }
-  }, [points.length]);
+  }, [points.length, points[0]?.[0], points[points.length - 1]?.[0]]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A stop number clicked in the table below: fly there and open its popup.
+  // `nonce` changes on every click, so clicking the same number twice still
+  // brings the map back after someone has panned away.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!focusStop || !map) return undefined;
+    const s = stops.find((x, i) => (x.index ?? i + 1) === focusStop.index);
+    if (!s) return undefined;
+    let opened = false;
+    const open = () => {
+      if (opened) return;
+      opened = true;
+      const m = stopMarkers.current[focusStop.index];
+      if (m) m.openPopup();
+    };
+    map.closePopup();
+    map.flyTo([s.latitude, s.longitude], Math.max(map.getZoom(), 17), { duration: 0.8 });
+    map.once("moveend", open);
+    // flyTo to where the map already is may not fire moveend.
+    const t = setTimeout(open, 1100);
+    return () => { clearTimeout(t); map.off("moveend", open); };
+  }, [focusStop?.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const latest = points.length ? points[points.length - 1] : null;
-  const isLive = !attendance?.punch_out_time;
+  const punchedOut = !!attendance?.punch_out_time;
+  // The server decides "live" (punched in and a fix within 10 minutes). An
+  // older backend sends nothing, and then this keeps its previous meaning.
+  const isLive = typeof isLiveProp === "boolean" ? isLiveProp : !punchedOut;
 
   return (
     <div className="w-full space-y-2">
@@ -266,7 +354,7 @@ export default function RouteMap({ locations = [], stops = [], attendance,
       {latest && (
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <p className="text-xs text-slate-500">
-            {isLive ? "Live location" : "Last known location"}
+            {isLive && !punchedOut ? "Live location" : "Last known location"}
             {drawn[drawn.length - 1]?.timestamp
               ? ` · ${new Date(drawn[drawn.length - 1].timestamp).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}`
               : ""}
@@ -327,6 +415,29 @@ export default function RouteMap({ locations = [], stops = [], attendance,
           eventHandlers={useOsm ? undefined : googleTileEvents}
         />
 
+        {/* Offices first, so everything the officer did is drawn above them. */}
+        {offices.map((o) => (
+          <React.Fragment key={`office-${o.name}-${o.latitude}-${o.longitude}`}>
+            <Circle center={[o.latitude, o.longitude]} radius={o.radius_meters || 100}
+                    pathOptions={OFFICE_CIRCLE_OPTIONS} interactive={false} />
+            {/* Leaflet stacks markers by screen position, not JSX order, so an
+                office a few metres south of a stop would cover its number.
+                Officers sit at branches, so that is the common case. */}
+            <Marker position={[o.latitude, o.longitude]} icon={officeIcon} zIndexOffset={-1000}>
+              <Popup>
+                <strong>{o.name}</strong>
+                <br />
+                {o.location_type === "head_office" ? "Head office"
+                  : o.location_type === "branch" ? "Branch"
+                  : String(o.location_type || "Office").replace(/_/g, " ")}
+                {o.address ? <><br />{o.address}</> : null}
+                <br />
+                <GMapsLink lat={o.latitude} lon={o.longitude} />
+              </Popup>
+            </Marker>
+          </React.Fragment>
+        ))}
+
         {points.length > 1 && (
           <Polyline positions={points} pathOptions={ROUTE_PATH_OPTIONS} />
         )}
@@ -360,14 +471,34 @@ export default function RouteMap({ locations = [], stops = [], attendance,
           <Marker key={a.key} position={a.at} icon={arrowIcon(a.deg)} interactive={false} />
         ))}
 
-        {/* Intermediate point dots */}
-        {drawn.slice(1, -1).map((l, i) => (
+        {/* Intermediate point dots — travel only. Stops and short visits have
+            their own markers, and a dot for every fix inside them is exactly
+            the clutter the cleaned route removes. */}
+        {(cleaned ? cleaned.slice(1, -1).filter((v) => v.kind === "travel") : drawn.slice(1, -1)).map((l, i) => (
           <CircleMarker
-            key={l.id || `pt-${i}`}
+            key={l.id || `pt-${l.timestamp}-${i}`}
             center={[l.latitude, l.longitude]}
             radius={3}
             pathOptions={DOT_PATH_OPTIONS}
           />
+        ))}
+
+        {/* Short visits, 5-15 minutes */}
+        {pauses.map((p) => (
+          <CircleMarker key={`pause-${p.start}`} center={[p.latitude, p.longitude]} radius={6}
+                        pathOptions={PAUSE_PATH_OPTIONS}>
+            <Popup>
+              <strong>Short stop</strong>
+              <br />
+              Duration: <strong>{p.duration_minutes} min</strong>
+              <br />
+              From: {new Date(p.start).toLocaleTimeString("en-IN")}
+              <br />
+              To: {new Date(p.end).toLocaleTimeString("en-IN")}
+              <br />
+              <GMapsLink lat={p.latitude} lon={p.longitude} />
+            </Popup>
+          </CircleMarker>
         ))}
 
         {/* Start marker */}
@@ -376,16 +507,20 @@ export default function RouteMap({ locations = [], stops = [], attendance,
             <Popup>
               <strong>Start (Punch In)</strong>
               <br />
-              {drawn[0]?.timestamp ? new Date(drawn[0].timestamp).toLocaleTimeString("en-IN") : "-"}
+              {path[0]?.timestamp ? new Date(path[0].timestamp).toLocaleTimeString("en-IN") : "-"}
             </Popup>
           </Marker>
         )}
 
-        {/* End marker */}
-        {points.length > 1 && (
-          <Marker position={points[points.length - 1]} icon={endIcon}>
+        {/* End / latest marker: red once punched out, pulsing while live, grey
+            when punched in but the phone has gone quiet. Shown even with one
+            fix while live — "where is he now" matters from the first ping. */}
+        {(points.length > 1 || (points.length === 1 && isLive && !punchedOut)) && (
+          <Marker position={points[points.length - 1]}
+                  icon={punchedOut ? endIcon : isLive ? liveIcon : lastKnownIcon}
+                  zIndexOffset={isLive && !punchedOut ? 1000 : 0}>
             <Popup>
-              <strong>{attendance?.punch_out_time ? "End (Punch Out)" : "Last Known Location"}</strong>
+              <strong>{punchedOut ? "End (Punch Out)" : isLive ? "Live location" : "Last Known Location"}</strong>
               <br />
               {drawn[drawn.length - 1]?.timestamp
                 ? new Date(drawn[drawn.length - 1].timestamp).toLocaleTimeString("en-IN")
@@ -399,7 +534,8 @@ export default function RouteMap({ locations = [], stops = [], attendance,
         {/* Stop markers */}
         {stops.map((s, i) => (
           <Marker key={`stop-${s.latitude}-${s.longitude}-${i}`} position={[s.latitude, s.longitude]}
-                  icon={stopIcon(s.index ?? i + 1)}>
+                  icon={stopIcon(s.index ?? i + 1)}
+                  ref={(m) => { if (m) stopMarkers.current[s.index ?? i + 1] = m; }}>
             <Popup>
               <strong>Stop #{s.index ?? i + 1}</strong>
               <br />
