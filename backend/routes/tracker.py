@@ -19,6 +19,7 @@ from database import db
 from auth_utils import get_current_user
 from datetime import datetime, timezone, timedelta
 import logging
+import re
 import secrets
 import math
 import io
@@ -245,6 +246,16 @@ async def _process_ping(qp: dict, request: Request):
         "timestamp": ts.isoformat(),
         "source": "app",
     }
+    # v1.6.2 diagnostics: where the fix came from, and satellites for a GPS
+    # top-up. Only written when the phone sent them, so older builds' rows stay
+    # exactly as they were and "absent" keeps meaning "not reported".
+    fix_src = str(qp.get("src") or "").strip().lower()
+    if fix_src in _FIX_SOURCES:
+        log["fix_src"] = fix_src
+    for param, field in (("sats", "sats_used"), ("seen", "sats_seen")):
+        n = _bounded_int(qp.get(param), 0, 400)
+        if n is not None:
+            log[field] = n
     await db.location_logs.insert_one(log)
     # The track itself is written unconditionally above — every fix is a real
     # point wherever it arrives in the order. This summary is different: it is
@@ -271,8 +282,83 @@ async def _process_ping(qp: dict, request: Request):
             "last_lon": lon,
             "last_accuracy": accuracy,
             "last_battery": _safe_float(qp.get("batt")),
+            # Inside the forward-only guard on purpose: a replayed backlog
+            # carries the counters from when each fix was taken, and must not
+            # overwrite today's with this morning's.
+            **_ping_device_diagnostics(qp),
         }},
     )
+# ── v1.6.2 ping diagnostics ─────────────────────────────────────────────────
+# The APK tags every fix with its source and carries the day's GPS top-up
+# outcomes on each ping. They ride on the ping rather than the health report
+# because that report is throttled to hours, and these are what the "why is GPS
+# rare in the field?" question is measured with.
+_FIX_SOURCES = {"sub", "oneshot", "topup", "worker", "last_known"}
+_APP_VERSION_RE = re.compile(r"^\d+(\.\d+){0,3}$")
+
+
+def _bounded_int(v, lo, hi):
+    """int within [lo, hi], or None. Never raises — this runs on every ping."""
+    if v is None or v == "":
+        return None
+    try:
+        n = int(float(str(v)))
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return n if lo <= n <= hi else None
+
+
+def _parse_topup_counters(raw):
+    """'YYYYMMDD.ok.weak.timeout.gpsOff.lowBattery.seen.used' -> dict, or None.
+
+    All-or-nothing: a malformed string is dropped whole rather than stored as a
+    half-parsed set of counts that would read as real zeros.
+    """
+    if not raw:
+        return None
+    parts = str(raw).strip().split(".")
+    if len(parts) != 8 or not (len(parts[0]) == 8 and parts[0].isdigit()):
+        return None
+    counts = [_bounded_int(p, 0, 100000) for p in parts[1:6]]
+    if any(c is None for c in counts):
+        return None
+    seen, used = (_bounded_int(p, -1, 400) for p in parts[6:8])
+    if seen is None or used is None:
+        return None
+    d = parts[0]
+    return {
+        "day": f"{d[0:4]}-{d[4:6]}-{d[6:8]}",
+        "ok": counts[0],            # GPS fix of 20 m or better
+        "weak": counts[1],          # GPS fix, worse than 20 m
+        "timeout": counts[2],       # no GPS fix within 40 s
+        "gps_off": counts[3],       # GPS switched off on the phone
+        "low_battery": counts[4],   # skipped: under 20% and not charging
+        "last_sats_seen": seen if seen >= 0 else None,
+        "last_sats_used": used if used >= 0 else None,
+    }
+
+
+def _ping_device_diagnostics(qp: dict) -> dict:
+    """Fields for employee_trackers from a v1.6.2+ ping. Empty for older builds."""
+    out = {}
+    topup = _parse_topup_counters(qp.get("tu"))
+    if topup:
+        out["topup"] = topup
+    ps = str(qp.get("ps") or "").strip()
+    if ps in ("0", "1"):
+        out["power_save"] = ps == "1"
+    model = "".join(ch for ch in str(qp.get("dm") or "") if ch.isprintable()).strip()[:60]
+    if model:
+        out["device_model"] = model
+    sdk = _bounded_int(qp.get("sdk"), 1, 100)
+    if sdk is not None:
+        out["android_sdk"] = sdk
+    av = str(qp.get("av") or "").strip()[:20]
+    if _APP_VERSION_RE.match(av):
+        out["ping_app_version"] = av
+    return out
+
+
 def _safe_float(v):
     if v is None:
         return None
@@ -719,6 +805,11 @@ async def list_devices(current_user: dict = Depends(get_current_user)):
             "last_lat": t.get("last_lat"),
             "last_lon": t.get("last_lon"),
             "last_battery": t.get("last_battery"),
+            # v1.6.2+, from the pings themselves. None on older builds.
+            "device_model": t.get("device_model"),
+            "android_sdk": t.get("android_sdk"),
+            "power_save": t.get("power_save"),
+            "topup": t.get("topup"),
             "branch": emp.get("branch", ""),
             # Permission is a SEPARATE axis from freshness: a device can be
             # "Allowed always" and still Silent (OEM battery killer, phone off),

@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from "react";
-import { MapContainer, TileLayer, Polyline, Marker, Popup, CircleMarker, Tooltip } from "react-leaflet";
+import { MapContainer, TileLayer, Polyline, Marker, Popup, CircleMarker } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import { MapPin } from "lucide-react";
@@ -97,6 +97,38 @@ function fmtKm(km) {
   return km < 1 ? `${Math.round(km * 1000)} m` : `${km.toFixed(1)} km`;
 }
 
+// ── Base map ────────────────────────────────────────────────────────────────
+// Google's own tiles, with a Road / Satellite toggle. Satellite is "hybrid"
+// (imagery with road and place labels), which is what shows a village's lanes
+// and fields that the road map often leaves blank.
+//
+// These are Google's public tile URLs, used WITHOUT an API key. Google's terms
+// do not permit that, and Google can block it at any time without notice. That
+// was a deliberate choice (2026-09-13) over the keyed Map Tiles API, so the map
+// must survive it: if Google tiles fail to load, the map switches itself to
+// OpenStreetMap — the map used before — rather than going blank.
+const BASE_LAYERS = {
+  road: {
+    url: "https://mt{s}.google.com/vt/lyrs=m&hl=en&x={x}&y={y}&z={z}",
+    subdomains: ["0", "1", "2", "3"], maxZoom: 20, attribution: "Map data &copy; Google",
+  },
+  satellite: {
+    url: "https://mt{s}.google.com/vt/lyrs=y&hl=en&x={x}&y={y}&z={z}",
+    subdomains: ["0", "1", "2", "3"], maxZoom: 20, attribution: "Imagery &copy; Google",
+  },
+  osm: {
+    url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    subdomains: ["a", "b", "c"], maxZoom: 19, attribution: "&copy; OpenStreetMap contributors",
+  },
+};
+// How many failed Google tiles, with none loaded, before giving up on Google.
+// A single map view requests 12-20 tiles, so 6 straight failures is not a
+// flaky connection losing one tile — it is Google refusing us.
+const GOOGLE_FAIL_LIMIT = 6;
+// Remembered for the rest of the session, so every map opened after a block
+// goes straight to OpenStreetMap instead of re-failing first.
+let googleBlocked = false;
+
 // Opens the native Maps app on a phone and google.com/maps on desktop.
 function gmapsUrl(lat, lon) {
   return `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`;
@@ -127,6 +159,24 @@ export default function RouteMap({ locations = [], stops = [], attendance,
                                    trustedLocations, droppedLowAccuracy = 0,
                                    centres = [] }) {
   const mapRef = useRef(null);
+  const [baseLayer, setBaseLayer] = useState("road");
+  const [useOsm, setUseOsm] = useState(googleBlocked);
+  // Per layer choice: a tile that loaded proves Google is serving us, so later
+  // failures on that layer are ordinary network loss, not a block.
+  const tileStats = useRef({ loaded: 0, failed: 0 });
+  useEffect(() => { tileStats.current = { loaded: 0, failed: 0 }; }, [baseLayer]);
+  const googleTileEvents = useRef({
+    tileload: () => { tileStats.current.loaded += 1; },
+    tileerror: () => {
+      const t = tileStats.current;
+      t.failed += 1;
+      if (t.loaded === 0 && t.failed >= GOOGLE_FAIL_LIMIT) {
+        googleBlocked = true;
+        setUseOsm(true);
+      }
+    },
+  }).current;
+  const layer = BASE_LAYERS[useOsm ? "osm" : baseLayer];
   // Draw only fixes the phone itself believes. A quarter of production fixes are
   // 300 m+ (cell tower, not GPS); plotting those as confident dots is what made
   // a parked officer look like he visited ten places. Falls back to the raw set
@@ -238,6 +288,26 @@ export default function RouteMap({ locations = [], stops = [], attendance,
           </a>
         </div>
       )}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden text-xs font-semibold" data-testid="map-layer-toggle">
+          {[["road", "Road"], ["satellite", "Satellite"]].map(([k, label]) => (
+            <button key={k} type="button" onClick={() => setBaseLayer(k)}
+              disabled={useOsm}
+              data-testid={`map-layer-${k}`}
+              className={`px-3 py-1.5 ${!useOsm && baseLayer === k
+                ? "bg-[#1E2A47] text-white"
+                : "bg-white text-slate-600 hover:bg-slate-50"} disabled:opacity-50 disabled:cursor-not-allowed`}>
+              {label}
+            </button>
+          ))}
+        </div>
+        {/* Said on screen, so a different-looking map is never a mystery. */}
+        {useOsm && (
+          <span className="text-[11px] text-amber-700" data-testid="map-osm-fallback">
+            Google map unavailable — showing OpenStreetMap
+          </span>
+        )}
+      </div>
       <div className="w-full rounded-xl overflow-hidden border border-slate-200" style={{ height: 500 }}>
       <MapContainer
         center={center}
@@ -246,9 +316,15 @@ export default function RouteMap({ locations = [], stops = [], attendance,
         ref={mapRef}
         scrollWheelZoom={true}
       >
+        {/* Keyed on the URL so switching layers replaces the layer outright,
+            rather than react-leaflet patching the URL of a live one. */}
         <TileLayer
-          attribution='&copy; OpenStreetMap contributors'
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          key={layer.url}
+          attribution={layer.attribution}
+          url={layer.url}
+          subdomains={layer.subdomains}
+          maxZoom={layer.maxZoom}
+          eventHandlers={useOsm ? undefined : googleTileEvents}
         />
 
         {points.length > 1 && (
@@ -257,26 +333,13 @@ export default function RouteMap({ locations = [], stops = [], attendance,
 
         {/* Centres from the GRT sheet. Rendered BEFORE the route so the day's
             own markers stay on top of them. */}
-        {nearbyCentres.map((c, ci) => (
+        {nearbyCentres.map((c) => (
           <Marker key={`c-${c.centre}-${c.latitude}-${c.longitude}`}
                   position={[c.latitude, c.longitude]} icon={centreIcon}>
-            {/* Permanent: the centre name IS the point of drawing these. Left
-                as hover-only they were just identical blue diamonds. */}
-            {/* shadowPane (z 500) sits BELOW markerPane (z 600). Left in the
-                default tooltip pane (z 650) these labels drew on top of the
-                numbered stop pins — burying the one thing on the map you most
-                need to read. */}
-            {/* Alternating sides. Centres cluster along a road, so every label
-                on the right produced a vertical stack that overlapped itself.
-                Leaflet does no collision avoidance, and this halves it for free. */}
-            <Tooltip direction={ci % 2 ? "left" : "right"}
-                     offset={ci % 2 ? [-7, 0] : [7, 0]} opacity={0.92}
-                     permanent pane="shadowPane" className="centre-label">
-              {/* Name only. The branch was on every label and identical for
-                  every centre in view, so it doubled the width of each one and
-                  told you nothing. It is still in the popup. */}
-              <strong>{c.centre}</strong>
-            </Tooltip>
+            {/* No permanent name label. They were the point of drawing centres
+                at first, but with many centres along a route the labels buried
+                the stops and the route itself (removed 2026-09-13). The name is
+                one tap away in the popup. */}
             <Popup>
               <strong>{c.centre}</strong>
               {c.branch ? <><br />Branch: {c.branch}</> : null}

@@ -29,21 +29,24 @@ import { isNativeApp } from "./clientPlatform";
 const RadhyaTracker = registerPlugin("RadhyaTracker");
 const BACKEND = process.env.REACT_APP_BACKEND_URL || "";
 const PING_URL = `${BACKEND}/api/tracker/osmand`;
-// Ping every 60 seconds. This is the ONLY thing that sets the tracking cadence:
-// the native side takes it from RadhyaTracker.start() and floors it at 60s
-// (TrackerService: Math.max(interval, 60_000L), and setMinUpdateIntervalMillis
-// at Math.max(60s, intervalMs / 2)), so 60s here is the fastest the fleet can
-// go without changing the APK.
+// Ping every 120 seconds. This is the ONLY thing that sets the tracking cadence:
+// the native side takes it from RadhyaTracker.start() and clamps it to 1-15 min.
+//
+// ONLY APK v1.6.2+ OBEYS IT. Every earlier build read this value with
+// Capacitor's getLong(), which ignores a JS number (it arrives as an Integer,
+// not a Long), so those phones stay at their built-in 3 minutes whatever is set
+// here. Measured on 2026-09-13: the whole fleet reported every 180-250 s while
+// this line said 60. Changing it therefore reaches v1.6.2 phones on the next
+// deploy and has no effect at all on older ones.
 //
 // Note `interval_seconds` on the tracker record and in /tracker/my-config is a
 // DECOY — nothing reads it, so changing it per employee does nothing. If you
 // ever need per-person intervals, wire it through here.
 //
-// Battery: measured 5.2 %/hr median on v1.6.0 at 3 minutes, against 6.7 %/hr on
-// the old v1.4.0 alarm build. Tripling the GPS duty cycle will cost more than
-// that. If field staff start complaining about battery, raise this number —
-// it is a one-line change and it reaches every phone on the next deploy.
-const INTERVAL_MS = 60 * 1000;
+// Battery: 8.6 %/hr median discharge during working hours at 3 minutes
+// (2026-08-30 to 09-12, including normal phone use). v1.6.2 also adds GPS
+// top-ups. If field staff complain about battery, raise this number.
+const INTERVAL_MS = 120 * 1000;
 // Persisted so a webview reload (or an app restart) can still re-assert the
 // last decision while offline — in memory alone, a reload would leave us unable
 // to restart a service the OEM had killed until the network came back.
