@@ -57,16 +57,35 @@ async def ingest_ping(request: Request):
                 _flatten_json(body, qp)
             elif isinstance(body, list) and body:
                 # some clients send an array of location objects — process each
+                emp_id = None
                 for item in body:
                     if isinstance(item, dict):
                         local = dict(qp)
                         _flatten_json(item, local)
-                        await _process_ping(local, request)
-                return Response(status_code=200)
+                        emp_id = await _process_ping(local, request) or emp_id
+                return await _ping_response(emp_id)
         except Exception:
             pass
-    await _process_ping(qp, request)
-    return Response(status_code=200)
+    emp_id = await _process_ping(qp, request)
+    return await _ping_response(emp_id)
+
+
+async def _ping_response(emp_id: Optional[str]) -> Response:
+    """200 always; plus `X-Tracking: stop` when the phone should stop tracking NOW.
+
+    The phone (v1.6.3+) switches its tracker off on that header; older builds
+    ignore it. Decided on the server's clock, never the fix's own timestamp, so a
+    backlog replayed from the offline queue cannot stop a phone that is on duty
+    now. Only an authoritative answer stops a phone — see _tracking_verdict.
+    """
+    headers = {}
+    if emp_id:
+        try:
+            if await _tracking_verdict(emp_id, _utcnow()) == "stop":
+                headers["X-Tracking"] = "stop"
+        except Exception:
+            pass    # never let the verdict break ingest
+    return Response(status_code=200, headers=headers)
 def _flatten_json(obj: dict, out: dict, prefix: str = ""):
     """Flatten nested JSON into flat lowercase keys.
     Also maps common nested GPS field names to our flat keys.
@@ -120,6 +139,77 @@ def _parse_punch(v) -> Optional[datetime]:
     return dt.replace(tzinfo=IST) if dt.tzinfo is None else dt.astimezone(IST)
 
 
+# ── The 11 pm cut-off ──────────────────────────────────────────────────────
+# A third of field-staff days (168 of 510, 15 Aug - 14 Sep 2026) ended with no
+# punch-out. Those phones kept tracking until the midnight auto-close — and
+# with the v1.6.2 GPS top-up they kept switching the GPS chip on every ten
+# minutes all night (RMF0019 and RMF0035 on 14-15 Sep). Real punch-outs have a
+# median of 19:35 and a 99th percentile of 22:45, so an open session now ends at
+# 23:00 IST on the day it started. Ritvik chose 11 pm over 10 pm on 2026-09-15.
+TRACKING_CUTOFF_IST = (23, 0)
+# Anyone still punched in at this time gets one "still punched in?" push a day.
+PUNCH_OUT_REMINDER_IST = (21, 0)
+
+
+def _utcnow() -> datetime:
+    """The server clock. One seam, so tests can move time."""
+    return datetime.now(timezone.utc)
+
+
+def _cutoff_for(start: datetime) -> datetime:
+    """23:00 IST on the IST day a session started."""
+    local = start.astimezone(IST)
+    return local.replace(hour=TRACKING_CUTOFF_IST[0], minute=TRACKING_CUTOFF_IST[1],
+                         second=0, microsecond=0)
+
+
+def _att_dates_for(ts_utc: datetime):
+    """Attendance `date` values that can hold a session covering this moment.
+
+    punch_in writes `date` as the UTC date, while the cut-off and the GPS
+    buckets are IST. A session can only run until 23:00 IST (17:30 UTC) on the
+    day it started, so the record is filed under this UTC date or the one
+    before (a punch-in between 00:00 and 05:30 IST is filed under the previous
+    UTC date). The IST date is included for any record written the other way.
+    """
+    utc_day = ts_utc.astimezone(timezone.utc)
+    return sorted({utc_day.strftime("%Y-%m-%d"),
+                   (utc_day - timedelta(days=1)).strftime("%Y-%m-%d"),
+                   ts_utc.astimezone(IST).strftime("%Y-%m-%d")})
+
+
+def _sessions_of(att: dict):
+    sessions = att.get("sessions") or []
+    if not sessions:
+        sessions = [{"punch_in_time": att.get("punch_in_time"),
+                     "punch_out_time": att.get("punch_out_time")}]
+    return sessions
+
+
+# How far a punch-in may sit ahead of this server's clock and still count as
+# started. Punch-in and the phone's next sync can reach instances whose clocks
+# differ slightly; without this the sync straight after punch-in could answer
+# "don't track".
+CLOCK_GRACE = timedelta(minutes=10)
+
+
+def _session_window(session: dict):
+    """(start, end) in IST for one session, or None if it has no usable start.
+
+    An open session ends at the cut-off. A session that STARTS after the
+    cut-off has no window at all: nobody is tracked after 11 pm.
+    """
+    start = _parse_punch(session.get("punch_in_time"))
+    if not start:
+        return None
+    cutoff = _cutoff_for(start)
+    if start >= cutoff:
+        return None
+    out = _parse_punch(session.get("punch_out_time"))
+    end = min(out, cutoff) if out else cutoff
+    return start, end
+
+
 async def _is_on_duty(employee_id: str, ts_utc: datetime) -> bool:
     """Was this employee punched in at this moment?
 
@@ -129,36 +219,67 @@ async def _is_on_duty(employee_id: str, ts_utc: datetime) -> bool:
     stored-and-hidden: the only certain answer to "were we tracking them at home"
     is that it was never written down.
 
-    A forgotten punch-out ends the window at midnight IST rather than running on
-    into the next day.
+    A forgotten punch-out ends the window at 23:00 IST on the day it started
+    (it used to run to midnight). Records are looked up under both date
+    conventions — see _att_dates_for.
     """
     ts = ts_utc.astimezone(IST)
-    date_str = ts.strftime("%Y-%m-%d")
-    att = await db.attendance_records.find_one(
-        {"employee_id": employee_id, "date": date_str})
-    if not att:
-        return False                       # no attendance record = not at work
-
-    # Multi-session days (punch out for lunch and back in) are the normal shape;
-    # older records carry a single pair at the top level.
-    sessions = att.get("sessions") or []
-    if not sessions:
-        sessions = [{"punch_in_time": att.get("punch_in_time"),
-                     "punch_out_time": att.get("punch_out_time")}]
-
-    midnight = ts.replace(hour=23, minute=59, second=59, microsecond=999999)
-    for s in sessions:
-        start = _parse_punch(s.get("punch_in_time"))
-        if not start:
-            continue
-        end = _parse_punch(s.get("punch_out_time")) or midnight
-        if start <= ts <= end:
-            return True
+    records = await db.attendance_records.find(
+        {"employee_id": employee_id, "date": {"$in": _att_dates_for(ts_utc)}}).to_list(10)
+    for att in records:
+        for sess in _sessions_of(att):
+            window = _session_window(sess)
+            if window and window[0] <= ts <= window[1]:
+                return True
     return False
 
 
-async def _process_ping(qp: dict, request: Request):
-    """Persist a single ping given flattened params."""
+async def _tracking_verdict(employee_id: str, now_utc: datetime) -> str:
+    """"track", "stop" or "unknown" — should this phone be tracking right now?
+
+    "stop" only on an authoritative answer: every session in the latest record
+    is closed, or every open one is past its cut-off. A missing record is
+    "unknown", never "stop" — a database hiccup must not switch tracking off in
+    the middle of a shift.
+    """
+    now = now_utc.astimezone(IST)
+    records = await db.attendance_records.find(
+        {"employee_id": employee_id, "date": {"$in": _att_dates_for(now_utc)}}).to_list(10)
+    if not records:
+        return "unknown"
+    saw_session = False
+    for att in records:
+        for sess in _sessions_of(att):
+            if not _parse_punch(sess.get("punch_in_time")):
+                continue
+            saw_session = True
+            window = _session_window(sess)
+            if window and window[0] - CLOCK_GRACE <= now <= window[1]:
+                return "track"
+    return "stop" if saw_session else "unknown"
+
+
+def _open_session_until(att: dict, now_utc: datetime) -> Optional[datetime]:
+    """The cut-off of the session open right now, or None if none is open."""
+    if not att:
+        return None
+    now = now_utc.astimezone(IST)
+    for sess in _sessions_of(att):
+        if sess.get("punch_out_time"):
+            continue
+        window = _session_window(sess)
+        if window and window[0] - CLOCK_GRACE <= now < window[1]:
+            return window[1]
+    return None
+
+
+async def _process_ping(qp: dict, request: Request) -> Optional[str]:
+    """Persist a single ping given flattened params.
+
+    Returns the employee id once the tracker's identity is proven (whether or
+    not the ping is stored), so the response can tell that phone to stop.
+    Returns None for anything unauthenticated — an unknown caller learns nothing.
+    """
     raw_id = str(qp.get("id") or qp.get("deviceid") or qp.get("device_id") or "").strip()
     # Diagnostic log — stored in `tracker_ping_log` (capped to last 500).
     try:
@@ -186,14 +307,14 @@ async def _process_ping(qp: dict, request: Request):
         return
     tracker = await db.employee_trackers.find_one({"employee_id": emp_id, "secret": secret})
     if not tracker or not tracker.get("active", True):
-        return
+        return None
     try:
         lat = float(qp.get("lat", 0))
         lon = float(qp.get("lon", 0))
     except (ValueError, TypeError):
-        return
+        return emp_id
     if lat == 0 and lon == 0:
-        return
+        return emp_id
     accuracy = _safe_float(qp.get("accuracy")) or _safe_float(qp.get("hdop"))
     ts = datetime.now(timezone.utc)
     try:
@@ -230,7 +351,7 @@ async def _process_ping(qp: dict, request: Request):
         ts = _now
     # Off duty -> discard. Nothing is written, not even a flagged row.
     if not await _is_on_duty(emp_id, ts):
-        return
+        return emp_id
 
     date_str = ts.astimezone(IST).strftime("%Y-%m-%d")
     log = {
@@ -288,6 +409,7 @@ async def _process_ping(qp: dict, request: Request):
             **_ping_device_diagnostics(qp),
         }},
     )
+    return emp_id
 # ── v1.6.2 ping diagnostics ─────────────────────────────────────────────────
 # The APK tags every fix with its source and carries the day's GPS top-up
 # outcomes on each ping. They ride on the ping rather than the health report
@@ -462,6 +584,75 @@ async def watchdog_status(current_user: dict = Depends(get_current_user)):
     }
 
 
+async def _send_punch_out_reminders(on_duty: dict, now: datetime) -> int:
+    """One "still punched in?" push a day, from 21:00 IST until the cut-off.
+
+    For everyone still punched in who uses the app (has a tracker), office staff
+    included. Runs inside the 5-minute watchdog pass, so a restart at 21:30
+    still sends it; the per-person stamp stops a second one the same day.
+    Never raises — a failed reminder must not stop the watchdog.
+    """
+    try:
+        from services.fcm import send_push
+        local = now.astimezone(IST)
+        if (local.hour, local.minute) < PUNCH_OUT_REMINDER_IST:
+            return 0
+        if (local.hour, local.minute) >= TRACKING_CUTOFF_IST:
+            return 0
+        if not on_duty:
+            return 0
+        day = local.strftime("%Y-%m-%d")
+        reminder_at = local.replace(hour=PUNCH_OUT_REMINDER_IST[0], minute=PUNCH_OUT_REMINDER_IST[1],
+                                    second=0, microsecond=0)
+        # Only sessions that were already running at 9 pm: someone who punched
+        # in at 9:30 has not "still" been punched in all evening.
+        due = [e for e, started in on_duty.items()
+               if started is None or started.astimezone(IST) < reminder_at]
+        if not due:
+            return 0
+        trackers = await db.employee_trackers.find(
+            {"employee_id": {"$in": due},
+             "punch_out_reminded_on": {"$ne": day}},
+            {"_id": 0, "employee_id": 1}).to_list(4000)
+        if not trackers:
+            return 0
+        field = {e["employee_id"] for e in await db.employees.find(
+            {"employee_id": {"$in": [t["employee_id"] for t in trackers]}, "field_staff": True},
+            {"_id": 0, "employee_id": 1}).to_list(4000)}
+        sent = 0
+        for t in trackers:
+            emp_id = t["employee_id"]
+            # Claim the reminder atomically BEFORE sending. If two watchdog
+            # passes overlap (a second worker process runs its own loop), only
+            # the one whose update matched sends. Stamped even with no push
+            # token, so an unreachable phone is not re-examined all evening.
+            claim = await db.employee_trackers.update_one(
+                {"employee_id": emp_id, "punch_out_reminded_on": {"$ne": day}},
+                {"$set": {"punch_out_reminded_on": day}})
+            if getattr(claim, "modified_count", 1) != 1:
+                continue
+            docs = await db.device_tokens.find({"employee_id": emp_id}).to_list(20)
+            tokens = [d["token"] for d in docs if d.get("token")]
+            if not tokens:
+                continue
+            body = "Punch out in Radhya HR if you have finished for the day."
+            if emp_id in field:
+                body += " Location tracking stops at 11 pm."
+            dead = await send_push(
+                tokens,
+                "Still punched in?",
+                body,
+                {"type": "punch_out_reminder", "link": "/dashboard"},
+            )
+            if dead:
+                await db.device_tokens.delete_many({"token": {"$in": dead}})
+            sent += 1
+        return sent
+    except Exception:
+        logging.getLogger("tracker").warning("punch-out reminder failed", exc_info=True)
+        return 0
+
+
 async def run_tracking_watchdog() -> dict:
     """Poke phones that are on duty but have stopped reporting.
 
@@ -471,13 +662,14 @@ async def run_tracking_watchdog() -> dict:
     """
     from services.fcm import send_push, send_data_push
 
-    now = datetime.now(timezone.utc)
-    # Attendance rows are keyed on the UTC date by punch_in — match it. (See the
-    # long comment in get_my_tracker_config; do not "fix" this to IST.)
-    today = now.strftime("%Y-%m-%d")
+    now = _utcnow()
+    # Attendance rows are keyed on the UTC date by punch_in — match it (and the
+    # day before, for a punch-in between 00:00 and 05:30 IST). See
+    # _att_dates_for; do not "fix" this to IST alone.
     att = await db.attendance_records.find(
-        {"date": today}, {"_id": 0, "employee_id": 1, "sessions": 1,
-                          "punch_in_time": 1, "punch_out_time": 1}).to_list(4000)
+        {"date": {"$in": _att_dates_for(now)}},
+        {"_id": 0, "employee_id": 1, "sessions": 1,
+         "punch_in_time": 1, "punch_out_time": 1}).to_list(4000)
     # Also remember when each open session STARTED. `last_ping_at` is an
     # all-time value, so for someone whose tracker died yesterday evening the
     # raw age is already ~15 hours at the moment they punch in — past the
@@ -486,7 +678,10 @@ async def run_tracking_watchdog() -> dict:
     on_duty = {}
     for a in att:
         try:
-            if not _has_open_session(a):
+            # Open AND before its 11 pm cut-off. Past it, a forgotten punch-out
+            # is not a phone to wake: waking it is what kept GPS running all
+            # night on phones whose owner had gone home.
+            if not _has_open_session(a) or _open_session_until(a, now) is None:
                 continue
             starts = [_parse_punch(s.get("punch_in_time"))
                       for s in (a.get("sessions") or [{"punch_in_time": a.get("punch_in_time")}])]
@@ -494,6 +689,8 @@ async def run_tracking_watchdog() -> dict:
             on_duty[a["employee_id"]] = max(starts) if starts else None
         except Exception:
             continue
+    reminded = await _send_punch_out_reminders(on_duty, now)
+
     if not on_duty:
         # Stamp this pass like any other. It is the commonest outcome there is —
         # every pass overnight, on a Sunday, and before the first punch-in — and
@@ -501,7 +698,7 @@ async def run_tracking_watchdog() -> dict:
         # exactly the condition the status strip reports as "the watchdog has
         # died and needs the backend restarted". A healthy watchdog would have
         # gone red every night.
-        idle = {"checked": 0, "silent": 0, "visible": 0, "on_duty": 0}
+        idle = {"checked": 0, "silent": 0, "visible": 0, "on_duty": 0, "reminded": reminded}
         await _record_watchdog_run(idle)
         return idle
 
@@ -526,7 +723,7 @@ async def run_tracking_watchdog() -> dict:
     skipped_not_field = len(on_duty) - len(watched)
     if not watched:
         early = {"checked": 0, "silent": 0, "visible": 0,
-                 "skipped_not_field_staff": skipped_not_field}
+                 "skipped_not_field_staff": skipped_not_field, "reminded": reminded}
         await _record_watchdog_run(early)
         return early
 
@@ -676,7 +873,7 @@ async def run_tracking_watchdog() -> dict:
               "reporting": reporting, "gave_up": gave_up,
               "throttled": throttled, "no_push_token": no_token,
               "inactive": inactive, "not_yet_due": not_yet_due,
-              "failed": failed, "no_tracker": no_tracker}
+              "failed": failed, "no_tracker": no_tracker, "reminded": reminded}
     # The buckets must sum to what was examined. If they ever don't, say so on
     # the strip rather than letting the difference vanish — an unexplained
     # residue is exactly what these counters were added to eliminate.
@@ -967,14 +1164,28 @@ async def get_my_tracker_config(current_user: dict = Depends(get_current_user)):
     # (_is_on_duty has the mirror-image mismatch — it converts to IST before
     # looking up the same collection. Pre-existing, and it only bites for pings
     # taken 00:00-05:30 IST, but it is the same trap from the other side.)
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    att = await db.attendance_records.find_one({"employee_id": emp_id, "date": today})
+    now = _utcnow()
+    # The open session may be filed under today's UTC date or yesterday's (a
+    # punch-in between 00:00 and 05:30 IST) — _open_session_until checks the
+    # cut-off either way, so yesterday's forgotten punch-out no longer counts.
+    until = None
+    records = await db.attendance_records.find(
+        {"employee_id": emp_id, "date": {"$in": _att_dates_for(now)}}).to_list(10)
+    for att in records:
+        u = _open_session_until(att, now)
+        if u and (until is None or u > until):
+            until = u
     return {
         "employee_id": emp_id,
         "identifier": f"{emp_id}:{tracker['secret']}",
         "interval_seconds": tracker.get("interval_seconds", 60),
         "active": tracker.get("active", True),
-        "should_track": _has_open_session(att),
+        "should_track": until is not None,
+        # v1.6.3+: the phone stops itself at this moment even with the app
+        # closed and no signal. Sent with the server's clock so the app can
+        # correct for a phone whose clock is wrong.
+        "track_until": until.astimezone(timezone.utc).isoformat() if until else None,
+        "server_time": now.isoformat(),
     }
 @router.get("/my-enforcement")
 async def my_location_enforcement(current_user: dict = Depends(get_current_user)):

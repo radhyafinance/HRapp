@@ -113,9 +113,6 @@ def add_timeline_event(timeline: list, event: str, actor: str, description: str,
 # open it -- including NOC owners in other departments -- with every approver's
 # remarks, every NOC note, the resignation reason and the notice period inside.
 _PRIVILEGED_ROLES = ("hr_admin", "management")
-# Final approval sets status -> noc_in_progress and the last working day in the
-# same write, so "accepted, with a last working day" is exactly this.
-_ACCEPTED_STATUSES = ("noc_in_progress", "noc_complete", "completed")
 # Timeline entries written before comments had their own field carry them INSIDE
 # the description. Five writers did it: approvals ("Remarks:"), exit-type changes
 # ("Comment:"), and direct exit / undo / reinstate ("Reason:"). Nothing else in
@@ -220,11 +217,10 @@ def _redact_for(e: dict, user: dict) -> dict:
     # The person leaving sees their clearance only as pending until F&F is done.
     noc_hidden = v["departing"] and not v["completed"]
 
-    # NOTICE PERIOD -- nobody, HR included, until the resignation is accepted with
-    # a last working day. Never on a direct exit (it stores 0: there is no notice).
-    accepted = e.get("status") in _ACCEPTED_STATUSES and bool(e.get("last_working_day"))
-    if not accepted or v["direct"] or not e.get("notice_period_days"):
-        e["notice_period_days"] = None
+    # NOTICE PERIOD -- nobody, ever, HR included (Ritvik, 2026-09-15). It is still
+    # stored on the record; the last working day is the date people act on, and a
+    # figure beside it that disagrees (60 days next to a 91-day LWD) only confuses.
+    e["notice_period_days"] = None
 
     reason_ok = _may_read_reason(v)
     if not reason_ok:
@@ -585,7 +581,7 @@ async def submit_resignation(
         doc["resignation_letter"] = {"has_file": True, "file_name": file.filename if file else ""}
     doc["final_documents"] = {"fnf_sheet": None, "relieving_letter": None}
     # Through the same rule as every other read: this used to hand the employee
-    # their own notice period in the submit response, before anyone had accepted.
+    # their own notice period in the submit response.
     return _redact_for(doc, current_user)
 
 

@@ -840,10 +840,7 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
                   ["Joined", formatDate(exit?.joining_date)],
                   ["Resigned On", formatDate(exit?.resignation_date)],
                   ["Last Working Day", exit?.last_working_day ? formatDate(exit.last_working_day) : "Pending"],
-                  // Sent only once the resignation is accepted with a last
-                  // working day. Omitted otherwise — not "—", which would still
-                  // tell the reader there is a figure being kept from them.
-                  ...(exit?.notice_period_days ? [["Notice Period", `${exit.notice_period_days} days`]] : []),
+                  // No Notice Period row, for anyone: the server never sends it.
                 ].map(([label, value]) => (
                   <div key={label}>
                     <p className="text-xs text-slate-500">{label}</p>

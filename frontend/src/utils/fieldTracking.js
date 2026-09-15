@@ -51,9 +51,14 @@ const INTERVAL_MS = 120 * 1000;
 // last decision while offline — in memory alone, a reload would leave us unable
 // to restart a service the OEM had killed until the network came back.
 const ID_KEY = "rmf_tracker_id";
+// When the phone must stop tracking, in THIS phone's clock (ms). Kept so an
+// offline re-assert still carries the day's 11 pm stop, instead of restarting
+// a tracker with no end.
+const UNTIL_KEY = "rmf_tracker_until";
 const WANT_KEY = "rmf_tracker_want";
 const SESSION_KEY = "rmf_tracker_session";
 let identifier = null;      // "RMF0001:secret"
+let untilPhoneMs = null;    // stop time in this phone's clock, or null
 let wantTracking = null;    // in-memory mirror; null = nothing learned yet
 let syncing = false;        // guard against overlapping syncs
 let pending = false;        // a sync arrived while one was in flight
@@ -77,12 +82,15 @@ function sessionTag() {
   return ls(() => (localStorage.getItem("auth_token") || "").slice(-24), "");
 }
 /** Record the last AUTHORITATIVE answer, so a later failure has something to hold. */
-function remember(want, id) {
+function remember(want, id, until) {
   wantTracking = want;
+  untilPhoneMs = until || null;
   ls(() => {
     localStorage.setItem(WANT_KEY, want ? "1" : "0");
     localStorage.setItem(SESSION_KEY, sessionTag());
     if (id) localStorage.setItem(ID_KEY, id);
+    if (until) localStorage.setItem(UNTIL_KEY, String(until));
+    else localStorage.removeItem(UNTIL_KEY);
   });
 }
 function recall() {
@@ -94,7 +102,9 @@ function recall() {
   const want = wantTracking !== null
     ? wantTracking
     : ls(() => localStorage.getItem(WANT_KEY) === "1", false);
-  return { want, id: identifier || ls(() => localStorage.getItem(ID_KEY), null) };
+  const storedUntil = Number(ls(() => localStorage.getItem(UNTIL_KEY), "")) || null;
+  return { want, id: identifier || ls(() => localStorage.getItem(ID_KEY), null),
+           until: untilPhoneMs || storedUntil };
 }
 function forget() {
   wantTracking = null;
@@ -102,11 +112,33 @@ function forget() {
     localStorage.removeItem(WANT_KEY);
     localStorage.removeItem(ID_KEY);
     localStorage.removeItem(SESSION_KEY);
+    localStorage.removeItem(UNTIL_KEY);
   });
+  untilPhoneMs = null;
 }
-async function startTracking(id) {
+/**
+ * The server's "track until" (11 pm IST, or the punch-out) as a time on THIS
+ * phone's clock. Converted with the server's own `server_time`, so a phone whose
+ * clock is wrong still stops at the real 11 pm rather than at its own idea of it.
+ */
+function untilOnPhone(data) {
+  const until = Date.parse(data?.track_until || "");
+  const server = Date.parse(data?.server_time || "");
+  if (!Number.isFinite(until) || !Number.isFinite(server)) return null;
+  return Date.now() + (until - server);
+}
+async function startTracking(id, until) {
+  // A stop time already past means the phone has stopped itself (11 pm, or the
+  // punch-out) — there is nothing to re-assert. Starting anyway would bring the
+  // native service up only to shut it down again, and would switch off a session
+  // started since then.
+  if (until && until <= Date.now()) return;
   try {
-    await RadhyaTracker.start({ identifier: id, url: PING_URL, intervalMs: INTERVAL_MS });
+    const opts = { identifier: id, url: PING_URL, intervalMs: INTERVAL_MS };
+    // v1.6.3+ stops itself this many ms from now; older builds ignore it. A
+    // stop time already past is sent as 1 ms, which stops the phone at once.
+    if (until) opts.stopInMs = Math.max(1, Math.round(until - Date.now()));
+    await RadhyaTracker.start(opts);
   } catch (e) {
     // e.g. location permission denied — the native side surfaces the prompt.
   }
@@ -140,9 +172,10 @@ export async function syncFieldTracking() {
     if (gen !== generation) return;
     identifier = data?.identifier || identifier;
     const want = !!(data?.should_track && data?.active && identifier);
-    remember(want, identifier);
+    const until = want ? untilOnPhone(data) : null;
+    remember(want, identifier, until);
     if (want) {
-      await startTracking(identifier);
+      await startTracking(identifier, until);
     } else {
       await stopTracking();
     }
@@ -175,10 +208,16 @@ async function handleSyncFailure(err) {
   // Re-asserting start() here is deliberate rather than merely doing nothing:
   // it re-arms the native alarm and revives a service an OEM cleaner may have
   // killed, so a phone that spent an hour out of coverage heals on its own.
-  const { want, id } = recall();
+  const { want, id, until } = recall();
+  if (until && until <= Date.now()) {
+    // Yesterday's decision, left behind when the phone stopped itself with the
+    // app closed. Drop it rather than hold it: the next successful sync decides.
+    remember(false, id, null);
+    return;
+  }
   if (want && id) {
     identifier = id;
-    await startTracking(id);
+    await startTracking(id, until);
   }
 }
 export async function stopFieldTracking() {
