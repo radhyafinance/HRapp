@@ -272,7 +272,9 @@ async def dashboard_stats(current_user: dict = Depends(get_current_user)):
     # Exclude converted candidates (they are now employees) to match the Candidates tab.
     total_candidates = await db.candidates.count_documents({"status": {"$ne": "converted"}})
     pending_candidates = await db.candidates.count_documents({"status": "pending"})
-    exit_requests = await db.exit_requests.count_documents({"status": {"$nin": ["completed", "rejected"]}})
+    # "reverted" covers a revoked resignation and an undone direct exit. Both are
+    # over, and counting them left the tile permanently overstating open exits.
+    exit_requests = await db.exit_requests.count_documents({"status": {"$nin": ["completed", "rejected", "reverted"]}})
     now = datetime.now(timezone.utc)
     period = f"{now.year}-{now.month:02d}"
     payroll_processed = None

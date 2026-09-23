@@ -15,6 +15,9 @@ const STATUS_META = {
   noc_complete:     { label: "NOC Complete",      color: "bg-teal-100 text-teal-700 border-teal-200" },
   completed:        { label: "Completed",         color: "bg-green-100 text-green-700 border-green-200" },
   rejected:         { label: "Rejected",          color: "bg-red-100 text-red-700 border-red-200" },
+  // A revoked resignation and an undone direct exit share this status. Without
+  // a label here the badge printed the raw word "reverted".
+  reverted:         { label: "Revoked",           color: "bg-slate-200 text-slate-700 border-slate-300" },
 };
 
 const TIMELINE_ICONS = {
@@ -246,6 +249,120 @@ function ApprovalModal({ exit, onClose, onDone, currentUser }) {
           <button onClick={handleSubmit} disabled={saving}
             className={`flex-1 py-2.5 rounded-lg text-sm font-semibold text-white disabled:opacity-60 transition-colors ${action === "approve" ? "bg-green-600 hover:bg-green-700" : "bg-red-600 hover:bg-red-700"}`}>
             {saving ? "Saving..." : `Confirm ${action === "approve" ? "Approval" : "Rejection"}`}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+
+// ── Revoke Resignation Modal ─────────────────────────────────
+// For an exit still IN PROGRESS: the person is staying. Different from
+// Reinstate, which unwinds an exit that already finished. Once a resignation is
+// accepted the employee record carries a last working day, and payroll counts
+// every day after it as unpaid — so revoking has to clear that, not just move
+// the status back. Their salary holds are released here too; they never left.
+function RevokeModal({ exit, onClose, onDone }) {
+  // Only a status the SERVER will honour hides the picker. It restores from the
+  // snapshot only when that reads "active" or "probation"; anything else falls
+  // back to what HR chooses — so a snapshot of, say, "notice_period" must leave
+  // the question on screen rather than promise something that will not happen.
+  const snapRaw = exit?.pre_exit_snapshot?.employee_status;
+  const snapshotStatus = ["active", "probation"].includes(snapRaw) ? snapRaw : null;
+  const accepted = exit?.status !== "submitted";
+  const [status, setStatus] = useState("active");
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleSave = async () => {
+    if (reason.trim().length < 10) { setError("A reason of at least 10 characters is required."); return; }
+    setSaving(true);
+    try {
+      const r = await API.post(`/exit/${exit.id}/revoke`, {
+        reason: reason.trim(),
+        ...(snapshotStatus ? {} : { status }),
+      });
+      const d = r.data;
+      const stale = d.payroll_needs_recalc || [];
+      const paidShort = d.payroll_already_paid_short || [];
+      const outcome = {
+        restored: `They are back as "${d.restored_status}", and the last working day has been cleared ` +
+                  `— that is the field that would otherwise have paid them almost nothing.\n` +
+                  (d.login_restored ? "Their login has been re-enabled.\n" : ""),
+        nothing_to_restore: "The resignation had not been accepted yet, so nothing on their employee record had to change.\n",
+        already_clean: "Their employee record was already clear of exit fields, so only this request was cancelled.\n",
+        employee_missing: "WARNING: no employee record was found for this id, so nothing could be restored. The request has been cancelled — check the employee record.\n",
+      }[d.outcome] || "";
+      alert(
+        `Resignation revoked for ${exit.employee_name} (${exit.employee_id}).\n\n` + outcome +
+        (d.holds_released
+          ? `${d.holds_released} payroll record(s) released from hold.\n`
+          : "No payroll records were released from hold.\n") +
+        (d.holds_kept
+          ? `${d.holds_kept} record(s) stay ON HOLD because they were worked out around the old ` +
+            `last working day — releasing them would send the wrong amount to the bank.\n`
+          : "") +
+        (stale.length
+          ? `\nNOTE: payroll for ${stale.join(", ")} was worked out around the old last working ` +
+            `day. Re-run it from Payroll → Recalculate LOP, then release the hold.`
+          : "") +
+        (paidShort.length
+          ? `\nWARNING: ${paidShort.join(", ")} was already PAID around the old last working day. ` +
+            `That money went out short and has to be settled separately.`
+          : "")
+      );
+      onDone();
+      onClose();
+    } catch (e) { setError(e.response?.data?.detail || "Failed"); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <Modal title="Revoke Resignation" onClose={onClose}>
+      <div className="space-y-4">
+        <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-800">
+          This cancels the resignation of <strong>{exit.employee_name} ({exit.employee_id})</strong>.
+          They stay employed.{" "}
+          {accepted
+            ? "Their last working day and exit type are cleared, their status is restored, and the salary holds this exit placed are released."
+            : "Nothing has been written to their employee record yet, so only this request is cancelled."}
+          {" "}The request stays on file, marked revoked.
+        </div>
+        {accepted && !snapshotStatus && (
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">Restore status to*</label>
+            <select value={status} onChange={e => setStatus(e.target.value)} data-testid="revoke-status"
+              className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none bg-white">
+              <option value="active">Active</option>
+              <option value="probation">Probation</option>
+            </select>
+            <p className="text-[11px] text-slate-500 mt-1">
+              This resignation was accepted before the system started recording what someone was
+              beforehand, so choose it here.
+            </p>
+          </div>
+        )}
+        {accepted && snapshotStatus && (
+          <p className="text-[11px] text-slate-500">
+            They will go back to <strong>{snapshotStatus}</strong>, the status recorded when the
+            resignation was accepted.
+          </p>
+        )}
+        <div>
+          <label className="block text-xs font-semibold text-slate-700 mb-1">Reason* (recorded against your name)</label>
+          <textarea rows={3} value={reason} onChange={e => setReason(e.target.value)}
+            placeholder="e.g. Employee has withdrawn the resignation after discussion with the branch manager"
+            data-testid="revoke-reason"
+            className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none resize-none" />
+        </div>
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        <div className="flex gap-3">
+          <button onClick={onClose} className="flex-1 py-2.5 border border-slate-300 rounded-lg text-sm text-slate-600">Cancel</button>
+          <button onClick={handleSave} disabled={saving} data-testid="revoke-save"
+            className="flex-1 py-2.5 bg-amber-600 text-white rounded-lg text-sm font-semibold disabled:opacity-60 hover:bg-amber-700">
+            {saving ? "Revoking..." : "Revoke Resignation"}
           </button>
         </div>
       </div>
@@ -684,6 +801,7 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
   const [showEditLwd, setShowEditLwd] = useState(false);
   const [showChangeExitType, setShowChangeExitType] = useState(false);
   const [showReinstate, setShowReinstate] = useState(false);
+  const [showRevoke, setShowRevoke] = useState(false);
   const [nocSections, setNocSections] = useState({});
   const [staff, setStaff] = useState([]);
   const [savingAssignee, setSavingAssignee] = useState(null);
@@ -862,6 +980,24 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
                     </button>
                   </div>
                 )}
+                {/* Still in progress: the employee is staying, so this is a
+                    revoke rather than a reinstate. Direct exits are written
+                    straight to `completed` and never appear here. */}
+                {isAdmin && ["submitted", "noc_in_progress", "noc_complete"].includes(exit?.status) && (
+                  <div className="col-span-2 p-3 bg-slate-50 border border-slate-300 rounded-lg flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-bold text-slate-800">Employee staying on?</p>
+                      <p className="text-xs text-slate-600 mt-0.5">
+                        Revoking cancels this resignation, clears the last working day and exit type,
+                        and releases the salary holds it placed. The request stays on file.
+                      </p>
+                    </div>
+                    <button onClick={() => setShowRevoke(true)} data-testid="revoke-btn"
+                      className="flex-shrink-0 px-3 py-1.5 bg-white border-2 border-amber-400 text-amber-900 rounded-lg text-xs font-semibold hover:bg-amber-100">
+                      Revoke resignation
+                    </button>
+                  </div>
+                )}
                 {/* Offered only when the 3-day undo is not available — otherwise
                     two overlapping ways to do the same thing. */}
                 {isAdmin && !canUndoDirectExit && exit?.status === "completed" && (
@@ -881,7 +1017,13 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
                 )}
                 {exit?.status === "reverted" && (
                   <div className="col-span-2 p-3 bg-slate-100 border border-slate-300 rounded-lg">
-                    <p className="text-xs font-bold text-slate-700">This direct exit was undone</p>
+                    <p className="text-xs font-bold text-slate-700">
+                      {exit?.revoked_from_status
+                        ? "This resignation was revoked"
+                        : exit?.is_direct_exit
+                          ? "This direct exit was undone"
+                          : "This exit was reversed"}
+                    </p>
                     <p className="text-xs text-slate-600 mt-0.5">
                       By {exit.reverted_by || "an admin"}
                       {exit.reverted_at && ` on ${new Date(exit.reverted_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}`}
@@ -1182,6 +1324,7 @@ function DetailPanel({ exit, currentUser, onClose, onRefresh }) {
       {showEditLwd && <EditLWDModal exit={exit} onClose={() => setShowEditLwd(false)} onDone={onRefresh} />}
       {showChangeExitType && <ChangeExitTypeModal exit={exit} onClose={() => setShowChangeExitType(false)} onDone={onRefresh} />}
       {showReinstate && <ReinstateModal exit={exit} onClose={() => setShowReinstate(false)} onDone={onRefresh} />}
+      {showRevoke && <RevokeModal exit={exit} onClose={() => setShowRevoke(false)} onDone={onRefresh} />}
     </div>
   );
 }
@@ -1336,7 +1479,9 @@ export default function ExitManagement() {
   };
 
   // Check if current employee already has an active request
-  const myActiveRequest = isEmployee ? exits.find(e => e.employee_id === user?.employee_id && !["rejected", "completed"].includes(e.status)) : null;
+  // A revoked resignation is over, exactly like a rejected one: it must not
+  // block the employee from resigning again later.
+  const myActiveRequest = isEmployee ? exits.find(e => e.employee_id === user?.employee_id && !["rejected", "completed", "reverted"].includes(e.status)) : null;
 
   return (
     <div className="max-w-2xl mx-auto px-4 py-4" style={{ fontFamily: "'Work Sans', sans-serif" }} data-testid="exit-management-page">
@@ -1419,7 +1564,7 @@ export default function ExitManagement() {
           <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search by name or ID..."
             className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:ring-2 focus:ring-[#E85B1E] outline-none" />
           <div className="flex gap-1.5 overflow-x-auto pb-1">
-            {[["all", "All"], ["submitted", "Pending"], ["noc_in_progress", "NOC"], ["noc_complete", "Ready"], ["completed", "Done"], ["rejected", "Rejected"]].map(([val, label]) => (
+            {[["all", "All"], ["submitted", "Pending"], ["noc_in_progress", "NOC"], ["noc_complete", "Ready"], ["completed", "Done"], ["rejected", "Rejected"], ["reverted", "Revoked"]].map(([val, label]) => (
               <button key={val} onClick={() => setFilterStatus(val)}
                 className={`flex-shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${filterStatus === val ? "bg-[#1E2A47] text-white" : "bg-white border border-slate-300 text-slate-600 hover:bg-slate-50"}`}>
                 {label}

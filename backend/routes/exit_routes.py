@@ -267,6 +267,11 @@ def _redact_for(e: dict, user: dict) -> dict:
         # are stored beside the status as well as in the timeline, so hiding the
         # timeline copy alone left them in the "reverted" banner for everyone.
         e["revert_reason"] = None
+        # The status someone held before their resignation was accepted. Only
+        # HR acts on it (the revoke dialog reads it to decide whether it has to
+        # ask), and it is nobody else's business what stage of employment a
+        # colleague was at.
+        e["pre_exit_snapshot"] = None
 
     # Documents you cannot download are not described to you either. For the
     # person leaving this matters beyond file names: HR can only upload them once
@@ -454,6 +459,15 @@ class UndoDirectExitRequest(BaseModel):
 class ReinstateRequest(BaseModel):
     status: str = "active"        # "active" | "probation"
     reason: str
+
+
+class RevokeResignationRequest(BaseModel):
+    reason: str
+    # Only consulted when the exit carries no pre_exit_snapshot — i.e. it was
+    # approved before snapshots existed. With one, the stored status wins: HR
+    # should not be able to promote someone out of probation through a revoke
+    # dialog.
+    status: Optional[str] = None      # "active" | "probation"
 
 
 # How long a direct exit stays reversible. Long enough to catch a mistake noticed
@@ -768,6 +782,22 @@ async def approve_exit(exit_id: str, data: ApproveExitRequest, current_user: dic
             }]
             # Update employee status based on exit type
             emp_status = "notice_period"  # starts in notice period; auto-exit handles actual exit
+            # What they were BEFORE this approval, so a revoke can put it back
+            # exactly rather than asking HR to remember. Direct exits have kept
+            # such a snapshot since August; the approval path had none, which is
+            # why revoking used to mean guessing between active and probation.
+            emp_before = await db.employees.find_one(
+                {"employee_id": exit_req["employee_id"]},
+                {"_id": 0, "status": 1, "last_working_day": 1, "final_exit_type": 1},
+            ) or {}
+            updates["pre_exit_snapshot"] = {
+                "employee_status": emp_before.get("status"),
+                "had_last_working_day": "last_working_day" in emp_before,
+                "last_working_day": emp_before.get("last_working_day"),
+                "had_final_exit_type": "final_exit_type" in emp_before,
+                "final_exit_type": emp_before.get("final_exit_type"),
+                "taken_at": now,
+            }
             await db.employees.update_one(
                 {"employee_id": exit_req["employee_id"]},
                 {"$set": {"status": emp_status, "last_working_day": data.last_working_day, "final_exit_type": data.final_exit_type}}
@@ -1321,6 +1351,271 @@ async def undo_direct_exit(exit_id: str, data: UndoDirectExitRequest,
         "reverted_by": actor,
         "reverted_at": now,
         "reason": reason,
+    }
+
+
+# Statuses a resignation can be revoked from: everything before the exit is
+# finished. `completed` is Reinstate's job — by then the login is off, the
+# documents are issued and the holds are eligible for release, which is a
+# different unwind. `rejected` and `reverted` are already over.
+def _month_of(datestr) -> str:
+    """"YYYY-MM" from a date, or "" if it cannot be read.
+
+    Slicing the first 7 characters is not enough: nothing validates the last
+    working day's format, and "2026-9-10" slices to "2026-9-", which sorts ABOVE
+    every real period ("-" is below "0"). That silently excluded every payslip
+    from the recalculation scope and released the holds protecting them.
+    """
+    parts = str(datestr or "").split("-")
+    if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
+        return ""
+    return "%04d-%02d" % (int(parts[0]), int(parts[1]))
+
+
+_REVOCABLE_STATUSES = ("submitted", "noc_in_progress", "noc_complete")
+
+
+
+@router.post("/{exit_id}/revoke")
+async def revoke_resignation(exit_id: str, data: RevokeResignationRequest,
+                             current_user: dict = Depends(get_current_user)):
+    """Cancel a resignation that is still in progress. The employee stays.
+
+    Three things happen at final approval and all three have to come back, or
+    the employee is still half-exited:
+
+      1. their status became `notice_period`;
+      2. a last working day and exit type were written — payroll counts every
+         day after the LWD as unpaid, and auto_exit_employees_past_lwd() exits
+         anyone left sitting as `notice_period` with an LWD in the past, so a
+         revoke that forgets this re-exits them within a day;
+      3. every unpaid payroll record was held.
+
+    The holds ARE released here, unlike reinstate. Reinstate deals with someone
+    who did leave, where releasing money is its own decision; this person never
+    left, and a forgotten hold means a salary silently not paid to someone who
+    is still at work.
+
+    Payroll already processed is REPORTED, never rewritten. A payslip that was
+    built around the old last working day has to be re-run by HR from
+    Recalculate LOP — a deliberate click, not a side effect of this one.
+    """
+    if current_user.get("role") != "hr_admin":
+        raise HTTPException(status_code=403, detail="Only HR Admin can revoke a resignation")
+    reason = (data.reason or "").strip()
+    if len(reason) < 10:
+        raise HTTPException(
+            status_code=400,
+            detail="Give a reason of at least 10 characters — this cancels an exit "
+                   "in progress and is recorded against your name.",
+        )
+    # Validated BEFORE anything is claimed or written. Everything after the claim
+    # below is un-retryable — the exit is already marked revoked — so a request
+    # that can be rejected on its own contents must be rejected here, while
+    # refusing still costs nothing. "Active" with a capital A used to wedge the
+    # exit: revoked, no reason recorded, employee untouched, and the endpoint
+    # then refusing to try again.
+    if data.status is not None and data.status.strip() not in ("active", "probation"):
+        raise HTTPException(status_code=422, detail=(
+            "Status must be 'active' or 'probation'. 'notice_period' cannot be used "
+            "here — the auto-exit job would exit them again."))
+    try:
+        oid = ObjectId(exit_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Exit request not found")
+    exit_req = await db.exit_requests.find_one({"_id": oid})
+    if not exit_req:
+        raise HTTPException(status_code=404, detail="Exit request not found")
+
+    status = exit_req.get("status")
+    if status == "completed":
+        raise HTTPException(status_code=400, detail=(
+            "This exit is already completed — the employee has been relieved and their "
+            "login closed. Use Reinstate on their record instead."))
+    if status not in _REVOCABLE_STATUSES:
+        raise HTTPException(status_code=400, detail=(
+            f"A resignation at status '{status}' cannot be revoked."))
+
+    emp_id = exit_req.get("employee_id")
+    now = datetime.now(timezone.utc).isoformat()
+    actor = current_user.get("employee_id") or current_user.get("username")
+
+    # CLAIM THE EXIT FIRST, conditionally, before unwinding anything.
+    #
+    # The check above read the exit; the unwind below writes the employee record
+    # and the payroll holds. A final approval landing in between would set a new
+    # last working day and a new hold AFTER the revoke had cleared them, leaving
+    # a reverted exit attached to an employee sitting in notice period — a state
+    # even the stale-exit-fields report cannot see, because notice_period with a
+    # last working day is exactly what it expects. Flipping the status under a
+    # status precondition means the loser of that race is refused instead.
+    claimed = await db.exit_requests.find_one_and_update(
+        {"_id": oid, "status": {"$in": list(_REVOCABLE_STATUSES)}},
+        {"$set": {"status": "reverted", "reverted_at": now, "reverted_by": actor,
+                  "revoked_from_status": status, "updated_at": now}},
+    )
+    if not claimed:
+        raise HTTPException(status_code=409, detail=(
+            "This exit changed while you were revoking it — reload the page and check "
+            "where it stands before trying again."))
+    # find_one_and_update returns the document as it was BEFORE the write, so
+    # `status` above is still the stage it was revoked from — which is what the
+    # response and the wording below both need.
+    exit_req = claimed
+
+    emp = await db.employees.find_one({"employee_id": emp_id})
+
+    # Put the employee back. Before final approval nothing was written to their
+    # record, so there is nothing to restore and nothing to guess.
+    snap = exit_req.get("pre_exit_snapshot") or {}
+    restored_status = None
+    login_restored = False
+    if not emp:
+        # The employee record is gone. The exit is still revoked — an exit
+        # request pointing at nobody must not stay open — but say so plainly
+        # rather than reporting a restoration that did not happen.
+        outcome = "employee_missing"
+    elif emp.get("status") in ("notice_period", "exited") or emp.get("last_working_day") \
+            or emp.get("final_exit_type"):
+        if snap.get("employee_status") in ("active", "probation"):
+            restored_status = snap["employee_status"]
+        else:
+            # No usable snapshot: approved before snapshots existed, or one
+            # recording a status nobody can be restored to. HR says which, and
+            # "active" leaves someone working rather than in a state payroll
+            # treats oddly.
+            # Already validated above, before the claim.
+            restored_status = (data.status or "active").strip()
+        # BOTH exit fields are always cleared, never restored from the snapshot.
+        # A leftover last working day from some earlier exit is not history worth
+        # keeping: payroll counts every day after it as unpaid and auto-exit
+        # re-exits anyone carrying one, so writing an old date back would leave
+        # this employee in the silent zero-pay state that the stale-exit-fields
+        # report exists to hunt down. Whatever was there before, they are staying.
+        await db.employees.update_one(
+            {"employee_id": emp_id},
+            {"$set": {"status": restored_status,
+                      "exit_revoked_at": now, "exit_revoked_by": actor},
+             "$unset": {"last_working_day": "", "final_exit_type": ""}},
+        )
+        outcome = "restored"
+    else:
+        # Nothing to undo on the employee: either the resignation was never
+        # approved, or someone already corrected the record by hand. The revoke
+        # is still stamped, so the record says who cancelled the exit and when.
+        await db.employees.update_one(
+            {"employee_id": emp_id},
+            {"$set": {"exit_revoked_at": now, "exit_revoked_by": actor}},
+        )
+        outcome = "nothing_to_restore" if status == "submitted" else "already_clean"
+
+    # Auto-exit disables the login the moment it passes someone's last working
+    # day, and NOC can easily run past that date while the exit is still
+    # revocable. Without this the employee is back on the rolls and cannot log
+    # in — so cannot punch in either, which quietly books them loss of pay.
+    #
+    # Outside the restore branch deliberately: the same lockout happens when
+    # someone has already corrected the status by hand, leaving nothing to
+    # restore but the login still off. An unapproved resignation never disabled
+    # anything, so that path is left alone.
+    if emp and status != "submitted":
+        user = await db.users.find_one({"employee_id": emp_id})
+        if user and user.get("is_active") is False:
+            await db.users.update_one({"employee_id": emp_id}, {"$set": {"is_active": True}})
+            login_restored = True
+
+    # Payslips built around the last working day this exit set: any month from
+    # the LWD's month onwards carrying non-employed days. Scoped to that, because
+    # unscoped it reports someone's JOINING month for ever — genuinely part-paid,
+    # nothing to do with this exit.
+    lwd = exit_req.get("last_working_day") or (snap.get("last_working_day") or "")
+    from_month = _month_of(lwd)
+    stale_periods, paid_short, stale_ids = [], [], []
+    # No last working day means this resignation was never accepted, so no
+    # payslip was ever built around one. Scanning anyway reports the employee's
+    # joining month — part-paid for reasons that have nothing to do with a
+    # resignation nobody approved.
+    try:
+        rows = [] if not from_month else await db.payroll_records.find(
+            {"employee_id": emp_id, "non_employed_days": {"$gt": 0}},
+        ).to_list(100)
+        for r in rows:
+            period = r.get("period") or ""
+            if period < from_month:
+                continue
+            if r.get("status") == "paid":
+                # The money already went out short. Nothing here can fix that,
+                # but HR has to know it happened.
+                paid_short.append(period)
+            else:
+                stale_periods.append(period)
+                stale_ids.append(r.get("_id"))
+    except Exception:
+        stale_periods, paid_short, stale_ids = [], [], []
+    stale_periods = sorted({p for p in stale_periods if p})
+    paid_short = sorted({p for p in paid_short if p})
+
+    # Release what THIS exit held. Manual holds are somebody's deliberate
+    # decision and are left exactly where they are.
+    #
+    # A payslip still priced around the old last working day is NOT released:
+    # the hold is the only thing standing between a wrong figure and the next
+    # bank file, and this endpoint deliberately does not rewrite payroll. Those
+    # stay held and are named in the response, so the salary moves once HR has
+    # re-run the month.
+    from routes.payroll import release_exit_holds
+    released, kept_held = await release_exit_holds(
+        emp_id, f"Resignation revoked: {reason}", actor,
+        since=snap.get("taken_at") or exit_req.get("created_at"),
+        skip_ids=stale_ids)
+    if kept_held and stale_ids:
+        # Otherwise the Payroll page keeps saying "held — exit in progress" for
+        # an exit that no longer exists, and releasing it counts as overriding a
+        # hold that is not ready. Marking it eligible says what it now is: a
+        # correct hold waiting on a recalculation, releasable without a
+        # judgement call once the month is re-run.
+        await db.payroll_records.update_many(
+            {"_id": {"$in": stale_ids}, "on_hold": True},
+            {"$set": {
+                "hold_reason": ("Resignation revoked — this payslip was worked out around "
+                                "the old last working day. Re-run Recalculate LOP for this "
+                                "month, then release."),
+                "hold_eligible_at": now,
+                "hold_eligible_by": actor,
+            }},
+        )
+
+    timeline = exit_req.get("timeline", [])
+    add_timeline_event(timeline, "reverted", current_user.get("name", "Admin"),
+                       "Resignation revoked by HR. The employee stays.",
+                       comment=reason,
+                       comment_author_id=actor)
+    await db.exit_requests.update_one(
+        {"_id": oid},
+        {"$set": {
+            # The same field the redaction rules already strip from everyone
+            # outside HR and Management — HR's wording here is not for the
+            # employee or their approvers to read.
+            "revert_reason": reason,
+            "timeline": timeline,
+            "updated_at": now,
+        }},
+    )
+    return {
+        "employee_id": emp_id,
+        "revoked_from_status": status,
+        # "restored" | "nothing_to_restore" | "already_clean" | "employee_missing"
+        "outcome": outcome,
+        "employee_restored": outcome == "restored",
+        "restored_status": restored_status,
+        "used_snapshot": snap.get("employee_status") in ("active", "probation"),
+        "login_restored": login_restored,
+        "holds_released": released,
+        "holds_kept": kept_held,
+        "payroll_needs_recalc": stale_periods,
+        "payroll_already_paid_short": paid_short,
+        "reverted_by": actor,
+        "reverted_at": now,
     }
 
 

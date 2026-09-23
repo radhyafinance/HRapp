@@ -116,6 +116,62 @@ async def hold_payroll_for_exit(employee_id: str, reason: str, actor: str) -> in
     return res.modified_count
 
 
+async def release_exit_holds(employee_id: str, reason: str, actor: str,
+                             since: str = None, skip_ids=()) -> tuple:
+    """Release the holds an exit placed, because the exit is being revoked.
+
+    Returns `(released, kept_held)`. `since` limits it to holds placed at or
+    after that ISO timestamp — this exit's, not an older one's. `skip_ids` are
+    records the caller wants left held: a payslip still built around the old
+    last working day, where the hold is the only thing stopping a wrong figure
+    reaching the bank.
+
+    Only `hold_source == "exit"` records, and only unpaid ones. A MANUAL hold is
+    somebody's separate decision — an advance being recovered, a dispute — and
+    survives the revoke untouched; sweeping it away here would release money
+    nobody agreed to release.
+
+    The opposite risk is the reason this exists at all: a revoked resignation
+    that leaves the holds on stops the salary of someone who never left, and
+    nothing on the Payroll page would say why.
+    """
+    q = {"employee_id": employee_id, "on_hold": True,
+         # A record held before hold_source existed has none — and pay_to_dict
+         # shows exactly those as exit holds, so filtering on the stored value
+         # alone would leave a record the Payroll page calls an exit hold held
+         # for ever, with the revoke reporting "no records were on hold".
+         "hold_source": {"$in": ["exit", None]},
+         "status": {"$in": _UNPAID_STATUSES}}
+    if since:
+        # Only what THIS exit held. A rehired employee can still be carrying an
+        # unpaid hold from a previous exit years ago; releasing that as a side
+        # effect of today's revoke pays out money nobody decided to pay.
+        #
+        # A record with NO held_at is the pre-2026 shape — the same records that
+        # have no hold_source, which the filter above deliberately includes.
+        # Requiring held_at as well would take every one of them straight back
+        # out, leaving a hold the Payroll page calls an exit hold stuck for ever
+        # while the revoke reports nothing was held.
+        q["$or"] = [{"held_at": {"$gte": since}}, {"held_at": {"$exists": False}}]
+    rows = await db.payroll_records.find(q, {"_id": 1}).to_list(500)
+    skip = {str(i) for i in (skip_ids or [])}
+    ids = [r["_id"] for r in rows if str(r["_id"]) not in skip]
+    kept = len(rows) - len(ids)
+    if not ids:
+        return 0, kept
+    res = await db.payroll_records.update_many(
+        {"_id": {"$in": ids}},
+        {"$set": {
+            "on_hold": False,
+            "released_at": datetime.now(timezone.utc).isoformat(),
+            "released_by": actor,
+            "release_note": reason,
+            "release_override": False,
+        }},
+    )
+    return res.modified_count, kept
+
+
 async def mark_exit_holds_eligible(employee_id: str, actor: str) -> int:
     """Mark an employee's held records as ready to release.
 
