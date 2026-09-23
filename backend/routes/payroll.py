@@ -158,12 +158,87 @@ def _is_payslip_visible_to_employee(record: dict) -> bool:
     return date.today() >= date(next_y, next_m, 1)
 
 
+# ── EPF rate and contribution ceiling, BY PAYROLL PERIOD ────────────────────
+# The statutory wage ceiling rose from 15,000 to 25,000 with effect from
+# September 2026, taking the monthly contribution cap from 1,800 to 3,000.
+#
+# Dated, not a pair of constants, because three paths re-price months that have
+# already been remitted to EPFO: a re-run after attendance corrections, HR
+# editing LOP on an old payslip, and the shortfall report re-scoring history. A
+# bare constant would make all three claim August should have deducted 3,000.
+#
+# Newest first. Periods are "YYYY-MM", which compares correctly as text.
+_UNSET = object()          # "no period given", which is not the same as a bad one
+_EPF_RULES = (
+    ("2026-09", 0.12, 3000),
+    ("", 0.12, 1800),          # the empty string sorts below every real period
+)
+
+
+def _this_month_ist() -> str:
+    """The current payroll month in IST, as "YYYY-MM".
+
+    The server runs on UTC (see IST_OFFSET in server.py). For the 5.5 hours
+    after midnight IST on the 1st, a UTC date still reads as the previous
+    month — which on a changeover day is the difference between 1,800 and
+    3,000 for anyone whose salary is being set at 6 am.
+    """
+    return (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).strftime("%Y-%m")
+
+
+def _is_period(p) -> bool:
+    """A usable "YYYY-MM".
+
+    The month is range-checked, not just counted: "2026-13" is seven digits
+    with a dash and sorts ABOVE "2026-09", so a shape-only test would hand a
+    corrupt record the newest rule — the one direction that costs an employee
+    money on a month already remitted.
+    """
+    p = str(p or "")
+    if not (len(p) == 7 and p[4] == "-" and p[:4].isdigit() and p[5:].isdigit()):
+        return False
+    return 2000 <= int(p[:4]) <= 2999 and 1 <= int(p[5:]) <= 12
+
+
+def _epf_rule(period=_UNSET):
+    """(rate, cap) in force for a "YYYY-MM" payroll period.
+
+    WHICH WAY AN UNUSABLE PERIOD FALLS matters more than it looks, and the two
+    cases pull opposite ways:
+
+    * NO period argument at all — nobody is pricing a past month, they are
+      pricing something now (a salary being set on screen). Today's rule.
+    * A period was passed but is missing or malformed — that value came out of
+      a stored payroll record, so it is BAD DATA about a month that has already
+      been paid and remitted. Today's rule would re-price it upward: 1,200 extra
+      taken from an employee for an August that was remitted at 1,800. The
+      oldest rule is the only safe answer, and the shortfall report refuses to
+      score these records at all rather than guess.
+    """
+    if period is _UNSET:
+        p = _this_month_ist()
+    elif _is_period(period):
+        p = str(period)
+    else:
+        return _EPF_RULES[-1][1], _EPF_RULES[-1][2]
+    for start, rate, cap in _EPF_RULES:
+        if p >= start:
+            return rate, cap
+    return _EPF_RULES[-1][1], _EPF_RULES[-1][2]
+
+
 def calc_payroll_components(emp: dict, days_in_month: int = 30, lop_days: float = 0.0,
-                            non_employed_days: float = 0.0):
+                            non_employed_days: float = 0.0, period=_UNSET):
     """Compute salary components.
 
     Args:
         days_in_month: actual calendar days in the payroll month (28-31).
+        period: the payroll month as "YYYY-MM". Decides which EPF rule applies,
+            so an old month re-run today still prices at the ceiling that was
+            remitted for it. Omitted means "price at today's rule"; passed but
+            unusable means a stored record with a bad period, which prices at
+            the oldest rule rather than re-charging a remitted month. See
+            _epf_rule.
         lop_days: Loss-of-Pay days — days the employee WAS employed but is not
             being paid for (absent, unapproved).
         non_employed_days: days in this month before joining or after the last
@@ -202,18 +277,19 @@ def calc_payroll_components(emp: dict, days_in_month: int = 30, lop_days: float 
     # EPF: 12% of the basic ACTUALLY EARNED this month, capped at EPF_CAP.
     #
     # The cap is on the CONTRIBUTION, not on the wage, and is NOT pro-rated. It
-    # therefore only bites once earned basic passes 15,000 (12% of which is the
-    # cap). Someone on 21,100 basic who worked 5 of 31 days earned 3,403.23, is
-    # nowhere near the ceiling, and contributes the full 12% of that — 408.39.
+    # therefore only bites once earned basic passes the wage ceiling (12% of
+    # which is the cap): 15,000 up to August 2026, 25,000 from September.
+    # Someone on 31,100 basic who worked 5 of 31 days earned 5,016.13, is
+    # nowhere near the ceiling, and contributes the full 12% of that — 601.94.
     #
     # `salary.epf_employee` on the employee master is an ENROLMENT FLAG only:
     # > 0 means PF-covered, blank or 0 means exempt. Its VALUE is deliberately
-    # not used as the amount. HR is instructed to pre-cap it at 1,800, which
-    # destroys the 12% for anyone whose basic exceeds 15,000 — reading it back
-    # would then cap an already-capped number and under-deduct every LOP month.
-    # Deriving from basic cannot drift out of sync with the salary either.
-    EPF_CAP = 1800
-    EPF_RATE = 0.12
+    # not used as the amount. HR is instructed to pre-cap it, which destroys the
+    # 12% for anyone whose basic exceeds the ceiling — reading it back would
+    # then cap an already-capped number and under-deduct every LOP month.
+    # Deriving from basic cannot drift out of sync with the salary either, and
+    # survives a ceiling change without HR retyping every employee.
+    EPF_RATE, EPF_CAP = _epf_rule(period)
     try:
         enrolled = float(salary.get("epf_employee") or 0) > 0
     except (TypeError, ValueError):
@@ -550,7 +626,8 @@ async def process_payroll(data: ProcessPayrollRequest, current_user: dict = Depe
         lwd_str = emp.get("last_working_day") or None
         lop_days, non_employed_days = await calculate_lop_days(
             emp_id, data.year, data.month, joining_date_str, lwd_str)
-        components = calc_payroll_components(emp, days_in_month, lop_days, non_employed_days)
+        components = calc_payroll_components(emp, days_in_month, lop_days,
+                                             non_employed_days, period)
 
         # An accepted resignation means the salary is held from the moment of
         # acceptance through to clearance.
@@ -777,7 +854,8 @@ async def update_payroll(record_id: str, data: PayrollUpdateRequest, current_use
                             "salary": basis} if isinstance(basis, dict) and basis else emp)
         if emp_for_pricing:
             new_components = calc_payroll_components(
-                emp_for_pricing, days_in_month, lop, non_employed)
+                emp_for_pricing, days_in_month, lop, non_employed,
+                record.get("period"))
             update_doc.update(new_components)
         elif emp is None:
             raise HTTPException(status_code=409, detail=(
@@ -1722,7 +1800,8 @@ async def _score_lop_recalc(period: str) -> dict:
         priced_on = "run" if basis else "current"
         emp_for_pricing = {"designation": r.get("designation") or emp.get("designation"),
                            "salary": basis} if basis else emp
-        comp = calc_payroll_components(emp_for_pricing, days_in_month, lop_new, non_emp_new)
+        comp = calc_payroll_components(emp_for_pricing, days_in_month, lop_new,
+                                       non_emp_new, r.get("period"))
 
         tds = float(r.get("tds") or 0)
         other_ded = float(r.get("other_deductions") or 0)
@@ -1838,17 +1917,24 @@ async def payroll_epf_shortfall(period: str = None, current_user: dict = Depends
     """Existing payroll records whose EPF was computed under the old rule.
 
     Read-only — nothing is recalculated or written. Every record is re-scored
-    against the correct rule (12% of the basic actually earned, capped at 1,800
-    on the contribution) using the record's OWN stored basic, not the employee
-    master, so a salary revision since the run cannot distort the comparison.
+    against the correct rule for ITS OWN period (12% of the basic actually
+    earned, capped at 1,800 up to August 2026 and 3,000 from September), using
+    the record's OWN stored basic, not the employee master, so a salary revision
+    since the run cannot distort the comparison. Scoring by period is what keeps
+    a correct August payslip out of this list after the ceiling rose; a record
+    whose period is missing or malformed is reported under `unscored` instead of
+    being guessed at.
 
     Only records that are genuinely wrong appear. Full-attendance months are
     unaffected, and so is anyone whose master held the true uncapped 12% — for
     them the old formula already produced the right number.
 
-    The error is one-directional: the old rule capped an already-capped figure,
-    so it always UNDER-deducted. Every row here is money short-remitted to EPFO
-    on both the employee and the employer side.
+    `rows` is under-deduction only — money short-remitted to EPFO on both sides,
+    which is what the old capped-twice rule always produced. A record charged
+    MORE than its period's rule is a different animal (a rolled-back deploy, a
+    hand-edited row) and is listed separately under `over_deducted`: summing the
+    two directions into one headline would net a shortfall against an excess and
+    tell HR to remit a number that is true of neither.
     """
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
@@ -1856,17 +1942,36 @@ async def payroll_epf_shortfall(period: str = None, current_user: dict = Depends
     q = {"period": period} if period else {}
     records = await db.payroll_records.find(q).sort("period", -1).to_list(20000)
 
-    rows = []
+    rows, unscored, over = [], [], []
     for r in records:
         stored = round(float(r.get("epf_employee") or 0), 2)
         # 0 means the employee was exempt at process time — not a shortfall.
         if stored <= 0:
             continue
+        # Which rule applied depends entirely on WHICH MONTH this is. A record
+        # that cannot say is listed separately for a human, never scored: at
+        # today's rule every legacy 1,800 record would be reported as 1,200
+        # short, which is an instruction to over-remit for a month that was
+        # correct. Listing them also keeps one bad row from sorting a None.
+        if not _is_period(r.get("period")):
+            unscored.append({
+                "record_id": str(r.get("_id")),
+                "employee_id": r.get("employee_id"),
+                "employee_name": r.get("employee_name", ""),
+                "period": r.get("period"),
+                "status": r.get("status"),
+                "epf_charged": stored,
+                "reason": "This payslip has no usable period, so the EPF ceiling "
+                          "in force for it cannot be determined.",
+            })
+            continue
         basic_paid = float(r.get("basic") or 0)
-        correct = round(min(basic_paid * 0.12, 1800), 2)
+        rate, cap = _epf_rule(r.get("period"))
+        correct = round(min(basic_paid * rate, cap), 2)
         if correct == stored:
             continue
-        rows.append({
+        target = rows if correct > stored else over
+        target.append({
             "record_id": str(r.get("_id")),
             "employee_id": r.get("employee_id"),
             "employee_name": r.get("employee_name", ""),
@@ -1894,8 +1999,15 @@ async def payroll_epf_shortfall(period: str = None, current_user: dict = Depends
         "shortfall_total": round(sum(r["shortfall_total"] for r in rows), 2),
         "unpaid_records": sum(1 for r in rows if r["status"] != "paid"),
         "paid_records": sum(1 for r in rows if r["status"] == "paid"),
-        "by_period": sorted(by_period.values(), key=lambda x: x["period"], reverse=True),
+        "by_period": sorted(by_period.values(), key=lambda x: x["period"] or "", reverse=True),
         "rows": rows,
+        # Records that could not be dated, so were not scored either way.
+        "unscored_records": len(unscored),
+        "unscored": unscored,
+        # Charged MORE than the rule for that period — never added to the
+        # shortfall totals above.
+        "over_deducted_records": len(over),
+        "over_deducted": over,
     }
 
 

@@ -109,8 +109,8 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 
 ## Payroll Formula
 - Gross = Basic + HRA + Special + Canteen + Conveyance
-- EPF Employee = manual input (`epf_employee` field on employee); falls back to 12% of Basic if not set
-- EPF Employer = 12% of Basic
+- EPF Employee = 12% of the Basic actually earned that month, capped at the monthly ceiling (₹1,800 up to Aug 2026; **₹3,000 from Sept 2026**, when the wage ceiling rose from ₹15,000 to ₹25,000). The `epf_employee` field on the employee is an ENROLMENT FLAG only — any value > 0 enrols, 0/blank is exempt; its value is never the deduction. The rule is dated (`_EPF_RULES` in `backend/routes/payroll.py`), so re-running an old month prices it at the ceiling that was actually remitted.
+- EPF Employer = same as EPF Employee (same basis, same cap)
 - ESIC Employee = 0.75% of **Basic** (if Basic ≤ ₹21,000)
 - ESIC Employer = 3.25% of **Basic** (if Basic ≤ ₹21,000)
 - Monthly Gratuity provision = (Basic × 15) / (26 × 12)   ← monthly accrual; ×12 = annual gratuity per year of service
@@ -119,7 +119,7 @@ HR management system for Radhya Micro Finance Private Limited (NBFC-MFI) with 40
 
 ### ✅ Phase 3 (Feb 2026)
 26. **Payslip PDF (ReportLab)** - `GET /api/payroll/{record_id}/payslip/pdf` returns ink-friendly payslip with Radhya logo and proper ₹ symbol via FreeSans font (`/app/backend/services/payslip_pdf.py`).
-27. **Salary Breakup Form (Manual + Auto)** - Shared `SalaryBreakupForm.js` used in Add Candidate, Convert-to-Employee, and Edit Employee. Manual: CTC, Basic, HRA, Special, Canteen, Conveyance, EPF (employee). Auto-computed: ESIC employee/employer (0.75%/3.25% of **Basic**, only when Basic ≤ ₹21,000), monthly Gratuity provision = `Basic × 15 ÷ 26 ÷ 12`, EPF Employer (12% of Basic), Gross, Net Take-Home, Monthly CTC. Backend `payroll.py` keeps in lock-step.
+27. **Salary Breakup Form (Manual + Auto)** - Shared `SalaryBreakupForm.js` used in Add Candidate, Convert-to-Employee, and Edit Employee. Manual: CTC, Basic, HRA, Special, Canteen, Conveyance, EPF (employee). Auto-computed: ESIC employee/employer (0.75%/3.25% of **Basic**, only when Basic ≤ ₹21,000), monthly Gratuity provision = `Basic × 15 ÷ 26 ÷ 12`, EPF Employer (matches the employee side), Gross, Net Take-Home, Monthly CTC. Backend `payroll.py` keeps in lock-step — including the dated EPF ceiling table, which exists in both files.
 28. **Payroll Adjustments + Mark as Paid** - Payslip modal exposes editable TDS, Other Deductions, Other Additions, Remarks for HR. Save → `PUT /api/payroll/{id}` (status flips draft → processed). Mark as Paid → `POST /api/payroll/{id}/finalize` (status flips to paid, locks record).
 
 35. **Payroll Deductions Column + LOP-Day Pro-rata (Feb 2026)** - 

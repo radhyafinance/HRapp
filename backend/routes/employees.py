@@ -644,8 +644,8 @@ async def download_template(current_user: dict = Depends(get_current_user)):
         "4. Leave 'Employee ID' blank to auto-assign the next RMF number.",
         "5. Salary values are per month unless otherwise stated.",
         "6. 'EPF Employee' enrols the employee in PF — enter any amount above 0 to enrol, 0 or blank if exempt.",
-        "   The deduction itself is always computed as 12% of Basic (max ₹1,800), so the figure you enter here",
-        "   does not change what is deducted.",
+        "   The deduction itself is always computed as 12% of Basic, capped at ₹3,000 a month",
+        "   (₹1,800 for months up to August 2026), so the figure you enter here does not change it.",
         "7. ESIC (both sides) and Gratuity are auto-computed by the system — do not fill them here.",
         "8. UAN = 12-digit Universal Account Number. ESI = 17-digit ESIC number. Leave blank if not yet issued.",
         "9. Save as .xlsx and upload on the Employees page.",
@@ -1426,7 +1426,8 @@ async def bulk_salary_template(current_user: dict = Depends(get_current_user)):
         "3. Leave a cell blank / 0 to keep the existing value unchanged.",
         "4. CTC Monthly: if left blank, the system will auto-compute it from gross salary.",
         "5. EPF Employee: PF enrolment only — any value above 0 enrols, 0 or blank means exempt. The deduction",
-        "   is always computed as 12% of Basic (max ₹1,800), so this figure does not change what is deducted.",
+        "   is always computed as 12% of Basic, capped at ₹3,000 a month (₹1,800 for months up to",
+        "   August 2026), so this figure does not change what is deducted.",
         "6. Save as .xlsx and upload via 'Upload Salary Revision' on the Employees page.",
     ]
     for i, line in enumerate(notes, start=2):

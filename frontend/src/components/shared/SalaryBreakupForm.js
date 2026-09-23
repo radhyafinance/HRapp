@@ -16,11 +16,22 @@ export function SalaryBreakupForm({ form, onChange }) {
   const special  = parseFloat(form.special_allowance) || 0;
   const canteen  = parseFloat(form.canteen_allowance) || 0;
   const conv     = parseFloat(form.conveyance_allowance) || 0;
-  // EPF is 12% of Basic capped at ₹1,800 — the typed field only decides whether
-  // the employee is enrolled at all (>0 enrolled, blank/0 exempt). Its value is
-  // NOT the deduction; payroll derives the amount from Basic so the two can
-  // never disagree. See calc_payroll_components in backend/routes/payroll.py.
-  const EPF_CAP    = 1800;
+  // EPF is 12% of Basic capped at the monthly ceiling — the typed field only
+  // decides whether the employee is enrolled at all (>0 enrolled, blank/0
+  // exempt). Its value is NOT the deduction; payroll derives the amount from
+  // Basic so the two can never disagree. See calc_payroll_components in
+  // backend/routes/payroll.py, which holds the same dated table: this form
+  // prices what someone would be paid NOW, so it reads the rule by today's
+  // month. Leaving one side behind is how a salary letter comes to promise a
+  // take-home the payslip then contradicts.
+  const EPF_RULES  = [["2026-09", 3000], ["", 1800]];
+  // IST, not the browser's zone and not UTC. toISOString() alone reads as the
+  // previous month for the first 5.5 hours of every 1st in India — on a
+  // changeover day that is the difference between ₹1,800 and ₹3,000 on a salary
+  // being set at 6 am.
+  const thisMonth  = new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().slice(0, 7);
+  const EPF_CAP    = (EPF_RULES.find(([from]) => thisMonth >= from) || ["", 1800])[1];
+  const EPF_CAP_TXT = `₹${EPF_CAP.toLocaleString("en-IN")}`;
   const epfRaw     = form.epf_employee;
   const epfExempt  = epfRaw === null || epfRaw === undefined || epfRaw === "" || parseFloat(epfRaw) === 0;
   const epf        = epfExempt ? 0 : Math.min(basic > 0 ? Math.round(basic * 0.12) : 0, EPF_CAP);
@@ -68,7 +79,7 @@ export function SalaryBreakupForm({ form, onChange }) {
 
       <p className="text-[10px] text-slate-500 italic -mt-2" data-testid="sal-epf-note">
         EPF enrolment: any value above 0 enrols the employee. The deduction itself is
-        always computed as 12% of Basic capped at ₹1,800 — and pro-rated for LOP —
+        always computed as 12% of Basic capped at {EPF_CAP_TXT} — and pro-rated for LOP —
         so the figure typed here does not change what is deducted.
       </p>
 
@@ -86,14 +97,14 @@ export function SalaryBreakupForm({ form, onChange }) {
 
           <div className="space-y-1.5">
             <div className="flex justify-between">
-              <span className="text-slate-500">EPF — Employee (12% of Basic, max ₹1,800)</span>
+              <span className="text-slate-500">EPF — Employee (12% of Basic, max {EPF_CAP_TXT})</span>
               <span className={`font-medium ${epfExempt ? "text-slate-400 italic" : "text-red-600"}`}
                     data-testid="sal-epf-employee-computed">
                 {epfExempt ? "Exempt" : `-₹${epf.toLocaleString("en-IN")}`}
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-slate-500">EPF — Employer (12% of Basic, max ₹1,800)</span>
+              <span className="text-slate-500">EPF — Employer (12% of Basic, max {EPF_CAP_TXT})</span>
               <span className={`font-medium ${epfExempt ? "text-slate-400 italic" : "text-orange-600"}`}>
                 {epfExempt ? "Exempt" : `₹${epfEr.toLocaleString("en-IN")}`}
               </span>
