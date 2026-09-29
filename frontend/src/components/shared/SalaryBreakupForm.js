@@ -3,13 +3,15 @@ import React from "react";
 /**
  * Reusable salary breakup form.
  * Manual fields:   CTC, Basic, HRA, Special, Canteen, Conveyance, EPF (employee)
- * Auto-computed:   ESIC employee (0.75%), ESIC employer (3.25%), Gratuity (Basic×15/26/12)
+ * Auto-computed:   ESIC employee (0.75%), ESIC employer (3.25%), Gratuity (Basic×15/26/12, none for Directors)
  *
  * Props:
- *   form      — object containing the salary field keys
- *   onChange  — (fieldKey, value) callback
+ *   form        — object containing the salary field keys
+ *   onChange    — (fieldKey, value) callback
+ *   designation — optional; falls back to form.designation. Needed only where
+ *                 the form object does not carry one (the joining-kit convert).
  */
-export function SalaryBreakupForm({ form, onChange }) {
+export function SalaryBreakupForm({ form, onChange, designation }) {
   const ctc      = parseFloat(form.ctc_monthly)       || 0;
   const basic    = parseFloat(form.basic)              || 0;
   const hra      = parseFloat(form.hra)               || 0;
@@ -41,7 +43,13 @@ export function SalaryBreakupForm({ form, onChange }) {
   const esicEmp        = esicApplicable ? Math.round(basic * 0.0075) : 0;
   const esicEr         = esicApplicable ? Math.round(basic * 0.0325) : 0;
   const epfEr          = epf;  // employer matches the employee side
-  const gratuity       = basic > 0 ? Math.round((basic * 15) / 26 / 12) : 0;
+  // Directors carry no gratuity — the same rule as calc_payroll_components and
+  // routes/gratuity.py, matched the same way (designation, trimmed,
+  // case-insensitive). Without it this screen added a provision payroll never
+  // charges, inflated the computed CTC by it, and then flagged a director's
+  // correct CTC as a mismatch.
+  const isDirector     = String(designation ?? form.designation ?? "").trim().toLowerCase() === "director";
+  const gratuity       = isDirector || basic <= 0 ? 0 : Math.round((basic * 15) / 26 / 12);
   const totalDeduction = epf + esicEmp;
   const netTakeHome    = Math.round(gross - totalDeduction);
   const totalCostToCompany = Math.round(gross + epfEr + esicEr + gratuity);
@@ -123,7 +131,10 @@ export function SalaryBreakupForm({ form, onChange }) {
             </div>
             <div className="flex justify-between">
               <span className="text-slate-500">Gratuity provision (Basic × 15 ÷ 26 ÷ 12)</span>
-              <span className="font-medium text-orange-600">₹{gratuity.toLocaleString("en-IN")}/mo</span>
+              <span className={`font-medium ${isDirector ? "text-slate-400 italic" : "text-orange-600"}`}
+                    data-testid="sal-gratuity-computed">
+                {isDirector ? "Not applicable (Director)" : `₹${gratuity.toLocaleString("en-IN")}/mo`}
+              </span>
             </div>
           </div>
 

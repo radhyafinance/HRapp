@@ -240,6 +240,10 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
             {/* Salary breakup */}
             <SalaryBreakupForm
               form={convertForm}
+              // The convert form carries no designation; the candidate's
+              // position becomes it (see convert in candidates.py), and the
+              // breakup needs it to leave gratuity out for a Director.
+              designation={candidate.position}
               onChange={(key, val) => setConvertForm(prev => ({ ...prev, [key]: val }))}
             />
 
