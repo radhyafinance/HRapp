@@ -16,6 +16,9 @@ import tempfile
 import json
 import re
 
+from services.kyc_ids import (aadhaar_is_valid, pan_is_valid, classify_aadhaar, masked_flag,
+                              AADHAAR_MESSAGES, AADHAAR_PROMPT_MASK_RULE)
+
 router = APIRouter()
 
 
@@ -35,6 +38,40 @@ KYC_REQUIRED_FIELDS = [
     ("pan_number", "PAN number"),
     ("address", "Address"),
 ]
+
+async def _check_kyc_numbers(fields: dict, exclude_candidate_id: Optional[str] = None) -> dict:
+    """Validate, normalise and de-duplicate an Aadhaar / PAN about to be stored.
+
+    Every path that saves one goes through here — create, edit, and the Fix KYC
+    apply — so a typo, a masked number or a number already used by another
+    employee or candidate is refused at the server, not just on one screen.
+    Empty values pass through untouched (clearing is allowed).
+    """
+    out = dict(fields)
+    if "aadhaar_number" in out and str(out["aadhaar_number"] or "").strip():
+        num = re.sub(r"\D", "", str(out["aadhaar_number"]))
+        if not aadhaar_is_valid(num):
+            raise HTTPException(status_code=422, detail=(
+                "That isn't a valid Aadhaar number. It must be 12 digits, cannot start with 0 or 1, "
+                "and its last digit is a check digit — please re-check it against the card."))
+        hit = await check_unique_field("aadhaar_number", num, exclude_candidate_id=exclude_candidate_id)
+        if hit.get("exists"):
+            raise HTTPException(status_code=409, detail=(
+                f"This Aadhaar number is already recorded for {hit.get('conflict_name')} "
+                f"({hit.get('conflict_in')})."))
+        out["aadhaar_number"] = num
+    if "pan_number" in out and str(out["pan_number"] or "").strip():
+        pan = re.sub(r"[^A-Z0-9]", "", str(out["pan_number"]).upper())
+        if not pan_is_valid(pan):
+            raise HTTPException(status_code=422, detail=(
+                "That isn't a valid PAN — it must be 5 letters, 4 digits and a letter (e.g. ABCDE1234F)."))
+        hit = await check_unique_field("pan_number", pan, exclude_candidate_id=exclude_candidate_id)
+        if hit.get("exists"):
+            raise HTTPException(status_code=409, detail=(
+                f"This PAN is already recorded for {hit.get('conflict_name')} ({hit.get('conflict_in')})."))
+        out["pan_number"] = pan
+    return out
+
 
 async def kyc_gate_reason(cand: dict, cand_id: str, docs: Optional[dict] = None) -> Optional[str]:
     """Return a human-readable reason if the candidate is NOT KYC-complete, else None.
@@ -56,7 +93,17 @@ async def kyc_gate_reason(cand: dict, cand_id: str, docs: Optional[dict] = None)
         return "Upload these documents first: " + ", ".join(missing_docs) + "."
     missing_fields = [label for key, label in KYC_REQUIRED_FIELDS if not str(cand.get(key) or "").strip()]
     if missing_fields:
-        return "Complete these details (scan Aadhaar/PAN via OCR, or fill manually) first: " + ", ".join(missing_fields) + "."
+        return ("Complete these details first: " + ", ".join(missing_fields) + ". "
+                "Use Fix KYC details under KYC Documents below — replace and re-scan the "
+                "documents, or enter the details by hand.")
+    # Present is not the same as usable. A masked "XXXXXXXX1234" saved before
+    # these checks existed would otherwise unlock a joining kit printed with it.
+    if not aadhaar_is_valid(cand.get("aadhaar_number")):
+        return ("The Aadhaar number on file isn't a valid 12-digit Aadhaar number. Use Fix KYC "
+                "details under KYC Documents below to replace it.")
+    if not pan_is_valid(cand.get("pan_number")):
+        return ("The PAN on file isn't valid. Use Fix KYC details under KYC Documents below "
+                "to replace it.")
     return None
 
 
@@ -225,8 +272,20 @@ async def check_unique_field(
     elif field == "pan_number":
         val = val.upper()
 
+    # Aadhaar and PAN belong to a PERSON, and people come back: a rejected
+    # candidate re-applies, an ex-employee is rehired. Their old record must not
+    # block the new one — nothing can clear a number from it, so a returning
+    # person whose scan failed could never be fixed. Only people still here
+    # (live candidates, current staff) count as a clash. Mobile and email keep
+    # their existing, stricter rule.
+    identity = field in ("aadhaar_number", "pan_number")
+    if field == "aadhaar_number":
+        val = re.sub(r"\s", "", val)
+
     # Check employees first
     emp_q = {field: val}
+    if identity:
+        emp_q["status"] = {"$nin": ["exited", "terminated", "resigned"]}
     if exclude_employee_id:
         emp_q["employee_id"] = {"$ne": exclude_employee_id}
     emp = await db.employees.find_one(emp_q, {"_id": 0, "employee_id": 1, "first_name": 1, "last_name": 1})
@@ -238,6 +297,8 @@ async def check_unique_field(
     # (employees converted from candidates share the same mobile/email)
     if not exclude_employee_id:
         cand_q = {field: val}
+        if identity:
+            cand_q["status"] = {"$nin": ["rejected", "converted"]}
         if exclude_candidate_id:
             try:
                 cand_q["_id"] = {"$ne": ObjectId(exclude_candidate_id)}
@@ -319,15 +380,15 @@ async def my_interviews(
 async def create_candidate(data: CandidateCreate, current_user: dict = Depends(get_current_user)):
     if current_user.get("role") not in ["hr_admin", "management"]:
         raise HTTPException(status_code=403, detail="Access denied")
-    payload = data.model_dump()
+    payload = await _check_kyc_numbers(data.model_dump())
     # Normalise interviewer_ids — drop empties and dedupe
     ivr_ids = [i.strip() for i in (payload.get("interviewer_ids") or []) if i and i.strip()]
     payload["interviewer_ids"] = list(dict.fromkeys(ivr_ids))  # dedupe preserving order
     doc = {
         **payload,
         "documents_checklist": {
-            "aadhaar": bool(data.aadhaar_number),
-            "pan": bool(data.pan_number),
+            "aadhaar": bool(payload.get("aadhaar_number")),
+            "pan": bool(payload.get("pan_number")),
             "photo": False,
             "educational_certificates": False,
             "previous_exp_letter": False,
@@ -365,6 +426,24 @@ async def update_candidate(cand_id: str, data: CandidateUpdate, current_user: di
         raise HTTPException(status_code=404, detail="Candidate not found")
 
     update_data = {k: v for k, v in data.model_dump().items() if v is not None}
+    changed = {k: v for k, v in update_data.items()
+               if k in ("aadhaar_number", "pan_number") and v != existing.get(k)}
+    # A rejected record doesn't count as a clash (see check_unique_field), so a
+    # new candidate may since have taken its Aadhaar or PAN. Undoing the
+    # rejection would then leave two live records with one person's numbers —
+    # re-check them on the way back in.
+    reviving = (existing.get("status") in ("rejected",)
+                and update_data.get("status") not in (None, "rejected"))
+    if reviving:
+        for k in ("aadhaar_number", "pan_number"):
+            if k not in changed and str(existing.get(k) or "").strip():
+                hit = await check_unique_field(k, str(existing[k]), exclude_candidate_id=cand_id)
+                if hit.get("exists"):
+                    label = "Aadhaar number" if k == "aadhaar_number" else "PAN"
+                    raise HTTPException(status_code=409, detail=(
+                        f"This candidate can't be brought back: their {label} is now recorded for "
+                        f"{hit.get('conflict_name')} ({hit.get('conflict_in')})."))
+    update_data.update(await _check_kyc_numbers(changed, exclude_candidate_id=cand_id))
     if "interviewer_ids" in update_data:
         cleaned = [i.strip() for i in update_data["interviewer_ids"] if i and i.strip()]
         update_data["interviewer_ids"] = list(dict.fromkeys(cleaned))
@@ -450,15 +529,16 @@ async def ocr_aadhaar_preview(data: AadhaarOCRRequest, current_user: dict = Depe
         '"dob":"date of birth in DD/MM/YYYY (or YOB if only year is printed)",'
         '"gender":"Male/Female/Other",'
         '"father_or_husband_name":"S/O or D/O or W/O name (parent or husband as printed; empty string if absent)",'
-        '"aadhaar_number":"full 12-digit Aadhaar number with no spaces",'
+        '"aadhaar_number":"the Aadhaar number exactly as printed (12 digits, or the masked form if masked)",'
+        + AADHAAR_PROMPT_MASK_RULE + ','
         '"address":"complete address as printed (single line, comma separated, do not include pincode)",'
         '"city":"city / district / village name only",'
         '"state":"state name only",'
         '"pincode":"6-digit pincode only"'
         "}\n"
-        "Rules: If a field is absent, use an empty string. Never invent values. "
-        "The Aadhaar number is 12 digits, often shown as 'XXXX XXXX XXXX' on the front. "
-        "Address, S/O & pincode are usually on the back side."
+        "Rules: If a field is absent, use an empty string. Never invent values, and never fill in "
+        "masked digits. The Aadhaar number is 12 digits, usually shown in three groups of four on the "
+        "front. Address, S/O & pincode are usually on the back side."
     )
     try:
         extracted = await _gemini_vision_extract(prompt, files)
@@ -475,10 +555,14 @@ async def ocr_aadhaar_preview(data: AadhaarOCRRequest, current_user: dict = Depe
         return v.strip()
     for k in list(extracted.keys()):
         extracted[k] = _clean(extracted[k])
-    aadhaar_no = (extracted.get("aadhaar_number") or "")
-    aadhaar_no = re.sub(r"\D", "", aadhaar_no)
-    if len(aadhaar_no) == 12:
-        extracted["aadhaar_number"] = aadhaar_no
+    # Only a VALID number survives. Before this, anything that was not exactly
+    # 12 digits was passed back as the model wrote it — "XXXXXXXX1234" included —
+    # and the Add Candidate form saved it as the Aadhaar number.
+    number, status = classify_aadhaar(extracted.get("aadhaar_number"), masked_flag(extracted))
+    extracted["aadhaar_number"] = number
+    extracted["aadhaar_status"] = status
+    extracted["aadhaar_message"] = AADHAAR_MESSAGES[status]
+    extracted.pop("aadhaar_masked", None)
     pincode = re.sub(r"\D", "", extracted.get("pincode") or "")
     if len(pincode) == 6:
         extracted["pincode"] = pincode
@@ -511,8 +595,8 @@ async def ocr_pan_preview(data: PANOCRRequest, current_user: dict = Depends(get_
         raise HTTPException(status_code=500, detail=f"OCR failed: {msg}")
     pan_no = (extracted.get("pan_number") or "").upper().strip()
     pan_no = re.sub(r"[^A-Z0-9]", "", pan_no)
-    if re.match(r"^[A-Z]{5}[0-9]{4}[A-Z]$", pan_no):
-        extracted["pan_number"] = pan_no
+    extracted["pan_number"] = pan_no if pan_is_valid(pan_no) else ""
+    extracted["pan_status"] = "ok" if extracted["pan_number"] else ("unreadable" if pan_no else "missing")
     return {"success": True, "data": extracted}
 
 
@@ -531,6 +615,17 @@ async def upload_documents(
     cand = await db.candidates.find_one({"_id": ObjectId(cand_id)})
     if not cand:
         raise HTTPException(status_code=404, detail="Candidate not found")
+
+    # All of a candidate's documents live in ONE Mongo document, which cannot
+    # exceed 16 MB. The self-onboarding link already caps each image at ~1 MB;
+    # the HR upload had no cap, so one phone photo could make the record
+    # unwritable. Same cap here (base64 is ~4/3 of the bytes).
+    for label, b64 in (("Aadhaar front", data.aadhaar_front_base64),
+                       ("Aadhaar back", data.aadhaar_back_base64),
+                       ("PAN card", data.pan_card_base64)):
+        if b64 and len(b64) * 3 // 4 > 1_100_000:
+            raise HTTPException(status_code=400, detail=(
+                f"{label} is larger than 1 MB — please upload a smaller or compressed image."))
 
     update = {"candidate_id": cand_id, "updated_at": datetime.now(timezone.utc).isoformat()}
     saved_keys = []
@@ -558,9 +653,15 @@ async def upload_documents(
         checklist["aadhaar"] = True
     if "pan_card" in saved_keys:
         checklist["pan"] = True
+    now = datetime.now(timezone.utc).isoformat()
+    actor = current_user.get("employee_id") or current_user.get("username")
+    # Overwritten, not versioned (a masked copy is no use for KYC or PF), so the
+    # log is the only record that a document was ever replaced.
     await db.candidates.update_one(
         {"_id": ObjectId(cand_id)},
-        {"$set": {"documents_checklist": checklist, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        {"$set": {"documents_checklist": checklist, "updated_at": now},
+         "$push": {"kyc_log": {"$each": [{"action": "document_uploaded", "document": k,
+                                          "by": actor, "at": now} for k in saved_keys]}}},
     )
     return {"success": True, "saved": saved_keys}
 
@@ -604,7 +705,10 @@ async def get_document_binary(
         binary = base64.b64decode(asset["data"])
     except Exception:
         raise HTTPException(status_code=500, detail="Unable to decode document.")
-    headers = {"Cache-Control": "private, max-age=300"}
+    # no-store: an Aadhaar image replaced through Fix KYC used to keep showing the
+    # old (masked) one for five minutes from the browser cache — and ID images
+    # have no business sitting in a browser cache at all.
+    headers = {"Cache-Control": "no-store"}
     if doc_type == "cv" and asset.get("file_name"):
         headers["Content-Disposition"] = f'inline; filename="{asset["file_name"]}"'
     return Response(
@@ -612,6 +716,167 @@ async def get_document_binary(
         media_type=asset.get("mime", "image/jpeg"),
         headers=headers,
     )
+
+
+# ----------- Fix KYC on an existing candidate: re-scan, then apply -----------
+
+_MAX_LEN = {"first_name": 60, "last_name": 60, "father_or_husband_name": 120,
+            "address": 400, "city": 60, "state": 60}
+
+
+def _check_kyc_text_fields(fields: dict) -> None:
+    """Refuse values that can't be right, from a scan or typed by hand.
+
+    The DOB is copied to the employee record at conversion and printed on the
+    joining kit, so "tomorrow" or a 1 January 2031 must never get this far.
+    """
+    dob = fields.get("dob")
+    if dob:
+        if re.fullmatch(r"\d{4}", dob):
+            year = int(dob)                     # some cards print the year of birth only
+        else:
+            try:
+                year = datetime.strptime(dob, "%d/%m/%Y").year
+            except ValueError:
+                raise HTTPException(status_code=422, detail=(
+                    "Date of birth must be DD/MM/YYYY (or just the year, if that is all the card shows)."))
+        this_year = datetime.now(timezone.utc).year
+        if not (this_year - 80 <= year <= this_year - 14):
+            raise HTTPException(status_code=422, detail="That date of birth isn't plausible — please check it.")
+    if fields.get("gender") and fields["gender"] not in ("Male", "Female", "Other"):
+        raise HTTPException(status_code=422, detail="Gender must be Male, Female or Other.")
+    if fields.get("pincode") and not re.fullmatch(r"\d{6}", fields["pincode"]):
+        raise HTTPException(status_code=422, detail="Pincode must be 6 digits.")
+    for k, limit in _MAX_LEN.items():
+        if len(fields.get(k) or "") > limit:
+            raise HTTPException(status_code=422, detail=f"{k.replace('_', ' ').capitalize()} is too long.")
+        if re.search(r"[<>]", fields.get(k) or ""):
+            raise HTTPException(status_code=422, detail=f"{k.replace('_', ' ').capitalize()} contains < or >.")
+
+
+async def _find_candidate(cand_id: str) -> dict:
+    """The candidate, or 404 — a malformed id is "not found", not a 500."""
+    try:
+        oid = ObjectId(cand_id)
+    except Exception:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    cand = await db.candidates.find_one({"_id": oid})
+    if not cand:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    return cand
+
+
+class KycScanRequest(BaseModel):
+    aadhaar: bool = True
+    pan: bool = True
+
+
+# Only these fields can be written from the Fix KYC panel.
+_KYC_APPLY_FIELDS = {"first_name", "last_name", "dob", "gender", "father_or_husband_name",
+                     "aadhaar_number", "pan_number", "address", "city", "state", "pincode"}
+
+
+class KycApplyRequest(BaseModel):
+    fields: dict
+    source: str = "scan"            # "scan" | "manual" — recorded in the log
+
+
+@router.post("/{cand_id}/kyc/scan")
+async def kyc_rescan(cand_id: str, data: KycScanRequest, current_user: dict = Depends(get_current_user)):
+    """Re-scan the Aadhaar and/or PAN images ALREADY stored for a candidate.
+
+    Returns what the scan read next to what is on file. It changes no identity
+    field: HR decides what to apply, because a value on file may have been
+    corrected by hand and a fresh scan is not automatically better.
+    """
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    cand = await _find_candidate(cand_id)
+    if cand.get("status") == "converted":
+        raise HTTPException(status_code=400, detail=(
+            "This candidate is already an employee — correct their details on the employee record."))
+    docs = await db.candidate_documents.find_one({"candidate_id": cand_id}) or {}
+    front, back, pan = docs.get("aadhaar_front") or {}, docs.get("aadhaar_back") or {}, docs.get("pan_card") or {}
+    # Both checked BEFORE either scan runs: asking for both with no PAN on file
+    # used to spend a full Aadhaar scan and then fail.
+    if data.aadhaar and not front.get("data") and not back.get("data"):
+        raise HTTPException(status_code=400, detail="No Aadhaar images are on file to scan.")
+    if data.pan and not pan.get("data"):
+        raise HTTPException(status_code=400, detail="No PAN card image is on file to scan.")
+    if not data.aadhaar and not data.pan:
+        raise HTTPException(status_code=400, detail="Nothing to scan.")
+    result, stored = {}, {}
+    if data.aadhaar:
+        res = await ocr_aadhaar_preview(AadhaarOCRRequest(
+            front_image_base64=front.get("data"), back_image_base64=back.get("data"),
+            front_mime_type=front.get("mime") or "image/jpeg", back_mime_type=back.get("mime") or "image/jpeg",
+        ), current_user)
+        result["aadhaar"] = res.get("data", {})
+        stored["aadhaar_data"] = result["aadhaar"]
+    if data.pan:
+        res = await ocr_pan_preview(PANOCRRequest(image_base64=pan["data"],
+                                                  mime_type=pan.get("mime") or "image/jpeg"), current_user)
+        result["pan"] = res.get("data", {})
+        stored["pan_data"] = result["pan"]
+    now = datetime.now(timezone.utc).isoformat()
+    actor = current_user.get("employee_id") or current_user.get("username")
+    ocr_status = dict(cand.get("ocr_status") or {})
+    if "aadhaar" in result:
+        ocr_status["aadhaar_status"] = result["aadhaar"].get("aadhaar_status")
+        ocr_status["aadhaar_ok"] = result["aadhaar"].get("aadhaar_status") == "ok"
+    if "pan" in result:
+        ocr_status["pan_ok"] = bool(result["pan"].get("pan_number"))
+    ocr_status.update({"rescanned_at": now, "rescanned_by": actor})
+    await db.candidates.update_one(
+        {"_id": ObjectId(cand_id)},
+        {"$set": {**stored, "ocr_status": ocr_status, "updated_at": now},
+         "$push": {"kyc_log": {"action": "rescanned", "document": ",".join(result), "by": actor, "at": now}}},
+    )
+    current = {k: cand.get(k) or "" for k in sorted(_KYC_APPLY_FIELDS)}
+    return {"scan": result, "current": current}
+
+
+@router.post("/{cand_id}/kyc/apply")
+async def kyc_apply(cand_id: str, data: KycApplyRequest, current_user: dict = Depends(get_current_user)):
+    """Write chosen KYC fields — from a scan HR has reviewed, or typed by hand.
+
+    The Aadhaar number and PAN are validated and de-duplicated exactly as on
+    create and edit. The log records WHICH fields changed and how, not the
+    values: the numbers themselves are already on the record, and a log is
+    copied and exported far more freely than the record is.
+    """
+    if current_user.get("role") not in ["hr_admin", "management"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    cand = await _find_candidate(cand_id)
+    if cand.get("status") == "converted":
+        raise HTTPException(status_code=400, detail=(
+            "This candidate is already an employee — correct their details on the employee record."))
+    source = data.source if data.source in ("scan", "manual") else "manual"
+    unknown = set(data.fields) - _KYC_APPLY_FIELDS
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"These fields can't be set here: {', '.join(sorted(unknown))}")
+    fields = {k: (str(v).strip() if v is not None else "") for k, v in data.fields.items()}
+    fields = {k: v for k, v in fields.items() if v != "" and v != (cand.get(k) or "")}
+    _check_kyc_text_fields(fields)
+    if not fields:
+        raise HTTPException(status_code=400, detail="Nothing to change.")
+    fields = await _check_kyc_numbers(fields, exclude_candidate_id=cand_id)
+    # Normalising can make a "new" value identical to the old one ("2345 6789
+    # 0124" for the same number): that is not a change and must not be logged.
+    fields = {k: v for k, v in fields.items() if v != (cand.get(k) or "")}
+    if not fields:
+        raise HTTPException(status_code=400, detail="Nothing to change.")
+    now = datetime.now(timezone.utc).isoformat()
+    actor = current_user.get("employee_id") or current_user.get("username")
+    await db.candidates.update_one(
+        {"_id": ObjectId(cand_id)},
+        {"$set": {**fields, "updated_at": now},
+         "$push": {"kyc_log": {"action": "fields_set", "fields": sorted(fields), "source": source,
+                               "by": actor, "at": now}}},
+    )
+    cand = await db.candidates.find_one({"_id": ObjectId(cand_id)})
+    gate = await kyc_gate_reason(cand, cand_id)
+    return {"candidate": cand_to_dict(cand), "kyc_complete": gate is None, "kyc_reason": gate}
 
 
 # ----------- Legacy endpoint kept for compatibility (single-image OCR after creation) -----------

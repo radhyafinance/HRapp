@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 from auth_utils import get_current_user
 from database import db
+from services.kyc_ids import classify_aadhaar, masked_flag, CANDIDATE_MESSAGES, AADHAAR_PROMPT_MASK_RULE
 
 router = APIRouter()
 public_router = APIRouter()  # mounted without auth on a different prefix
@@ -171,7 +172,8 @@ async def _ocr_aadhaar_safe(front_b64: Optional[str], back_b64: Optional[str], f
         '"dob":"date of birth in DD/MM/YYYY (or YOB if only year is printed)",'
         '"gender":"Male/Female/Other",'
         '"father_or_husband_name":"S/O or D/O or W/O name (parent or husband as printed; empty string if absent)",'
-        '"aadhaar_number":"full 12-digit Aadhaar number with no spaces",'
+        '"aadhaar_number":"the Aadhaar number exactly as printed (12 digits, or the masked form if masked)",'
+        + AADHAAR_PROMPT_MASK_RULE + ','
         '"address":"complete address as printed (single line, comma separated, do not include pincode)",'
         '"city":"city / district / village name only",'
         '"state":"state name only",'
@@ -181,14 +183,23 @@ async def _ocr_aadhaar_safe(front_b64: Optional[str], back_b64: Optional[str], f
     )
     try:
         out = await _gemini_vision_extract(prompt, files)
-    except Exception:
-        return {}
-    # Normalize
-    aadhaar_no = re.sub(r"\D", "", out.get("aadhaar_number") or "")
-    if len(aadhaar_no) == 12:
-        out["aadhaar_number"] = aadhaar_no
-    else:
-        out["aadhaar_number"] = ""
+    except Exception as e:
+        msg = str(e)
+        # The scanner refusing the IMAGE ("INVALID_ARGUMENT: Unable to process
+        # input image") is a corrupt or non-image upload — the candidate's to fix,
+        # the same reading the HR-side scan gives it.
+        if "INVALID_ARGUMENT" in msg or "Unable to process input image" in msg:
+            return {"aadhaar_number": "", "aadhaar_status": "unreadable"}
+        # Anything else is OUR failure (scanner down, quota), not the candidate's
+        # photos — the submit path must not tell them their Aadhaar is unreadable.
+        return {"_scan_error": True}
+    # Normalize — the same rule as the HR scan (services/kyc_ids.py). Only a
+    # valid number is kept; anything else says WHY, so the page can tell the
+    # candidate instead of HR discovering a blank at joining-kit time.
+    number, status = classify_aadhaar(out.get("aadhaar_number"), masked_flag(out))
+    out["aadhaar_number"] = number
+    out["aadhaar_status"] = status
+    out.pop("aadhaar_masked", None)
     pincode = re.sub(r"\D", "", out.get("pincode") or "")
     if len(pincode) == 6:
         out["pincode"] = pincode
@@ -242,6 +253,9 @@ async def public_invite_submit(
     aadhaar_back: UploadFile = File(...),
     pan_card: UploadFile = File(...),
     cv: UploadFile = File(...),
+    # Sent only after the page has shown the "masked / unreadable Aadhaar"
+    # warning and the candidate chose to submit anyway.
+    confirm_aadhaar: bool = Form(False),
 ):
     inv = await db.candidate_invites.find_one({"token": token})
     if not inv:
@@ -289,6 +303,22 @@ async def public_invite_submit(
         )
     first_name, last_name = _split_name(full_name)
 
+    # A masked or unreadable Aadhaar used to be accepted silently: the number was
+    # stored blank and HR found out only when the joining kit refused to
+    # generate. Say so now, while the candidate can still fix it. Not a hard
+    # block — a blurry photo must never stop someone applying — so they may
+    # submit anyway, and the record is flagged for HR. The link stays unused
+    # until they do, so re-uploading costs them nothing.
+    # If the scanner itself failed, the candidate did nothing wrong: accept and
+    # flag it for HR, who can re-scan from Fix KYC once it is back.
+    a_status = "not_scanned" if aadhaar_data.pop("_scan_error", False) else (
+        aadhaar_data.get("aadhaar_status") or "missing")
+    if a_status in CANDIDATE_MESSAGES and not confirm_aadhaar:
+        raise HTTPException(status_code=422, detail={
+            "code": f"aadhaar_{a_status}",
+            "message": CANDIDATE_MESSAGES[a_status],
+        })
+
     cand_doc = {
         "first_name": first_name,
         "last_name": last_name,
@@ -322,6 +352,8 @@ async def public_invite_submit(
         "created_at": now.isoformat(),
         "ocr_status": {
             "aadhaar_ok": bool(aadhaar_data.get("aadhaar_number")),
+            "aadhaar_status": a_status,
+            "submitted_without_aadhaar": a_status != "ok",
             "pan_ok": bool(pan_data.get("pan_number")),
             "name_from_ocr": full_name,
         },
@@ -363,7 +395,12 @@ async def public_invite_submit(
                 "user_id": a.get("username"),
                 "type": "candidate_self_onboarded",
                 "title": "New candidate self-onboarded",
-                "message": f"{first_name} {last_name} submitted documents via invite link. Please review and assign role.",
+                "message": f"{first_name} {last_name} submitted documents via invite link. Please review and assign role."
+                           + (" Their Aadhaar wasn't scanned (the scanner was unavailable) — re-scan it "
+                              "from Fix KYC details." if a_status == "not_scanned"
+                              else " Their Aadhaar number couldn't be read"
+                              + (" (masked Aadhaar)" if a_status == "masked" else "")
+                              + " — get the full Aadhaar before the joining kit." if a_status != "ok" else ""),
                 "link": "/candidates",
                 "read": False,
                 "created_at": now.isoformat(),
