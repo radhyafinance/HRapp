@@ -4,6 +4,7 @@ import { Modal } from "../shared/Modal";
 import { DocUploadCard } from "./DocUploadCard";
 import API from "../../utils/api";
 import { compressImage, fileToBase64 } from "../../utils/imageCompression";
+import { aadhaarIsValid } from "../../utils/kycIds";
 import { useFieldUnique, UniqueHint, uniqueBorderClass } from "../../hooks/useFieldUnique";
 
 const DEPARTMENTS = ["Accounts", "Administration", "Compliance", "Human Resources", "IT", "Management", "Operations", "Risk and Credit"];
@@ -28,6 +29,7 @@ export function AddCandidateModal({ onClose, onAdded }) {
   const [aadhaarOcrDone, setAadhaarOcrDone] = useState(false);
   const [panOcrDone, setPanOcrDone] = useState(false);
   const [compressing, setCompressing] = useState(false);
+  const [aadhaarScanMsg, setAadhaarScanMsg] = useState("");
   const [saving, setSaving] = useState(false);
   const [interviewerOptions, setInterviewerOptions] = useState([]);
   const [interviewerSearch, setInterviewerSearch] = useState("");
@@ -105,6 +107,9 @@ export function AddCandidateModal({ onClose, onAdded }) {
         address: f.address || d.address || "", city: f.city || d.city || "",
         state: f.state || d.state || "", pincode: f.pincode || d.pincode || "",
       }));
+      // The scan now returns a number only when it is a valid, full one, and says
+      // why when it isn't — most often a masked Aadhaar downloaded from UIDAI.
+      setAadhaarScanMsg(d.aadhaar_status && d.aadhaar_status !== "ok" ? (d.aadhaar_message || "") : "");
       setAadhaarOcrDone(true);
     } catch (e) {
       setError("Aadhaar OCR failed: " + (e.response?.data?.detail || "Unknown error"));
@@ -150,7 +155,15 @@ export function AddCandidateModal({ onClose, onAdded }) {
       if (aadhaarBack) { const b = await fileToBase64(aadhaarBack); docPayload.aadhaar_back_base64 = b.base64; docPayload.aadhaar_back_mime = b.mime; }
       if (panFile) { const p = await fileToBase64(panFile); docPayload.pan_card_base64 = p.base64; docPayload.pan_card_mime = p.mime; }
       if (Object.keys(docPayload).length > 0) {
-        try { await API.post(`/candidates/${candId}/documents`, docPayload); } catch (_) {}
+        try { await API.post(`/candidates/${candId}/documents`, docPayload); }
+        catch (docErr) {
+          // The candidate IS saved at this point; say so, and say how to finish.
+          // This used to be swallowed — a candidate with no documents and no clue why.
+          window.alert(
+            "The candidate was saved, but the documents did not upload: " +
+            (docErr.response?.data?.detail || "unknown error") +
+            "\n\nOpen the candidate and use Fix KYC details → Replace Aadhaar / Replace PAN.");
+        }
       }
       onAdded();
       onClose();
@@ -231,7 +244,12 @@ export function AddCandidateModal({ onClose, onAdded }) {
               <input value={form.aadhaar_number} onChange={e => setForm({ ...form, aadhaar_number: e.target.value.replace(/\D/g, "").slice(0, 12) })}
                 className={`w-full border rounded-lg px-3 py-2 text-sm font-mono focus:ring-2 focus:ring-[#E85B1E] outline-none ${uniqueBorderClass(aadhaarCheck, form.aadhaar_number, 12)}`}
                 data-testid="form-aadhaar_number" />
-              <UniqueHint {...aadhaarCheck} value={form.aadhaar_number} minLen={12} />
+              {form.aadhaar_number.length === 12 && !aadhaarIsValid(form.aadhaar_number)
+                ? <p className="text-[11px] text-red-600 mt-1" data-testid="form-aadhaar-invalid">Not a valid Aadhaar number — check it against the card.</p>
+                : <UniqueHint {...aadhaarCheck} value={form.aadhaar_number} minLen={12} />}
+              {aadhaarScanMsg && (
+                <p className="text-[11px] text-amber-700 mt-1" data-testid="form-aadhaar-scan-msg">{aadhaarScanMsg}</p>
+              )}
             </div>
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">PAN Number</label>

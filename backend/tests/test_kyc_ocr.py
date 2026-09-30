@@ -21,6 +21,39 @@ import requests
 from PIL import Image, ImageDraw
 
 BASE_URL = os.environ.get("REACT_APP_BACKEND_URL", "").rstrip("/")
+
+
+def _fresh_aadhaar() -> str:
+    """A different check-digit-valid Aadhaar number on every run.
+
+    The server now refuses an invalid Aadhaar (the old fixed 123412341234 fails
+    the check digit) and refuses a number already held by another live
+    candidate — so a fixed value would also fail from the second run on.
+    """
+    import random
+    d = ((0,1,2,3,4,5,6,7,8,9),(1,2,3,4,0,6,7,8,9,5),(2,3,4,0,1,7,8,9,5,6),(3,4,0,1,2,8,9,5,6,7),
+         (4,0,1,2,3,9,5,6,7,8),(5,9,8,7,6,0,4,3,2,1),(6,5,9,8,7,1,0,4,3,2),(7,6,5,9,8,2,1,0,4,3),
+         (8,7,6,5,9,3,2,1,0,4),(9,8,7,6,5,4,3,2,1,0))
+    p = ((0,1,2,3,4,5,6,7,8,9),(1,5,7,6,2,8,3,0,9,4),(5,8,0,3,7,9,6,1,4,2),(8,9,1,6,0,4,3,5,2,7),
+         (9,4,5,3,1,2,6,8,7,0),(4,2,8,6,5,7,3,9,0,1),(2,7,9,3,8,0,6,4,1,5),(7,0,4,6,9,1,3,2,5,8))
+    base = str(random.randint(2, 9)) + "".join(str(random.randint(0, 9)) for _ in range(10))
+    for check in "0123456789":
+        c = 0
+        for i, ch in enumerate(reversed(base + check)):
+            c = d[c][p[i % 8][int(ch)]]
+        if c == 0:
+            return base + check
+    raise AssertionError("unreachable")
+
+
+def _fresh_pan() -> str:
+    import random, string
+    return ("".join(random.choice(string.ascii_uppercase) for _ in range(5))
+            + "".join(random.choice(string.digits) for _ in range(4)) + random.choice(string.ascii_uppercase))
+
+
+TEST_AADHAAR = _fresh_aadhaar()
+TEST_PAN = _fresh_pan()
 assert BASE_URL, "REACT_APP_BACKEND_URL is not set"
 
 
@@ -160,8 +193,8 @@ class TestCandidateDocuments:
             "dob": "01/01/1995",
             "gender": "Male",
             "father_or_husband_name": "Father Name",
-            "aadhaar_number": "123412341234",
-            "pan_number": "ABCDE1234F",
+            "aadhaar_number": TEST_AADHAAR,
+            "pan_number": TEST_PAN,
             "address": "1 Test St",
             "city": "Moradabad",
             "state": "UP",
@@ -186,7 +219,7 @@ class TestCandidateDocuments:
         assert g.status_code == 200, g.text
         gb = g.json()
         assert "_id" not in gb
-        assert gb.get("aadhaar_number") == "123412341234"
+        assert gb.get("aadhaar_number") == TEST_AADHAAR
         return body["id"]
 
     def test_documents_no_payload_returns_400(self, headers, created_candidate):

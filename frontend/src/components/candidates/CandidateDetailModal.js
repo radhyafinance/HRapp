@@ -3,6 +3,7 @@ import { Image as ImageIcon, Eye, CalendarClock, FileText, Pencil, Check, X as X
 import { Modal } from "../shared/Modal";
 import { JoiningKitPanel } from "./JoiningKitPanel";
 import { DigiLockerButton } from "../digilocker/DigiLockerButton";
+import { KycFixPanel } from "./KycFixPanel";
 import API from "../../utils/api";
 
 const STATUS_COLORS = { pending: "bg-amber-100 text-amber-700", selected: "bg-green-100 text-green-700", rejected: "bg-red-100 text-red-700", converted: "bg-blue-100 text-blue-700" };
@@ -252,6 +253,11 @@ export function CandidateDetailModal({ candidate, onClose, onSchedule }) {
               );
             })}
           </div>
+
+          {/* A candidate record comes back when fields change; null means only the
+              documents changed, so just reload them. */}
+          <KycFixPanel candidate={c} docsMeta={docsMeta}
+            onChanged={(updated) => { if (updated) setC(updated); refreshDocs(); }} />
         </div>
 
         {zoomDoc && (

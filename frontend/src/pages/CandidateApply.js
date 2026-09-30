@@ -136,6 +136,9 @@ export default function CandidateApply() {
   const [submitting, setSubmitting] = useState(false);
   const [success, setSuccess] = useState(null);
   const [error, setError] = useState("");
+  // Set when the server says the Aadhaar number couldn't be read (masked or
+  // unclear). The candidate can re-upload, or submit anyway and HR follows up.
+  const [aadhaarIssue, setAadhaarIssue] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -148,8 +151,8 @@ export default function CandidateApply() {
 
   const valid = /^\d{10}$/.test(mobile.trim()) && /^\S+@\S+\.\S+$/.test(email.trim()) && aadhaarFront && aadhaarBack && panCard && cv && !hasConflict;
 
-  const submit = async (e) => {
-    e.preventDefault();
+  const submit = async (e, confirmAadhaar = false) => {
+    if (e) e.preventDefault();
     if (!valid || submitting) return;
     setSubmitting(true);
     setError("");
@@ -161,12 +164,19 @@ export default function CandidateApply() {
       fd.append("aadhaar_back", aadhaarBack);
       fd.append("pan_card", panCard);
       fd.append("cv", cv);
+      if (confirmAadhaar) fd.append("confirm_aadhaar", "true");
       const res = await axios.post(`${API}/public/candidate-invite/${token}/submit`, fd, {
         timeout: 120000,
       });
       setSuccess(res.data);
+      setAadhaarIssue("");
     } catch (e) {
-      setError(e.response?.data?.detail || "Submission failed. Please try again or contact HR.");
+      const detail = e.response?.data?.detail;
+      if (detail && typeof detail === "object" && String(detail.code || "").startsWith("aadhaar_")) {
+        setAadhaarIssue(detail.message || "Your Aadhaar number couldn't be read.");
+      } else {
+        setError((typeof detail === "string" && detail) || "Submission failed. Please try again or contact HR.");
+      }
     } finally {
       setSubmitting(false);
     }
@@ -257,6 +267,23 @@ export default function CandidateApply() {
                 file={cv} setFile={setCv} testId="apply-cv" />
             </div>
           </div>
+
+          {aadhaarIssue && (
+            <div className="p-3 bg-amber-50 border border-amber-300 text-amber-900 rounded-lg text-sm space-y-2" data-testid="apply-aadhaar-issue">
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
+                <span>{aadhaarIssue}</span>
+              </div>
+              <p className="text-xs">
+                Replace the Aadhaar images above and press Submit again — or, if you don't have the full Aadhaar
+                right now, submit anyway and HR will ask you for it.
+              </p>
+              <button type="button" onClick={() => submit(null, true)} disabled={submitting} data-testid="apply-submit-anyway"
+                className="px-3 py-1.5 text-xs font-semibold bg-white border border-amber-400 rounded-lg hover:bg-amber-100 disabled:opacity-50">
+                Submit anyway
+              </button>
+            </div>
+          )}
 
           {error && (
             <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-sm flex items-start gap-2" data-testid="apply-error">
