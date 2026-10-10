@@ -27,10 +27,10 @@ def cand_to_dict(c):
     return c
 
 # Core identity fields that must be filled (via OCR or manually) before a candidate
-# can get a Joining Kit or be converted to an employee.
+# can get a Joining Kit or be converted to an employee. Last name is NOT on the
+# list: many people have a single name, and the Aadhaar then has only that.
 KYC_REQUIRED_FIELDS = [
     ("first_name", "First name"),
-    ("last_name", "Last name"),
     ("dob", "Date of birth"),
     ("gender", "Gender"),
     ("father_or_husband_name", "Father's / Husband's name"),
@@ -1006,8 +1006,8 @@ async def convert_candidate_to_employee(
 
     emp_doc = {
         "employee_id": employee_id,
-        "first_name": cand.get("first_name", ""),
-        "last_name": cand.get("last_name", ""),
+        "first_name": cand.get("first_name") or "",
+        "last_name": (cand.get("last_name") or "").strip(),   # single-name people: "" not null
         "email": email,
         "mobile": cand.get("mobile", ""),
         "department": department,
@@ -1068,7 +1068,7 @@ async def convert_candidate_to_employee(
         "username": employee_id,
         "email": email,
         "password_hash": hash_password(password),
-        "name": f"{cand.get('first_name', '')} {cand.get('last_name', '')}".strip(),
+        "name": f"{cand.get('first_name') or ''} {cand.get('last_name') or ''}".strip(),
         "role": role,
         "employee_id": employee_id,
         "is_active": True,
@@ -1104,7 +1104,7 @@ async def convert_candidate_to_employee(
         "employee_id": employee_id,
         "employee_db_id": employee_db_id,
         "default_password": password,
-        "message": f"{cand.get('first_name', '')} {cand.get('last_name', '')} converted to Employee {employee_id}",
+        "message": f"{cand.get('first_name') or ''} {cand.get('last_name') or ''}".strip() + f" converted to Employee {employee_id}",
     }
 
 

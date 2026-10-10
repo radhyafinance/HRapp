@@ -415,7 +415,8 @@ def _addr_line(c):
 
 
 def _full_name(c):
-    return f"{c.get('first_name', '')} {c.get('last_name', '')}".strip()
+    # `or ''`, not a .get default: a surname stored as null would print as "None".
+    return f"{c.get('first_name') or ''} {c.get('last_name') or ''}".strip()
 
 
 def _para(text, style=BODY):

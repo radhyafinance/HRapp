@@ -101,7 +101,8 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
       const url = URL.createObjectURL(res.data);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `JoiningKit_${candidate.first_name || ""}_${candidate.last_name || ""}.pdf`.replace(/\s+/g, "_");
+      const fileName = [candidate.first_name, candidate.last_name].filter((p) => String(p || "").trim()).join(" ").trim();
+      a.download = `JoiningKit_${fileName || "candidate"}.pdf`.replace(/\s+/g, "_");
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -338,6 +339,9 @@ export function JoiningKitPanel({ candidate, onCandidateUpdate }) {
         <p className="text-[11px] text-amber-700">Set both <strong>Employee ID</strong> and <strong>Tentative Joining Date</strong> (then click Save Details) to enable the PDF download.</p>
       )}
       {dirty && <p className="text-[11px] text-amber-700">You have unsaved changes — click Save Details before downloading.</p>}
+      {!String(candidate.last_name || "").trim() && (
+        <p className="text-[11px] text-amber-700" data-testid="no-last-name-note">No last name on file. That's fine if the Aadhaar shows a single name — otherwise add it under Fix KYC details before downloading.</p>
+      )}
       {err && (
         <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-2 flex items-start gap-2">
           <AlertCircle size={14} className="flex-shrink-0 mt-0.5" /><span>{err}</span>

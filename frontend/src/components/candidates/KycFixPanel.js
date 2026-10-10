@@ -317,7 +317,9 @@ export function KycFixPanel({ candidate, docsMeta, onChanged }) {
           </div>
           {EXTRA_FIELDS.map((k) => (
             <div key={k} className={k === "address" ? "sm:col-span-2" : ""}>
-              <label className="block text-[11px] font-semibold text-slate-700 mb-1">{LABELS[k]} (missing on file)</label>
+              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                {LABELS[k]} {k === "last_name" ? "(optional — leave blank if the Aadhaar shows one name)" : "(missing on file)"}
+              </label>
               {k === "gender" ? (
                 <select value={extra[k] || ""} onChange={(e) => setExtra((x) => ({ ...x, [k]: e.target.value }))}
                   data-testid={`kyc-manual-${k}`} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white">

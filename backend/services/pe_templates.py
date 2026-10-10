@@ -9,12 +9,16 @@ Shivani is HR), and two can both be "Executive" (Bhaskar is Admin, Pratik is IT)
 Department is what separates them. An employee can also carry an explicit
 pe_template_key that overrides the match entirely.
 
-Narrative form: everyone EXCEPT Field Officers answers 7 questions. Q1-Q6 are
-common; Q7 differs between field and head-office staff.
+Narrative form: everyone answers 7 questions. Since Oct 2026 each role group has its
+own set: Field Officers ("fo"), Branch Managers ("bm"), Divisional/Area Managers
+("dm"), Audit, Risk & Credit ("risk") and head office ("ho"). The old shared "field"
+set is no longer used by any template; past reviews keep their own copy.
 """
 
-# The 7 narrative questions. Only Q7 differs between the two variants.
+# The 7 narrative questions. A review copies these when its form is created, so
+# editing a list here never changes a form that already has answers in it.
 NARRATIVE_QUESTIONS = {
+    # Before Oct 2026, shared by all field roles. No template uses it now.
     "field": [
         'What do you understand about your responsibilities in the company?',
         'What do you expect to be the biggest challenge in your role?',
@@ -24,20 +28,68 @@ NARRATIVE_QUESTIONS = {
         'How do you align your personal goals with company objectives?',
         'Give suggestions and comments to improve the culture at Radhya.',
     ],
+    "dm": [
+        'How effectively have you managed operations and ensured the achievement of business targets across all branches under your supervision?',
+        'How effectively do you identify and resolve critical operational challenges and make timely decisions to improve performance?',
+        'What is the biggest challenge you are currently facing, and what steps are you taking to address it?',
+        'How effectively have you guided and motivated Branch Managers and their teams to improve productivity and achieve business objectives?',
+        'What significant improvements have you implemented during this review period, and which areas do you plan to improve further?',
+        'What initiatives have you taken to improve portfolio quality, control overdue, strengthen operational controls, and ensure compliance?',
+        'To what extent have you achieved your assigned business targets during this review period? What key learnings have you gained, and what specific strategies will you adopt in the next review period to achieve higher targets and improve overall business performance?',
+    ],
+    "bm": [
+        'How effectively do you manage branch operations and prioritize daily responsibilities to ensure smooth functioning of the branch?',
+        'How effectively do you identify and resolve branch-level challenges while ensuring compliance with company policies and procedures?',
+        'What is the biggest challenge you are currently facing in managing your branch, and how are you addressing it?',
+        'How effectively do you guide, motivate, and monitor your team to achieve branch targets and improve overall performance?',
+        'What improvements have you made in branch performance during this review period, and which areas would you like to focus on improving further?',
+        'What initiatives have you taken to improve branch operational efficiency, maintain portfolio quality, and ensure compliance with company policies and processes?',
+        "What is your plan to drive your branch growth in the upcoming review period, and what strategies will you implement to achieve better results compared to the previous period's targets and performance?",
+    ],
+    "risk": [
+        'How effectively do you manage your daily field activities, customer visits, and assigned responsibilities within the given timelines?',
+        'How effectively do you identify and resolve credit-related issues while following company policies and procedures?',
+        'What is the biggest challenge you are currently facing in your credit-related responsibilities, and how are you addressing it?',
+        "How effectively do you assess customers' repayment capacity and verify their information before recommending a loan?",
+        'What improvements have you made in your credit-related performance during this review period, and which areas would you like to improve further?',
+        'What steps have you taken to ensure accurate customer documentation, proper verification, and compliance with credit policies?',
+        'What additional responsibilities have you taken on and successfully fulfilled during this review period, and are you willing to take on additional responsibilities in the future?',
+    ],
+    "fo": [
+        'How effectively do you manage your daily field activities and complete your assigned tasks within the given timelines?',
+        'How effectively do you handle field-level challenges and resolve customer-related issues while following company policies?',
+        'What is the biggest challenge you are currently facing in your field work, and how are you addressing it?',
+        'How effectively do you maintain positive relationships with customers and address their queries or concerns?',
+        'What improvements have you made in your field performance during this review period, and which areas would you like to improve further?',
+        'What steps have you taken to ensure accurate documentation, timely reporting, and compliance with company policies and processes?',
+        'What additional responsibilities have you taken on and successfully fulfilled during this review period, and are you willing to take on additional responsibilities in the future?',
+    ],
     "ho": [
-        'What do you understand about your responsibilities in the company?',
-        'What do you expect to be the biggest challenge in your role?',
-        'Are you able to complete your work accurately and on time?',
-        'Are you open to changes in processes, technology, or work requirements?',
-        'How do you rate your overall performance during this review period, and what key areas do you think you should improve in the next cycle?',
-        'How do you align your personal goals with company objectives?',
-        'What extra responsibilities have you taken on during this period?',
+        'How effectively do you manage your daily responsibilities and prioritize your tasks?',
+        'How effectively do you handle work-related issues and find appropriate solutions?',
+        'What is the biggest challenge you are currently facing in your role, and how are you addressing it?',
+        'How consistently have you followed company policies, procedures, and established work guidelines?',
+        'What improvements have you made in your work during this review period, and what areas would you like to focus on improving further?',
+        'What initiatives have you taken to enhance the quality of your work?',
+        'What additional responsibilities have you taken on and successfully fulfilled during this review period, and how willing are you to work additional hours when required to meet business needs?',
     ],
 }
 
 NARRATIVE_QUESTIONS_HI = {
     # Hindi is shown ALONGSIDE English (never instead of it) on the Field Officer
     # form. FOs filled the paper version in Hindi -- see the scanned "FO Self" forms.
+    # Must line up one-for-one with NARRATIVE_QUESTIONS["fo"].
+    "fo": [
+        'आप अपने रोज़ के फ़ील्ड कार्य कितनी अच्छी तरह संभालते हैं, और सौंपे गए काम तय समय-सीमा में कैसे पूरे करते हैं?',
+        'कंपनी की नीतियों का पालन करते हुए आप फ़ील्ड की चुनौतियों को कितनी अच्छी तरह संभालते हैं, और ग्राहकों से जुड़ी समस्याओं का समाधान कैसे करते हैं?',
+        'इस समय आपके फ़ील्ड कार्य में सबसे बड़ी चुनौती क्या है, और आप उसका सामना कैसे कर रहे हैं?',
+        'आप ग्राहकों के साथ अच्छे संबंध कितनी अच्छी तरह बनाए रखते हैं, और उनके सवालों या चिंताओं का समाधान कैसे करते हैं?',
+        'इस अवधि में आपने अपने फ़ील्ड प्रदर्शन में क्या सुधार किए हैं, और आप किन क्षेत्रों में और सुधार करना चाहेंगे?',
+        'डॉक्यूमेंटेशन सही रखने, समय पर रिपोर्टिंग करने और कंपनी की नीतियों व प्रक्रियाओं का पालन करने के लिए आपने क्या कदम उठाए हैं?',
+        'इस अवधि में आपने कौन-सी अतिरिक्त ज़िम्मेदारियाँ लीं और सफलतापूर्वक निभाईं, और क्या आप आगे भी अतिरिक्त ज़िम्मेदारियाँ लेने के लिए तैयार हैं?',
+    ],
+    # The previous Field Officer set. No template uses it now; kept so the Hindi for
+    # the "field" questions isn't lost if a bilingual field form is wanted again.
     "field": [
         'कंपनी में आपकी ज़िम्मेदारियों के बारे में आप क्या समझते हैं?',
         'आपके अनुसार आपके काम में सबसे बड़ी चुनौती क्या रहेगी?',
@@ -65,7 +117,7 @@ PE_TEMPLATES = [
     {
         "key": 'field-divisional-manager',
         "name": 'Divisional Manager',
-        "narrative": 'field',
+        "narrative": 'dm',
         "applies_to": [
             {"designation": 'Divisional Manager', "department": 'Operations'},
             # Area Manager has no sheet of its own in the FY26 workbooks; it shares the
@@ -134,7 +186,7 @@ PE_TEMPLATES = [
     {
         "key": 'field-branch-manager',
         "name": 'Branch Manager',
-        "narrative": 'field',
+        "narrative": 'bm',
         "applies_to": [
             {"designation": 'Branch Manager', "department": 'Operations'},
             {"designation": 'Senior Branch Manager', "department": 'Operations'},
@@ -203,8 +255,8 @@ PE_TEMPLATES = [
         "name": 'Field Officer',
         # FOs DO answer the 7 questions -- they filled them on paper (the scanned
         # "FO Self" PDFs), which is why they have no tab in the assessment workbook.
-        # Same field Q7 ("Give Suggestions & comments...") as BM/DM/Audit.
-        "narrative": 'field',
+        # Their own set since Oct 2026 (every role group has one now).
+        "narrative": 'fo',
         # FOs read Hindi -- their paper forms were filled in Hindi. Every parameter
         # and question carries a Hindi twin, shown UNDER the English, never instead.
         "bilingual": True,
@@ -302,7 +354,7 @@ PE_TEMPLATES = [
     {
         "key": 'risk-audit-manager',
         "name": 'Manager - Risk and Credit',
-        "narrative": 'field',
+        "narrative": 'risk',
         "applies_to": [
             # The Audit department was renamed Risk and Credit and the title dropped to
             # plain "Manager", so that pair is the live one (Ankit, RMF0022). The
@@ -390,7 +442,7 @@ PE_TEMPLATES = [
         #   Process Improvement         2 -> 1
         "key": 'risk-credit-officer',
         "name": 'Credit Officer',
-        "narrative": 'field',
+        "narrative": 'risk',
         "applies_to": [
             {"designation": 'Credit Officer', "department": 'Risk and Credit'},
         ],
