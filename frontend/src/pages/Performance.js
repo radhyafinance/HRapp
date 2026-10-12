@@ -3,7 +3,7 @@ import API from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
 import {
   AlertTriangle, Award, CheckCircle2, ClipboardList, Eye, FileText, Play,
-  RefreshCw, Save, Users, X,
+  RefreshCw, Save, Trash2, Users, X,
 } from "lucide-react";
 
 const HALVES = [
@@ -54,6 +54,7 @@ function Badge({ className, children }) {
 export default function Performance() {
   const { user } = useAuth();
   const isAdmin = ["hr_admin", "management"].includes(user?.role);
+  const isHrAdmin = user?.role === "hr_admin";
 
   const [tab, setTab] = useState("my");
   const [mine, setMine] = useState([]);
@@ -63,6 +64,7 @@ export default function Performance() {
   const [period, setPeriod] = useState("");
   const [open, setOpen] = useState(null);
   const [showCycle, setShowCycle] = useState(false);
+  const [showDelete, setShowDelete] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -198,6 +200,13 @@ export default function Performance() {
                 <RefreshCw size={14} /> {syncing ? "Syncing…" : "Sync"}
               </button>
             )}
+            {period && isHrAdmin && (
+              <button onClick={() => setShowDelete(true)} data-testid="delete-cycle-btn"
+                title="Delete this cycle and all its forms"
+                className="flex items-center gap-2 px-4 py-2 border border-red-300 text-red-600 rounded-lg text-sm font-semibold hover:bg-red-50">
+                <Trash2 size={14} /> Delete cycle
+              </button>
+            )}
             <button onClick={() => setShowCycle(true)} data-testid="open-cycle-btn"
               className="flex items-center gap-2 px-4 py-2 bg-[#1E2A47] text-white rounded-lg text-sm font-semibold hover:bg-[#2A3A5E]">
               <Play size={14} /> Open a Cycle
@@ -289,6 +298,14 @@ export default function Performance() {
       )}
 
       {showCycle && <CycleModal onClose={() => setShowCycle(false)} onDone={() => { setShowCycle(false); load(); }} />}
+      {showDelete && (
+        <DeleteCycleModal key={period} period={period} onClose={() => setShowDelete(false)}
+          onDone={() => {
+            setShowDelete(false);
+            // Move to the next newest cycle; changing period reloads the page data.
+            setPeriod(cycles.find(c => c.period !== period)?.period || "");
+          }} />
+      )}
       {open && (
         <ReviewModal review={open} user={user} isAdmin={isAdmin}
           onClose={() => setOpen(null)}
@@ -420,6 +437,88 @@ function CycleModal({ onClose, onDone }) {
           </div>
         )}
       </div>
+    </Modal>
+  );
+}
+
+/* ── Deleting a cycle ───────────────────────────────────────────────────────
+   Shows what will go before anything happens, and the cycle's name must always be
+   typed to confirm -- a blank cycle is the live one more often than not. The
+   server keeps a backup copy.                                                */
+function DeleteCycleModal({ period, onClose, onDone }) {
+  const [check, setCheck] = useState(null);
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    API.get(`/performance/cycles/${period}/delete-check`)
+      .then(res => setCheck(res.data))
+      .catch(e => setErr(e.response?.data?.detail || "Could not check this cycle"));
+  }, [period]);
+
+  const hasWork = (check?.with_work_count || 0) > 0;
+  const typedOk = typed.trim().toUpperCase() === period.toUpperCase();
+
+  const remove = async () => {
+    setBusy(true); setErr("");
+    try {
+      const res = await API.delete(`/performance/cycles/${period}`, { params: { confirm: typed.trim() } });
+      alert(`Deleted ${res.data.label}: ${res.data.deleted} form(s) removed.` +
+            "\n\nA backup copy is kept on the server in case this was a mistake.");
+      onDone();
+    } catch (e) {
+      setErr(e.response?.data?.detail || "Could not delete this cycle");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <Modal title="Delete appraisal cycle" subtitle={check ? check.label : period} onClose={onClose}>
+      {!check && !err && <p className="text-sm text-slate-400">Checking…</p>}
+      {check && (
+        <div className="space-y-4" data-testid="delete-cycle-check">
+          <p className="text-sm text-slate-700">
+            This deletes <strong>{check.label}</strong> and all <strong>{check.forms}</strong> form(s) in it.
+            Employees will no longer see these forms.
+          </p>
+          {hasWork ? (
+            <div className="border border-red-300 bg-red-50 rounded-lg p-3 space-y-2" data-testid="delete-cycle-work">
+              <p className="text-sm font-bold text-red-800 flex items-center gap-2">
+                <AlertTriangle size={14} /> {check.with_work_count} form(s) have answers or scores in them
+              </p>
+              <div className="max-h-40 overflow-y-auto space-y-0.5">
+                {check.with_work.map(w => (
+                  <p key={w.employee_id} className="text-[11px] text-red-900">
+                    <span className="font-mono font-semibold">{w.employee_id}</span> {w.name} — {
+                      w.status === "pending_self" ? "Draft saved" : (STATUS_LABEL[w.status] || w.status)}
+                  </p>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <p className="text-xs text-slate-500">Nobody has written anything in these forms yet.</p>
+          )}
+          <div>
+            <label className="block text-xs font-semibold text-slate-700 mb-1">
+              Type <span className="font-mono">{period}</span> to confirm
+            </label>
+            <input value={typed} onChange={e => setTyped(e.target.value)} data-testid="delete-cycle-confirm"
+              autoComplete="off" spellCheck={false}
+              className="w-full border border-red-300 rounded-lg px-3 py-2 text-sm font-mono bg-white focus:ring-2 focus:ring-red-400 outline-none" />
+          </div>
+          <p className="text-[11px] text-slate-500">A backup copy is kept on the server, so a mistake can be put back.</p>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="flex-1 px-4 py-2.5 border border-slate-300 text-slate-600 rounded-lg text-sm font-semibold hover:bg-slate-50">
+              Cancel
+            </button>
+            <button onClick={remove} disabled={busy || !typedOk} data-testid="delete-cycle-submit"
+              className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 bg-red-600 text-white rounded-lg text-sm font-semibold hover:bg-red-700 disabled:opacity-50">
+              <Trash2 size={14} /> {busy ? "Deleting…" : `Delete ${check.forms} form(s)`}
+            </button>
+          </div>
+        </div>
+      )}
+      {err && <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-2 mt-3" data-testid="delete-cycle-error">{err}</p>}
     </Modal>
   );
 }

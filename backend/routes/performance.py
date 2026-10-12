@@ -67,6 +67,11 @@ def _admin(user: dict):
         raise HTTPException(status_code=403, detail="Access denied")
 
 
+def _hr_admin(user: dict):
+    if user.get("role") != "hr_admin":
+        raise HTTPException(status_code=403, detail="Only HR Admin can do this")
+
+
 def pe_to_dict(p: dict) -> dict:
     p["id"] = str(p.pop("_id"))
     return p
@@ -373,27 +378,87 @@ async def close_cycle(period: str, current_user: dict = Depends(get_current_user
     return {"period": period, "status": "closed"}
 
 
-@router.delete("/cycles/{period}")
-async def delete_cycle(period: str, current_user: dict = Depends(get_current_user)):
-    """Delete a cycle and its reviews. Refused the moment ANYONE has filled anything in.
+# Every write to a review sets one of these; matching them on delete means "unchanged".
+_CHANGE_MARKS = ("status", "draft_saved_at", "self_submitted_at", "manager_submitted_at",
+                 "refreshed_at")
 
-    A self-assessment is 14 scores and 7 written answers -- as much real work as the
-    manager's half, and just as gone if this runs. Guarding only the manager's input
-    would protect the wrong person. To add people to a live cycle use /sync; it is
-    additive and destroys nothing.
+
+def _work_row(r: dict) -> dict:
+    return {"employee_id": r.get("employee_id"), "name": r.get("employee_name") or "",
+            "status": r.get("status")}
+
+
+@router.get("/cycles/{period}/delete-check")
+async def delete_check(period: str, current_user: dict = Depends(get_current_user)):
+    """What deleting this cycle would remove. Writes nothing -- the page shows this
+    before the Delete button does anything."""
+    _hr_admin(current_user)
+    cycle = await db.pe_cycles.find_one({"period": period})
+    if not cycle:
+        raise HTTPException(status_code=404, detail="Cycle not found")
+    reviews = await db.pe_reviews.find({"period": period}).to_list(5000)
+    worked = [_work_row(r) for r in reviews if _has_work(r)]
+    return {"period": period, "label": cycle.get("label") or period,
+            "status": cycle.get("status"), "forms": len(reviews),
+            "with_work": worked, "with_work_count": len(worked)}
+
+
+@router.delete("/cycles/{period}")
+async def delete_cycle(period: str, confirm: str = "",
+                       current_user: dict = Depends(get_current_user)):
+    """Delete a cycle and all its forms. HR Admin only.
+
+    `confirm` must be the cycle's period typed out ("H2-2025") -- always, not only
+    when forms have answers in them: a freshly opened cycle is exactly the one that
+    must not vanish on a stray click. The page asks for it and says how many forms
+    already have answers, scores or a saved draft in them.
+
+    Nothing is destroyed outright: every form and the cycle itself are copied to
+    pe_deleted_reviews / pe_deleted_cycles first, with who and when, so a mistake can
+    be put back. To add people to a live cycle use /sync instead; it is additive.
     """
-    _admin(current_user)
-    started = await db.pe_reviews.count_documents(
-        {"period": period, "$or": [{"self_total": {"$ne": None}},
-                                   {"manager_total": {"$ne": None}}]})
-    if started:
+    _hr_admin(current_user)
+    cycle = await db.pe_cycles.find_one({"period": period})
+    if not cycle:
+        raise HTTPException(status_code=404, detail="Cycle not found")
+    reviews = await db.pe_reviews.find({"period": period}).to_list(5000)
+    worked = [r for r in reviews if _has_work(r)]
+    if confirm.strip().upper() != period.upper():
         raise HTTPException(
-            status_code=400,
-            detail=f"{started} review(s) have already been filled in. Deleting would "
-                   f"destroy that work. Use Sync to add missing people, or close the cycle.")
-    r = await db.pe_reviews.delete_many({"period": period})
-    await db.pe_cycles.delete_one({"period": period})
-    return {"period": period, "deleted": r.deleted_count}
+            status_code=409,
+            detail=f"Type {period} to confirm deleting {cycle.get('label') or period}"
+                   + (f" -- {len(worked)} form(s) have answers or scores in them." if worked else "."))
+
+    now = datetime.now(timezone.utc).isoformat()
+    actor = current_user.get("employee_id") or current_user.get("username")
+    batch = await db.pe_deleted_cycles.insert_one({
+        "period": period, "cycle": cycle, "forms": len(reviews),
+        "with_work": len(worked), "with_work_employees": [_work_row(r) for r in worked],
+        "deleted_at": now, "deleted_by": actor,
+    })
+    if reviews:
+        # One backup document per form (not one big array) so a large cycle can never
+        # hit MongoDB's 16 MB document limit and fail halfway.
+        await db.pe_deleted_reviews.insert_many([
+            {**{k: v for k, v in r.items() if k != "_id"}, "original_id": r["_id"],
+             "deleted_batch": batch.inserted_id, "deleted_at": now, "deleted_by": actor}
+            for r in reviews])
+    # Delete exactly the forms that were backed up, and only if untouched since --
+    # a form added (Sync) or written to (draft/submit) in the meantime stays put.
+    deleted = 0
+    if reviews:
+        res = await db.pe_reviews.delete_many({"$or": [
+            {"_id": r["_id"], **{f: r.get(f) for f in _CHANGE_MARKS}} for r in reviews]})
+        deleted = res.deleted_count
+    left = await db.pe_reviews.count_documents({"period": period})
+    if left:
+        raise HTTPException(status_code=409, detail=(
+            f"{left} form(s) in {period} were added or changed while deleting and were "
+            f"kept, so the cycle was kept too. Check the cycle and delete again."))
+    await db.pe_cycles.delete_one({"_id": cycle["_id"]})
+    return {"period": period, "label": cycle.get("label") or period,
+            "deleted": deleted, "with_work_deleted": len(worked),
+            "backup_id": str(batch.inserted_id)}
 
 
 # ── reviews ──────────────────────────────────────────────────────────────────
