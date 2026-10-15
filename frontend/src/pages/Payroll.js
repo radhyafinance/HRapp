@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo } from "react";
 import API from "../utils/api";
+import { saveBlob } from "../utils/download";
 import { useAuth } from "../contexts/AuthContext";
 import { Play, Download, Eye, X, FileText, Save, CheckCircle2, Trash2, Send, Lock, Unlock, AlertTriangle, RefreshCw } from "lucide-react";
 
@@ -648,18 +649,19 @@ export default function Payroll() {
 
   const downloadPayslipPdf = async (record) => {
     setDownloadingId(record.id);
+    let res;
     try {
-      const res = await API.get(`/payroll/${record.id}/payslip/pdf`, { responseType: "blob" });
-      const url = URL.createObjectURL(res.data);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `Payslip_${record.employee_name}_${record.period}.pdf`.replace(/\s+/g, "_");
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      res = await API.get(`/payroll/${record.id}/payslip/pdf`, { responseType: "blob" });
     } catch (e) {
       alert("Payslip PDF generation failed. Please try again.");
+      setDownloadingId(null);
+      return;
+    }
+    try {
+      // saveBlob, not an <a download> click: the Android app ignores those.
+      await saveBlob(res.data, `Payslip_${record.employee_name}_${record.period}.pdf`.replace(/\s+/g, "_"));
+    } catch (e) {
+      alert(`The payslip could not be saved on this phone. ${e?.message || ""}`.trim());
     } finally {
       setDownloadingId(null);
     }
