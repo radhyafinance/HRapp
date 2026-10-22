@@ -774,13 +774,13 @@ async def request_pull(date: str = Query(None),
                     "seconds_until_next": int(PULL_FLOOR_S - since)}
 
     queue.append({"date": day_str, "at": now.isoformat(),
-                  "by": current_user.get("employee_id")})
+                  "by": _actor(current_user)})
     await db[STATE].update_one(
         {"_id": INGEST_STATE_KEY},
         {"$set": {"pull_queue": queue, "last_pull_request_at": now.isoformat()}},
         upsert=True)
     logger.info("closing: %s asked for a pull of %s",
-                current_user.get("employee_id"), day_str)
+                _actor(current_user), day_str)
     return {"queued": True, "date": day_str, "updated_at": updated_at}
 
 
@@ -976,6 +976,16 @@ class SpecialUndo(BaseModel):
     date: str
     branch_code: str
     key: str
+
+
+def _actor(user: dict) -> str:
+    """Who to record against an action: the employee ID, else the login name.
+
+    The admin login has no employee ID, so recording only `employee_id` filed
+    its approvals and net-off rulings as made by nobody — an audit trail with a
+    hole exactly where Head Office acts.
+    """
+    return user.get("employee_id") or user.get("username") or "unknown"
 
 
 async def _is_closing_approver(user: dict) -> bool:
@@ -1570,7 +1580,7 @@ async def void_slip(slip_id: str, current_user: dict = Depends(get_current_user)
     doc = await _day_doc(slip["date"], slip)
     _require_open(doc)
     await db[SLIPS].update_one({"id": slip_id}, {"$set": {
-        "status": "void", "voided_by": current_user.get("employee_id"),
+        "status": "void", "voided_by": _actor(current_user),
         "voided_at": datetime.now(IST).isoformat()}})
     return {"ok": True}
 
@@ -1699,7 +1709,7 @@ async def approve_day(body: DayDecision, current_user: dict = Depends(get_curren
         "ledger_at_submit": doc.get("ledger"),
         "deposited": deposited,
         "cash_counted": doc.get("cash_counted"),
-        "approved_by": current_user.get("employee_id"),
+        "approved_by": _actor(current_user),
         "approved_at": now_iso,
         "slips": [{"id": x["id"], "amount": x.get("amount"),
                    "bank_name": x.get("bank_name"),
@@ -1710,7 +1720,7 @@ async def approve_day(body: DayDecision, current_user: dict = Depends(get_curren
         {"date": body.date, "branch_code": body.branch_code},
         {"$set": {
             "state": ST_APPROVED,
-            "approved_by": current_user.get("employee_id"),
+            "approved_by": _actor(current_user),
             "approved_at": now_iso,
             "approved_snapshot": snapshot,
         },
@@ -1763,7 +1773,7 @@ async def reject_day(body: DayDecision, current_user: dict = Depends(get_current
     upd = {
         "state": ST_AWAITING,
         "reject_reason": body.reason.strip()[:500],
-        "rejected_by": current_user.get("employee_id"),
+        "rejected_by": _actor(current_user),
         "rejected_at": now_iso,
     }
     if doc.get("state") == ST_APPROVED:
@@ -1811,7 +1821,7 @@ async def toggle_approver(employee_id: str, on: bool = Query(True),
     await db.employees.update_one({"employee_id": employee_id},
                                   {"$set": {"closing_approver": bool(on)}})
     logger.info("closing: approver grant for %s set to %s by %s",
-                employee_id, bool(on), current_user.get("employee_id"))
+                employee_id, bool(on), _actor(current_user))
     return {"employee_id": employee_id, "closing_approver": bool(on)}
 
 
@@ -1948,7 +1958,7 @@ async def decide_special(body: SpecialDecision,
         "count": count,
         "netted_count": int(body.netted_count),
         "note": (body.note or "").strip()[:300] or None,
-        "decided_by": current_user.get("employee_id"),
+        "decided_by": _actor(current_user),
         "decided_at": now_iso,
     }
     await db[SPECIAL].update_one(
@@ -2019,10 +2029,10 @@ async def undo_special(body: SpecialUndo, current_user: dict = Depends(get_curre
     now_iso = datetime.now(IST).isoformat()
     await db[SPECIAL].update_one(
         {"date": body.date, "branch_code": body.branch_code, "key": body.key},
-        {"$set": {"cleared": True, "cleared_by": current_user.get("employee_id"),
+        {"$set": {"cleared": True, "cleared_by": _actor(current_user),
                   "cleared_at": now_iso},
          "$push": {"history": {"action": "undo",
-                               "decided_by": current_user.get("employee_id"),
+                               "decided_by": _actor(current_user),
                                "decided_at": now_iso}}})
     return {"ok": True, "key": body.key, "cleared": True}
 

@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import API from "../../utils/api";
 import { AlertTriangle, Check, HeartPulse, Landmark, RotateCcw } from "lucide-react";
 
@@ -33,21 +33,33 @@ import { AlertTriangle, Check, HeartPulse, Landmark, RotateCcw } from "lucide-re
 
 const money = (n) => `₹${Math.round(Number(n) || 0).toLocaleString("en-IN")}`;
 
-export default function SpecialPanel({ date, onChanged, compact }) {
+export default function SpecialPanel({ date, version, onChanged, compact }) {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState("");
   const [err, setErr] = useState("");
 
+  // Loads now happen often (every change of the day's figures), so two can be in
+  // flight at once. Only the newest may paint: an older answer — or one for a
+  // date the picker has since left — would show the wrong day's preclosures.
+  const seq = useRef(0);
   const load = useCallback(async () => {
+    const mine = ++seq.current;
     try {
       const r = await API.get(`/closing/special?date=${date}`);
+      if (mine !== seq.current) return;
       setData(r.data);
+      setErr("");
     } catch (e) {
+      if (mine !== seq.current) return;
       setErr(e?.response?.data?.detail || "Could not load preclosures.");
     }
   }, [date]);
 
-  useEffect(() => { load(); }, [load]);
+  // `version` changes whenever the day's figures do — this page's own pulls, and
+  // (via the page's once-a-minute re-read) anybody else's. Loading only on mount
+  // meant a preclosure that arrived later never got its buttons until the page
+  // was reloaded, so whoever had the screen open first could not answer it.
+  useEffect(() => { load(); }, [load, version]);
 
   const decide = async (item, nettedCount) => {
     setBusy(item.key + item.branch_code); setErr("");

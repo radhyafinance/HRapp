@@ -138,6 +138,38 @@ export default function DailyClosing() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Head Office keeps this screen open for hours while branch managers, the
+  // heartbeat and other people pull fresh MIS figures. This page only re-read
+  // the day when IT asked, so a preclosure delivered by somebody else's pull
+  // never reached an approver's screen — the net-off buttons were simply
+  // missing until a reload, while an admin who opened the page later saw them.
+  //
+  // This re-reads the STORED figures, nothing more: it never asks the MIS for a
+  // fetch, so the five-minute floor and the vendor are untouched. Quietly, too
+  // — no spinner, and a failed read leaves the screen and any error as they were.
+  const reviewer = isAdmin || !!data?.can_approve;
+  useEffect(() => {
+    if (!reviewer) return undefined;
+    const reread = async () => {
+      if (document.visibilityState !== "visible") return;
+      const asked = date;
+      try {
+        const res = await API.get(`/closing/day?date=${asked}`);
+        if (mountedRef.current && dateRef.current === asked) {
+          setData((prev) => keepBranches(prev, res.data, asked, setNotice));
+        }
+      } catch { /* the next tick will try again */ }
+    };
+    const id = setInterval(reread, 60 * 1000);
+    document.addEventListener("visibilitychange", reread);
+    window.addEventListener("focus", reread);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", reread);
+      window.removeEventListener("focus", reread);
+    };
+  }, [reviewer, date]);
+
   /**
    * Ask for a fresh pull and wait for it to land.
    *

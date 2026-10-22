@@ -225,7 +225,8 @@ export default function ClosingMobile({
       )}
 
       {(isAdmin || canApprove) && (
-        <SpecialPanel date={date} onChanged={onChanged} compact />
+        <SpecialPanel date={date} onChanged={onChanged} compact
+          version={`${data?.updated_at || ""}|${JSON.stringify(data?.totals?.special || {})}`} />
       )}
 
       {/* The BM's actual job for the evening. Only when this is their own

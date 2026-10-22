@@ -203,7 +203,8 @@ export default function ClosingDesktop({
       </div>
 
       {(isAdmin || data?.can_approve) && (
-        <SpecialPanel date={date} onChanged={onChanged} />
+        <SpecialPanel date={date} onChanged={onChanged}
+          version={`${data?.updated_at || ""}|${JSON.stringify(data?.totals?.special || {})}`} />
       )}
 
       <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
