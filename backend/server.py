@@ -94,6 +94,9 @@ app.include_router(id_cards.public_router, prefix="/api/public/verify", tags=["P
 from routes import closing
 app.include_router(closing.router, prefix="/api/closing", tags=["Daily Closing"])
 
+from routes import staff_directory
+app.include_router(staff_directory.router, prefix="/api/staff", tags=["Staff Directory"])
+
 # Temporary diagnostic: face-check audit, HR Admin only, read-only. The preview
 # environment has its own database, so this endpoint is the only way to see the
 # real attendance history. Remove this and backend/face_audit.py when done.

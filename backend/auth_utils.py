@@ -60,6 +60,33 @@ def require_roles(*roles):
     return checker
 
 
+
+def shared_secret_ok(supplied, env_var: str) -> bool:
+    """Constant-time compare of a header value against the secret in `env_var`.
+
+    For machine callers (the dashboard Worker) that send a shared secret instead
+    of a user's JWT. An unset or blank secret refuses everything: there is no
+    default token, so forgetting to configure one locks the endpoint rather than
+    opening it.
+
+    `secrets.compare_digest` rather than `==`: a plain comparison returns as soon
+    as it finds a differing byte, which leaks the length of the shared prefix to
+    anyone willing to time it.
+    """
+    import secrets as _secrets
+    expected = (os.environ.get(env_var) or "").strip()
+    if not expected or not supplied:
+        return False
+    # compare_digest raises TypeError on a str containing a byte above 0x7F, and
+    # Starlette decodes headers as latin-1 -- so any high byte in the header
+    # produced an UNAUTHENTICATED 500 instead of a 401. Compare bytes.
+    try:
+        return _secrets.compare_digest(supplied.strip().encode("utf-8", "surrogateescape"),
+                                       expected.encode("utf-8", "surrogateescape"))
+    except Exception:
+        return False
+
+
 HR_ADMIN = "hr_admin"
 MANAGEMENT = "management"
 MANAGERS = "managers"
